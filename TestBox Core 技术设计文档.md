@@ -71,7 +71,7 @@ Env Check
 | CLI        | Typer                  |
 | 配置       | Yaml                   |
 | 日志       | Loguru                 |
-| 插件机制   | Entry Point + 动态加载 |
+| 插件机制   | `manifest.yaml` 校验 + 受控动态加载 |
 | 数据模型   | Pydantic               |
 | GUI        | PySide6                |
 | 打包       | PyInstaller            |
@@ -280,7 +280,7 @@ context.logger.info(
 生成文件：
 
 ```
-context.workspace.create_file()
+context.files.write_text("result.txt", content)
 ```
 
 # 7. Command命令体系
@@ -414,23 +414,7 @@ workspace/
 reports/
 ```
 
-配置优先级：
-
-```
-命令参数
-
- >
-
-插件配置
-
- >
-
-全局配置
-
- >
-
-默认配置
-```
+配置优先级与敏感信息处理统一以第 23.6 节为准，避免插件配置覆盖项目策略或命令参数。
 
 # 11. 日志管理
 
@@ -611,7 +595,7 @@ Plugin
 
 ↓
 
-PluginException
+PluginError
 
 
 ↓
@@ -632,7 +616,7 @@ Report
 统一异常：
 
 ```
-class PluginException(Exception):
+class PluginError(Exception):
 
     code
 
@@ -777,7 +761,7 @@ Runtime（参数校验、任务编排、异常映射）
 
 ## 23.2 命令与退出码
 
-统一命令形态：`testbox run <command> [--param value]`。命令名采用小写点分格式，例如 `data.mock`、`sql.parse`。以下命令由 Core 提供：
+统一命令形态：`testbox run <command> [--param value]`。命令名采用小写点分格式，例如 `data.mock`、`sql.parse`。参数协议为：由 `input_schema` 可安全映射的标量参数生成命令选项；所有命令同时支持重复的 `--set key=value` 与 `--params-file <json>`。未知参数、重复键、无法按 Schema 转换的值必须以退出码 `2` 拒绝。以下命令由 Core 提供：
 
 | 命令 | 用途 |
 | --- | --- |
@@ -787,11 +771,11 @@ Runtime（参数校验、任务编排、异常映射）
 | `testbox task show <task-id>` | 展示任务结果与产物位置 |
 | `testbox workspace clean --before <YYYY-MM-DD>` | 清理过期任务工作区，需显式确认 |
 
-进程退出码：`0` 成功，`2` 命令或参数错误，`3` 插件发现/加载错误，`4` 任务执行失败，`5` Core 内部错误。终端仅输出摘要；结构化结果始终写入任务目录。
+进程退出码：`0` 成功，`2` 命令或参数错误，`3` 插件发现/加载错误，`4` 任务执行失败，`5` Core 内部错误，`130` 用户取消。终端仅输出摘要；结构化结果始终写入任务目录。
 
 ## 23.3 任务状态与目录
 
-任务状态为 `PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`。状态只能按该顺序前进，`RUNNING` 可转为后三种终态，终态不可变更。
+任务状态为 `PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`、`ABANDONED`。允许的迁移是：`PENDING → RUNNING | CANCELLED`；`RUNNING → SUCCEEDED | FAILED | CANCELLED | ABANDONED`。终态不可变更。启动时，Core 将没有活动心跳且所属进程不存在的 `RUNNING` 任务标记为 `ABANDONED`。
 
 ```
 workspace/<task_id>/
@@ -803,7 +787,7 @@ workspace/<task_id>/
 └── manifest.json   # 插件版本、命令、脱敏参数、时间与运行环境
 ```
 
-`task_id` 使用 `YYYYMMDDTHHMMSS-<8位随机值>`，由 Core 生成。所有插件返回的相对文件路径都相对于 `output/`；Core 在写入前校验路径不能逃逸该目录。
+`task_id` 使用 `YYYYMMDDTHHMMSS-<8位随机值>`，由 Core 生成。所有插件返回的相对文件路径都相对于 `output/`；Core 在写入前校验路径不能逃逸该目录。小型输入文件复制到 `input/`；大文件可引用，但 `manifest.json` 必须记录原始路径、大小、修改时间和 SHA-256。`result.json` 与 `manifest.json` 先写入临时文件后原子替换。
 
 ## 23.4 数据模型
 
@@ -837,4 +821,32 @@ class PluginError(Exception):
 
 ## 23.7 最小持久化表
 
-`task_history` 至少保存：`id`、`plugin_name`、`plugin_version`、`command`、`started_at`、`finished_at`、`status`、`result_path`、`workspace_path`、`error_code`。`params` 必须在持久化前按字段规则脱敏。数据库写入失败不得掩盖原始任务结果，应记录为警告。
+`task_history` 至少保存：`id`、`plugin_name`、`plugin_version`、`command`、`started_at`、`finished_at`、`status`、`result_path`、`workspace_path`、`error_code`、`heartbeat_at`、`host_pid`。`params` 必须在持久化前按字段规则脱敏。状态更新使用事务和条件更新，防止并发写入覆盖终态。数据库写入失败不得掩盖原始任务结果，应记录为警告。
+
+# 24. 插件隔离、权限与故障恢复
+
+## 24.1 运行边界
+
+`manifest.yaml` 校验只保证结构正确，不构成安全沙箱。V1.0 的插件均视为“本地可信”，但仍必须由 **Plugin Host 子进程** 执行，不能由 Core 进程直接导入。Core 负责发现、参数校验、工作区、状态与报告；Host 负责在独立解释器中加载一个插件、执行生命周期并返回结构化结果。
+
+每个插件使用独立虚拟环境。依赖由锁定清单安装并校验哈希；安装或升级在临时环境完成，验证成功后才切换。插件崩溃、超时或被取消时，Core 终止 Host、写入诊断摘要，并将任务转换为对应终态。
+
+## 24.2 能力声明与最小权限
+
+插件必须在清单中声明所需能力，例如：
+
+```yaml
+capabilities:
+  concurrency: false
+  network: false
+  filesystem: output-only
+  external_services: []
+```
+
+Core 默认只向 Host 暴露任务输入、输出目录和经过筛选的配置。网络、浏览器、数据库或用户选定的外部路径均应在命令执行前显式声明、记录并由用户确认。V1.0 不承诺对恶意本地代码提供操作系统级安全隔离；来自未知来源的插件不得安装。
+
+## 24.3 Host 协议与资源治理
+
+Core 与 Host 使用版本化的 JSON Lines 协议：`start`（任务、命令、脱敏参数、许可能力）→ `log` / `heartbeat` / `progress` → `result` 或 `error`。协议消息必须包含 `task_id` 和 `protocol_version`。Core 负责超时、取消信号、最大日志大小、最大输出大小及资源锁。
+
+并发控制不只依赖布尔值。插件可声明 `resources`，例如 `browser`、`network`、`database:qa`；同一独占资源在同一时刻只允许一个 Host 占用。V1.0 默认最大执行时长、输出大小和日志大小由全局配置设定，插件只能申请更低的限制。

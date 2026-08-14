@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["count", "format"],
+  "properties": {
+    "count": {"type": "integer", "minimum": 1},
+    "format": {"type": "string", "enum": ["json", "csv", "xlsx"]},
+    "seed": {"type": "integer"}
+  }
+}

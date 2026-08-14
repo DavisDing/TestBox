@@ -1,0 +1,40 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-executable:
+    name: Build TestBox.exe
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+      - name: Create Windows executable
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+      - name: Smoke test executable
+        shell: pwsh
+        run: |
+          ./dist/TestBox.exe plugin list
+          ./dist/TestBox.exe run data.mock --count 2 --format csv --seed 10001
+      - name: Upload TestBox.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestBox-windows
+          path: dist/TestBox.exe
+          if-no-files-found: error

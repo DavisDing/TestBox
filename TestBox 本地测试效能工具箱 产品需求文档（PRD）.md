@@ -125,10 +125,10 @@ Log Analyzer
 
 # 5.2 CLI入口
 
-统一命令：
+V1.0 统一命令：
 
 ```
-testbox <module> <command>
+testbox run <command> [--param value]
 ```
 
 示例：
@@ -136,20 +136,22 @@ testbox <module> <command>
 数据生成：
 
 ```
-testbox data customer
+testbox run data.mock --count 100 --format csv --seed 10001
 ```
 
 SQL解析：
 
 ```
-testbox sql analyze xxx.sql
+testbox run sql.parse --input ./example.sql --format xlsx
 ```
 
 测试留痕：
 
 ```
-testbox evidence capture
+testbox run evidence.capture --steps ./steps.yaml
 ```
+
+插件管理与任务查询命令由 Core 技术设计文档第 23.2 节定义。GUI 在后续版本复用同一命令和任务 API。
 
 # 5.3 GUI入口
 
@@ -191,8 +193,8 @@ PySide6
 
 支持：
 
-- 身份证号码规则生成
-- 校验位计算
+- 测试标识符格式生成（不可用于真实身份认证）
+- 使用明确的测试前缀或故意无效校验位
 - 年龄关联
 - 性别关联
 
@@ -221,7 +223,7 @@ TEST DATA
 测试数据
 ```
 
-禁止生成真实个人证件。
+禁止生成真实个人证件，也禁止生成可通过真实身份认证校验的号码或图像。
 
 ### 手机号码生成
 
@@ -351,6 +353,8 @@ HTML报告
 - 密码禁止明文保存
 - 配置支持加密
 - 输出文件支持清理
+- 插件按最小权限运行；未知来源插件不得安装
+- 身份类数据只能生成不可用于真实认证的测试标识符
 
 # 8. 版本范围与优先级
 
@@ -367,7 +371,7 @@ V1.0 只交付可本地运行的 CLI 与插件运行框架，优先验证“发�
 | P1 | Excel Tool | CSV/Excel 转换与模板填充 |
 | P1 | Env Check | 网络、端口、文件写入权限检查 |
 | P2 | Evidence Tool | 截图采集与证据包；仅定义接口，暂不承诺浏览器自动化能力 |
-| P2 | GUI、插件市场、AI 插件 | 不属于 V1.0 交付范围 |
+| P2 | GUI、插件市场、AI 插件 | GUI 的设计规范在 V1.0 固化，具体桌面客户端与其他能力不属于 V1.0 交付范围 |
 
 ## 8.2 典型用户流程
 
@@ -398,3 +402,7 @@ V1.0 只交付可本地运行的 CLI 与插件运行框架，优先验证“发�
 # 9. 成功度量
 
 首期试用以以下指标评估：CLI 冷启动在目标开发机上不超过 3 秒；P0 命令端到端成功率不低于 95%；每个 P0 插件至少有正常、参数错误和文件错误三类自动化测试；试用用户可在不编写脚本的情况下完成至少一次数据生成和一次 SQL 字段清单导出。
+
+# 10. GUI 设计约束
+
+GUI 不是第二套业务实现，而是 Core 命令、参数 Schema、任务状态与 Result 的可视化入口。界面信息架构、组件、状态、可访问性和动效约束见《TestBox UI 设计规范》；GUI 验收必须使用同一插件与相同参数调用 Runtime，并显示同一个任务 ID、日志、结果和附件。

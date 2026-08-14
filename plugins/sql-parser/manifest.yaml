@@ -1,0 +1,11 @@
+schema_version: 1
+name: sql-parser
+version: 1.0.0
+description: 解析 CREATE TABLE 字段定义
+category: parser
+core_compatibility: ">=1.0,<2.0"
+entry: src.main:Plugin
+commands:
+  - name: sql.parse
+    description: 导出 SQL 字段清单
+    input_schema: schemas/sql.parse.json

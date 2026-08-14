@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["input", "format"],
+  "properties": {
+    "input": {"type": "string"},
+    "format": {"type": "string", "enum": ["json", "csv"]}
+  }
+}

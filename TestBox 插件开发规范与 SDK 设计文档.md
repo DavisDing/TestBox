@@ -100,32 +100,21 @@ plugin-name
 
 # 4. 插件描述文件
 
-manifest.yaml
-
-示例：
+`manifest.yaml` 示例（字段的强制性和校验规则以第 20.1 节为准）：
 
 ```
+schema_version: 1
 name: data-generator
-
 version: 1.0.0
-
-description:
-测试数据生成插件
-
-
-category:
-data
-
-
-entry:
-src.main:Plugin
-
-
+description: 测试数据生成插件
+category: data
+core_compatibility: ">=1.0,<2.0"
+entry: src.main:Plugin
 commands:
-
- - data.mock
-
- - data.export
+  - name: data.mock
+    description: 生成模拟数据
+  - name: data.export
+    description: 导出模拟数据
 ```
 
 # 5. 插件生命周期
@@ -176,13 +165,15 @@ context.config.get()
 
 ## 工作目录
 
-统一：
+只允许使用：
 
 ```
-context.workspace
+context.workspace.input_dir
+context.workspace.output_dir
+context.files.write_*()
 ```
 
-禁止：
+`context.files` 负责安全路径校验、原子写入和附件登记。禁止：
 
 直接访问用户目录。
 
@@ -235,7 +226,7 @@ exit()
 必须：
 
 ```
-raise PluginException()
+raise PluginError("EXECUTION_FAILED", "执行失败")
 ```
 
 Core统一捕获。
@@ -525,3 +516,25 @@ commands:
 - [ ] 正常流程、参数异常、文件异常测试均可运行。
 - [ ] `Result`、日志和产物路径符合本规范。
 - [ ] 未提交密钥、真实数据、构建缓存或机器相关绝对路径。
+
+## 20.7 隔离运行与权限声明
+
+插件由 Core 的 Plugin Host 子进程运行，不得假设与 CLI、GUI 或其他插件处于同一 Python 进程。插件只能使用 SDK 提供的 Context，不得读取父进程环境变量、用户目录或任务目录以外的路径。
+
+清单必须声明能力；未声明即为不允许：
+
+```yaml
+capabilities:
+  concurrency: false
+  network: false
+  filesystem: output-only
+  resources: []
+```
+
+网络、浏览器、数据库等能力必须由用户在命令执行时显式授予，且写入任务清单。插件不得绕开能力声明自行创建持久化后台进程。
+
+## 20.8 依赖、协议与取消
+
+`requirements.txt` 只声明直接依赖；发布包必须同时提供带版本与哈希的锁定清单。依赖安装由 Core 在插件独立环境中完成，插件不得在运行时自行安装、升级或修改依赖。
+
+Host 协议使用 JSON Lines；插件的日志、进度、结果和错误都通过 SDK 发送，禁止直接写入标准输出。插件必须定期检查取消信号，接到取消后停止新工作、关闭资源、调用 `destroy()`，并返回 `cancelled` 或由 Core 标记为 `CANCELLED`。

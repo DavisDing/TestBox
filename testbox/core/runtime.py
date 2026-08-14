@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import json, os, secrets, sqlite3, subprocess, sys
+from datetime import UTC, datetime, date
+from pathlib import Path
+from typing import Any
+
+from testbox.core.manifest import Manifest
+from testbox.core.history import TaskHistory
+from testbox.sdk import Result
+
+EXIT_CODES = {"success": 0, "cancelled": 130, "failed": 4}
+
+
+class PluginManager:
+    def __init__(self, plugins_dirs: list[Path]):
+        self.plugins_dirs = plugins_dirs; self.available: dict[str, Manifest] = {}; self.unavailable: dict[str, str] = {}
+
+    def discover(self) -> None:
+        self.available.clear(); self.unavailable.clear(); seen: set[str] = set()
+        for plugins_dir in self.plugins_dirs:
+            if not plugins_dir.exists(): continue
+            for manifest_path in sorted(plugins_dir.glob("*/manifest.yaml")):
+                try:
+                    manifest = Manifest.load(manifest_path)
+                    for command in manifest.commands:
+                        if command.name in seen:
+                            if self.available[command.name].name == manifest.name: continue
+                            raise ValueError(f"命令重复: {command.name}")
+                        seen.add(command.name); self.available[command.name] = manifest
+                except Exception as error:
+                    self.unavailable[str(manifest_path.parent)] = str(error)
+
+
+class Runtime:
+    def __init__(self, root: Path | None = None, *, timeout_seconds: float = 300.0):
+        self.root = root or self._application_root()
+        if root is not None or not getattr(sys, "frozen", False):
+            self.plugins_dir = self.root / "plugins"; self.workspace_dir = self.root / "workspace"; bundled_plugins = self.plugins_dir
+        else:
+            data_dir = self._user_data_dir(); self.plugins_dir = data_dir / "plugins"; self.workspace_dir = data_dir / "workspace"
+            bundled_plugins = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "plugins"
+        # User-installed plugins take precedence over bundled copies, enabling upgrades
+        # without writing to a protected Windows installation directory.
+        self.manager = PluginManager([self.plugins_dir] if bundled_plugins == self.plugins_dir else [self.plugins_dir, bundled_plugins]); self.manager.discover()
+        self.history = TaskHistory(self.workspace_dir / "task_history.sqlite3")
+        self.history.abandon_incomplete(datetime.now(UTC).isoformat())
+        self.timeout_seconds = timeout_seconds
+
+    def close(self) -> None:
+        self.history.close()
+
+    @staticmethod
+    def _application_root() -> Path:
+        if getattr(sys, "frozen", False): return Path(sys.executable).resolve().parent
+        return Path.cwd()
+
+    @staticmethod
+    def _user_data_dir() -> Path:
+        if sys.platform == "win32": return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "TestBox"
+        return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "testbox"
+
+    def _task_id(self) -> str:
+        return datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(4)
+
+    @staticmethod
+    def _redact_params(params: dict[str, Any]) -> dict[str, Any]:
+        sensitive = ("password", "passwd", "secret", "token", "api_key", "apikey", "credential")
+        return {key: "***" if any(marker in key.lower() for marker in sensitive) else value for key, value in params.items()}
+
+    def _validate(self, manifest: Manifest, command: str, params: dict[str, Any]) -> None:
+        spec = next(item for item in manifest.commands if item.name == command)
+        if not spec.input_schema: return
+        schema_path = manifest.path / spec.input_schema
+        if not schema_path.exists(): raise ValueError("命令 Schema 不存在")
+        schema = json.loads(schema_path.read_text(encoding="utf-8")); properties = schema.get("properties", {})
+        unknown = set(params) - set(properties)
+        if unknown: raise ValueError(f"未知参数: {', '.join(sorted(unknown))}")
+        for key in schema.get("required", []):
+            if key not in params: raise ValueError(f"缺少必填参数: {key}")
+        for key, value in params.items():
+            kind = properties[key].get("type")
+            if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)): raise ValueError(f"{key} 必须为整数")
+            if kind == "string" and not isinstance(value, str): raise ValueError(f"{key} 必须为字符串")
+            if "enum" in properties[key] and value not in properties[key]["enum"]: raise ValueError(f"{key} 取值不受支持")
+            if "minimum" in properties[key] and value < properties[key]["minimum"]: raise ValueError(f"{key} 不能小于 {properties[key]['minimum']}")
+
+    def run(self, command: str, params: dict[str, Any]) -> tuple[str, Result]:
+        if command not in self.manager.available: raise LookupError(f"未找到可用命令: {command}")
+        manifest = self.manager.available[command]; self._validate(manifest, command, params)
+        task_id = self._task_id(); task_dir = self.workspace_dir / task_id
+        for child in ("input", "output", "logs"): (task_dir / child).mkdir(parents=True, exist_ok=True)
+        started = datetime.now(UTC).isoformat(); safe_params = self._redact_params(params)
+        self._write_json(task_dir / "manifest.json", {"task_id": task_id, "plugin_name": manifest.name, "plugin_version": manifest.version, "command": command, "params": safe_params, "started_at": started, "host_pid": None})
+        self.history.create({"id": task_id, "plugin_name": manifest.name, "plugin_version": manifest.version, "command": command, "params": safe_params, "started_at": started, "result_path": str(task_dir / "result.json"), "workspace_path": str(task_dir), "host_pid": None})
+        request = {"task_id": task_id, "plugin_path": str(manifest.path), "entry": manifest.entry, "command": command, "params": params, "workspace": str(task_dir)}
+        environment = os.environ.copy()
+        if getattr(sys, "frozen", False): host_command = [sys.executable, "--plugin-host"]
+        else:
+            package_root = str(Path(__file__).resolve().parents[2])
+            environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
+            host_command = [sys.executable, "-m", "testbox.core.host"]
+        try:
+            process = subprocess.run(host_command, input=json.dumps(request), text=True, capture_output=True, cwd=self.root, env=environment, timeout=self.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            result = Result("failed", f"插件执行超过 {self.timeout_seconds:g} 秒限制", data={"error_code": "TIMEOUT", "timeout_seconds": self.timeout_seconds})
+            self._write_json(task_dir / "result.json", result.to_dict()); self._write_report(task_dir, task_id, manifest, result)
+            self.history.finish(task_id, status="FAILED", finished_at=datetime.now(UTC).isoformat(), error_code="TIMEOUT")
+            return task_id, result
+        try: payload = json.loads(process.stdout)
+        except json.JSONDecodeError: payload = {"status": "failed", "message": "插件 Host 协议错误", "data": {"error_code": "HOST_PROTOCOL_ERROR"}, "files": [], "warnings": []}
+        if process.returncode and payload.get("status") == "success":
+            payload = {"status": "failed", "message": "插件 Host 异常退出", "data": {"error_code": "HOST_CRASHED", "exit_code": process.returncode}, "files": [], "warnings": []}
+        result = Result(**payload)
+        for file_name in result.files:
+            try: (task_dir / "output" / file_name).resolve().relative_to((task_dir / "output").resolve())
+            except ValueError: result = Result("failed", "插件返回了非法输出路径", data={"error_code": "INVALID_OUTPUT_PATH"}); break
+        self._write_json(task_dir / "result.json", result.to_dict()); self._write_report(task_dir, task_id, manifest, result)
+        task_status = {"success": "SUCCEEDED", "failed": "FAILED", "cancelled": "CANCELLED"}[result.status]
+        self.history.finish(task_id, status=task_status, finished_at=datetime.now(UTC).isoformat(), error_code=result.data.get("error_code"))
+        return task_id, result
+
+    def clean_workspace(self, before: date) -> int:
+        removed = 0
+        if not self.workspace_dir.exists(): return removed
+        for task_dir in self.workspace_dir.iterdir():
+            if not task_dir.is_dir(): continue
+            try: started = datetime.strptime(task_dir.name.split("-", 1)[0], "%Y%m%dT%H%M%S").date()
+            except ValueError: continue
+            if started < before:
+                import shutil
+                shutil.rmtree(task_dir); removed += 1
+        return removed
+
+    @staticmethod
+    def _write_json(path: Path, data: dict[str, Any]) -> None:
+        temporary = path.with_suffix(path.suffix + ".tmp"); temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"); temporary.replace(path)
+
+    @staticmethod
+    def _write_report(task_dir: Path, task_id: str, manifest: Manifest, result: Result) -> None:
+        files = "\n".join(f"- `output/{item}`" for item in result.files) or "- 无"
+        (task_dir / "report.md").write_text(f"# TestBox 任务报告\n\n- 任务 ID: `{task_id}`\n- 插件: `{manifest.name}` {manifest.version}\n- 状态: {result.status}\n- 摘要: {result.message}\n\n## 产物\n{files}\n", encoding="utf-8")
