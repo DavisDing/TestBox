@@ -4,6 +4,11 @@ version: 1.0.0
 description: 生成可复现的测试个人信息和手机号
 category: data
 core_compatibility: ">=1.0,<2.0"
+capabilities:
+  concurrency: true
+  network: false
+  filesystem: output-only
+  resources: []
 entry: src.main:Plugin
 commands:
   - name: data.mock

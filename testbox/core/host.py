@@ -14,9 +14,12 @@ class TaskLogger:
 
 
 def main() -> None:
-    request = json.loads(sys.stdin.read()); workspace = Path(request["workspace"]); module_name, class_name = request["entry"].split(":", 1)
+    request = json.loads(sys.stdin.read())
+    if request.get("protocol_version") != 1:
+        raise ValueError("不支持的 Host 协议版本")
+    workspace = Path(request["workspace"]); module_name, class_name = request["entry"].split(":", 1)
     source = Path(request["plugin_path"]) / (module_name.replace(".", "/") + ".py")
-    logger = TaskLogger(workspace / "logs" / "task.log"); context = Context(logger, {}, Workspace(workspace, workspace / "input", workspace / "output"), SafeFiles(workspace / "output"), Task(request["task_id"]))
+    logger = TaskLogger(workspace / "logs" / "task.log"); context = Context(logger, request.get("config", {}), Workspace(workspace, workspace / "input", workspace / "output"), SafeFiles(workspace / "output"), Task(request["task_id"]))
     plugin = None
     try:
         spec = importlib.util.spec_from_file_location(f"testbox_plugin_{request['task_id']}", source)
@@ -33,7 +36,8 @@ def main() -> None:
         if plugin is not None:
             try: plugin.destroy()
             except Exception: logger.error("插件 destroy 失败")
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+    event = {"protocol_version": 1, "event": "result", "task_id": request["task_id"], "result": payload}
+    sys.stdout.write(json.dumps(event, ensure_ascii=False))
 
 
 if __name__ == "__main__": main()

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json, os, secrets, sqlite3, subprocess, sys
+import hashlib, json, os, secrets, shutil, sqlite3, subprocess, sys
 from datetime import UTC, datetime, date
 from pathlib import Path
 from typing import Any
 
 from testbox.core.manifest import Manifest
+from testbox.core.config import load_plugin_config
 from testbox.core.history import TaskHistory
 from testbox.sdk import Result
 
@@ -33,6 +34,8 @@ class PluginManager:
 
 
 class Runtime:
+    MAX_INPUT_BYTES = 100 * 1024 * 1024
+    MAX_OUTPUT_BYTES = 500 * 1024 * 1024
     def __init__(self, root: Path | None = None, *, timeout_seconds: float = 300.0):
         self.root = root or self._application_root()
         if root is not None or not getattr(sys, "frozen", False):
@@ -82,39 +85,88 @@ class Runtime:
             kind = properties[key].get("type")
             if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)): raise ValueError(f"{key} 必须为整数")
             if kind == "string" and not isinstance(value, str): raise ValueError(f"{key} 必须为字符串")
+            if kind == "boolean" and not isinstance(value, bool): raise ValueError(f"{key} 必须为布尔值")
+            if kind == "object" and not isinstance(value, dict): raise ValueError(f"{key} 必须为对象")
+            if kind == "array" and not isinstance(value, list): raise ValueError(f"{key} 必须为数组")
             if "enum" in properties[key] and value not in properties[key]["enum"]: raise ValueError(f"{key} 取值不受支持")
             if "minimum" in properties[key] and value < properties[key]["minimum"]: raise ValueError(f"{key} 不能小于 {properties[key]['minimum']}")
+            if "maximum" in properties[key] and value > properties[key]["maximum"]: raise ValueError(f"{key} 不能大于 {properties[key]['maximum']}")
+
+    def _stage_file_inputs(self, manifest: Manifest, command: str, params: dict[str, Any], input_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Copy schema-declared file inputs into the task boundary before starting Host."""
+        spec = next(item for item in manifest.commands if item.name == command)
+        if not spec.input_schema:
+            return params, []
+        schema = json.loads((manifest.path / spec.input_schema).read_text(encoding="utf-8"))
+        staged_params = params.copy()
+        records: list[dict[str, Any]] = []
+        for key, definition in schema.get("properties", {}).items():
+            if definition.get("format") != "file-path" or key not in params:
+                continue
+            source = Path(params[key]).expanduser().resolve()
+            if not source.is_file():
+                raise ValueError(f"{key} 输入文件不存在")
+            size = source.stat().st_size
+            if size > self.MAX_INPUT_BYTES:
+                raise ValueError(f"{key} 输入文件超过 {self.MAX_INPUT_BYTES // (1024 * 1024)} MB 限制")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            destination = input_dir / f"{key}-{digest[:12]}{source.suffix}"
+            shutil.copy2(source, destination)
+            staged_params[key] = str(destination)
+            records.append({"parameter": key, "source_path": str(source), "staged_path": str(destination.relative_to(input_dir.parent)), "size": size, "sha256": digest})
+        return staged_params, records
 
     def run(self, command: str, params: dict[str, Any]) -> tuple[str, Result]:
         if command not in self.manager.available: raise LookupError(f"未找到可用命令: {command}")
         manifest = self.manager.available[command]; self._validate(manifest, command, params)
         task_id = self._task_id(); task_dir = self.workspace_dir / task_id
         for child in ("input", "output", "logs"): (task_dir / child).mkdir(parents=True, exist_ok=True)
+        staged_params, input_records = self._stage_file_inputs(manifest, command, params, task_dir / "input")
         started = datetime.now(UTC).isoformat(); safe_params = self._redact_params(params)
-        self._write_json(task_dir / "manifest.json", {"task_id": task_id, "plugin_name": manifest.name, "plugin_version": manifest.version, "command": command, "params": safe_params, "started_at": started, "host_pid": None})
+        self._write_json(task_dir / "manifest.json", {"task_id": task_id, "plugin_name": manifest.name, "plugin_version": manifest.version, "command": command, "params": safe_params, "inputs": input_records, "started_at": started, "host_pid": None})
         self.history.create({"id": task_id, "plugin_name": manifest.name, "plugin_version": manifest.version, "command": command, "params": safe_params, "started_at": started, "result_path": str(task_dir / "result.json"), "workspace_path": str(task_dir), "host_pid": None})
-        request = {"task_id": task_id, "plugin_path": str(manifest.path), "entry": manifest.entry, "command": command, "params": params, "workspace": str(task_dir)}
+        plugin_config = load_plugin_config(self.root, manifest.path, manifest.name)
+        request = {"protocol_version": 1, "task_id": task_id, "plugin_path": str(manifest.path), "entry": manifest.entry, "command": command, "params": staged_params, "config": self._redact_params(plugin_config), "workspace": str(task_dir), "capabilities": manifest.capabilities}
         environment = os.environ.copy()
         if getattr(sys, "frozen", False): host_command = [sys.executable, "--plugin-host"]
         else:
             package_root = str(Path(__file__).resolve().parents[2])
             environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
             host_command = [sys.executable, "-m", "testbox.core.host"]
+        process = subprocess.Popen(host_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.root, env=environment)
+        self.history.set_host_pid(task_id, process.pid)
+        manifest_record = json.loads((task_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest_record["host_pid"] = process.pid
+        self._write_json(task_dir / "manifest.json", manifest_record)
         try:
-            process = subprocess.run(host_command, input=json.dumps(request), text=True, capture_output=True, cwd=self.root, env=environment, timeout=self.timeout_seconds)
+            stdout, _ = process.communicate(json.dumps(request), timeout=self.timeout_seconds)
         except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
             result = Result("failed", f"插件执行超过 {self.timeout_seconds:g} 秒限制", data={"error_code": "TIMEOUT", "timeout_seconds": self.timeout_seconds})
             self._write_json(task_dir / "result.json", result.to_dict()); self._write_report(task_dir, task_id, manifest, result)
             self.history.finish(task_id, status="FAILED", finished_at=datetime.now(UTC).isoformat(), error_code="TIMEOUT")
             return task_id, result
-        try: payload = json.loads(process.stdout)
-        except json.JSONDecodeError: payload = {"status": "failed", "message": "插件 Host 协议错误", "data": {"error_code": "HOST_PROTOCOL_ERROR"}, "files": [], "warnings": []}
+        try:
+            event = json.loads(stdout)
+            if event.get("protocol_version") != 1 or event.get("event") != "result" or event.get("task_id") != task_id or not isinstance(event.get("result"), dict):
+                raise ValueError("响应事件不符合协议")
+            payload = event["result"]
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            payload = {"status": "failed", "message": "插件 Host 协议错误", "data": {"error_code": "HOST_PROTOCOL_ERROR"}, "files": [], "warnings": []}
         if process.returncode and payload.get("status") == "success":
             payload = {"status": "failed", "message": "插件 Host 异常退出", "data": {"error_code": "HOST_CRASHED", "exit_code": process.returncode}, "files": [], "warnings": []}
         result = Result(**payload)
+        output_size = 0
         for file_name in result.files:
             try: (task_dir / "output" / file_name).resolve().relative_to((task_dir / "output").resolve())
             except ValueError: result = Result("failed", "插件返回了非法输出路径", data={"error_code": "INVALID_OUTPUT_PATH"}); break
+            output_file = task_dir / "output" / file_name
+            if not output_file.is_file():
+                result = Result("failed", "插件声明的输出文件不存在", data={"error_code": "MISSING_OUTPUT_FILE"}); break
+            output_size += output_file.stat().st_size
+            if output_size > self.MAX_OUTPUT_BYTES:
+                result = Result("failed", "插件输出超过大小限制", data={"error_code": "OUTPUT_TOO_LARGE", "max_output_bytes": self.MAX_OUTPUT_BYTES}); break
         self._write_json(task_dir / "result.json", result.to_dict()); self._write_report(task_dir, task_id, manifest, result)
         task_status = {"success": "SUCCEEDED", "failed": "FAILED", "cancelled": "CANCELLED"}[result.status]
         self.history.finish(task_id, status=task_status, finished_at=datetime.now(UTC).isoformat(), error_code=result.data.get("error_code"))

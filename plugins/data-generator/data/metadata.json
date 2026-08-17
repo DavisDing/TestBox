@@ -1,0 +1,12 @@
+{
+  "administrative_divisions": {
+    "version": "2025-12-27-c49d495",
+    "source": "https://github.com/modood/Administrative-divisions-of-China/tree/c49d495b40ac73eb1a66f6eeae5f8fd10696f035",
+    "source_commit": "c49d495b40ac73eb1a66f6eeae5f8fd10696f035",
+    "license": "WTFPL-2.0",
+    "mainland_file": "administrative-divisions-mainland.json",
+    "mainland_sha256": "8ec3a2beed52955633354ef8813158103e5dda4c1d9739e2acb41266b7fa8e0f",
+    "hk_mo_tw_file": "administrative-divisions-hk-mo-tw.json",
+    "hk_mo_tw_sha256": "76694149dd24873ea0c1e98aa7fe8f31be8bedfc1047cf642fdd32b7e0187ecf"
+  }
+}

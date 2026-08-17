@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -35,11 +36,25 @@ class TaskHistory:
         self.connection.execute("UPDATE task_history SET status = ?, finished_at = ?, error_code = ?, heartbeat_at = ? WHERE id = ? AND status = 'RUNNING'", (status, finished_at, error_code, finished_at, task_id))
         self.connection.commit()
 
+    def set_host_pid(self, task_id: str, host_pid: int) -> None:
+        self.connection.execute("UPDATE task_history SET host_pid = ? WHERE id = ? AND status = 'RUNNING'", (host_pid, task_id))
+        self.connection.commit()
+
     def abandon_incomplete(self, finished_at: str) -> int:
-        """Mark tasks left RUNNING by an earlier TestBox process as abandoned."""
-        cursor = self.connection.execute(
-            "UPDATE task_history SET status = 'ABANDONED', finished_at = ?, error_code = 'HOST_INTERRUPTED' WHERE status = 'RUNNING'",
-            (finished_at,),
+        """Mark only RUNNING tasks whose recorded Host process no longer exists."""
+        rows = self.connection.execute("SELECT id, host_pid FROM task_history WHERE status = 'RUNNING'").fetchall()
+        abandoned = []
+        for task_id, host_pid in rows:
+            if host_pid is None:
+                abandoned.append(task_id)
+                continue
+            try:
+                os.kill(host_pid, 0)
+            except OSError:
+                abandoned.append(task_id)
+        cursor = self.connection.executemany(
+            "UPDATE task_history SET status = 'ABANDONED', finished_at = ?, error_code = 'HOST_INTERRUPTED' WHERE id = ? AND status = 'RUNNING'",
+            [(finished_at, task_id) for task_id in abandoned],
         )
         self.connection.commit()
         return cursor.rowcount

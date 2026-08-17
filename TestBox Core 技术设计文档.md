@@ -850,3 +850,13 @@ Core 默认只向 Host 暴露任务输入、输出目录和经过筛选的配置
 Core 与 Host 使用版本化的 JSON Lines 协议：`start`（任务、命令、脱敏参数、许可能力）→ `log` / `heartbeat` / `progress` → `result` 或 `error`。协议消息必须包含 `task_id` 和 `protocol_version`。Core 负责超时、取消信号、最大日志大小、最大输出大小及资源锁。
 
 并发控制不只依赖布尔值。插件可声明 `resources`，例如 `browser`、`network`、`database:qa`；同一独占资源在同一时刻只允许一个 Host 占用。V1.0 默认最大执行时长、输出大小和日志大小由全局配置设定，插件只能申请更低的限制。
+
+# 25. 规则驱动数据生成契约
+
+`data.mock` 的 Schema 可包含 `rules`、`rule_set`、`source_file`、`source_format` 和 `template`。Runtime 必须校验对象、数组、布尔值及文件路径，将规则集和表结构输入复制到任务 `input/` 后再交给 Host。
+
+规则中的 `unique` 是字段级声明，不得隐式对姓名、手机号等字段启用。Core 负责记录实际规则、随机种子、输入文件哈希、已启用唯一字段和结果摘要；插件负责在当前任务边界内检测唯一容量与冲突。行政区划、手机号段、枚举字典等内置数据必须随插件版本发布并在任务清单中记录版本。
+
+第三方数据资源必须固定到不可变上游提交并在插件中保留许可证文本、来源 URL、许可证标识和 SHA-256。仅当上游许可证允许复制和分发时才可内置；许可证授予的范围不应被表述为作者的额外背书。
+
+SQL Parser 的输入仅作为文本在 Host 内解析，不得执行 SQL。插件结果应将解析警告放入 `Result.warnings` 与 `data.warnings`；CLI 默认允许带警告成功返回，命令参数可选择严格失败。

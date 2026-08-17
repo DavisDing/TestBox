@@ -71,3 +71,9 @@ GitHub Release 会提供独立的 `TestBox.exe`，无需安装 Python。将它�
 testbox task show <task-id>
 testbox workspace clean --before 2026-01-01 --confirm
 ```
+
+## Data Generator 规则
+
+`data.mock` 支持默认个人信息、客户/账户/产品/交易金融模板，以及 `rules`、规则集、SQL DDL、Excel 字段清单驱动的字段规则。字段唯一性由 `unique` 显式控制，只保证本次任务内不重复；地址可按全国、省、市筛选，手机号使用常用中国大陆号段。
+
+Data Generator 的大陆省市区县街道及港澳台数据引用 [modood/Administrative-divisions-of-China](https://github.com/modood/Administrative-divisions-of-China/tree/c49d495b40ac73eb1a66f6eeae5f8fd10696f035)，上游许可证为 WTFPL-2.0；固定版本、许可证和校验值保留在插件资源目录。

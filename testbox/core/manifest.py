@@ -5,9 +5,44 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
+
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 COMMAND_RE = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+
+
+def _version_tuple(value: str) -> tuple[int, int, int]:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
+    if not match:
+        raise ValueError("版本必须为语义化版本")
+    return tuple(map(int, match.groups()))
+
+
+def _core_compatible(requirement: str) -> bool:
+    from testbox import __version__
+
+    current = _version_tuple(__version__)
+    try:
+        constraints = [item.strip() for item in requirement.split(",") if item.strip()]
+        for constraint in constraints:
+            match = re.fullmatch(r"(>=|<=|>|<|==)?(\d+\.\d+(?:\.\d+)?)", constraint)
+            if not match:
+                return False
+            operator, version = match.groups()
+            parts = tuple(map(int, version.split(".")))
+            expected = parts + (0,) * (3 - len(parts))
+            if operator in (None, "==") and current != expected: return False
+            if operator == ">=" and current < expected: return False
+            if operator == "<=" and current > expected: return False
+            if operator == ">" and current <= expected: return False
+            if operator == "<" and current >= expected: return False
+    except ValueError:
+        return False
+    return bool(constraints)
 
 
 def _scalar(value: str) -> Any:
@@ -20,22 +55,50 @@ def _scalar(value: str) -> Any:
 
 
 def load_yaml_subset(path: Path) -> dict[str, Any]:
-    """Read the constrained YAML shape used by TestBox manifests without a runtime dependency."""
-    root: dict[str, Any] = {}; current_list: list[dict[str, Any]] | None = None; current_item: dict[str, Any] | None = None
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].rstrip()
-        if not line.strip(): continue
+    """Load the constrained manifest YAML, preferring PyYAML when installed."""
+    content = path.read_text(encoding="utf-8")
+    if yaml is not None:
+        try:
+            raw = yaml.safe_load(content)
+        except yaml.YAMLError as error:
+            raise ValueError(f"manifest YAML 格式无效: {error}") from error
+        if not isinstance(raw, dict):
+            raise ValueError("manifest 根节点必须是对象")
+        return raw
+
+    root: dict[str, Any] = {}
+    current_list: list[dict[str, Any]] | None = None
+    current_map: dict[str, Any] | None = None
+    current_item: dict[str, Any] | None = None
+    for raw_line in content.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
         indent, text = len(line) - len(line.lstrip()), line.strip()
         if indent == 0 and ":" in text:
             key, value = (part.strip() for part in text.split(":", 1))
+            current_item = None
             if value:
-                root[key] = _scalar(value); current_list = None
+                root[key] = _scalar(value)
+                current_list = current_map = None
             else:
-                root[key] = []; current_list = root[key]
-        elif indent == 2 and text.startswith("- ") and current_list is not None:
-            key, value = (part.strip() for part in text[2:].split(":", 1)); current_item = {key: _scalar(value)}; current_list.append(current_item)
+                root[key] = {}
+                current_map = root[key]
+                current_list = None
+        elif indent == 2 and text.startswith("- ") and current_map is not None:
+            key, value = (part.strip() for part in text[2:].split(":", 1))
+            if not isinstance(root.get(next(reversed(root))), list):
+                root[next(reversed(root))] = []
+            current_list = root[next(reversed(root))]
+            current_item = {key: _scalar(value)}
+            current_list.append(current_item)
+            current_map = None
+        elif indent == 2 and ":" in text and current_map is not None:
+            key, value = (part.strip() for part in text.split(":", 1))
+            current_map[key] = _scalar(value)
         elif indent >= 4 and ":" in text and current_item is not None:
-            key, value = (part.strip() for part in text.split(":", 1)); current_item[key] = _scalar(value)
+            key, value = (part.strip() for part in text.split(":", 1))
+            current_item[key] = _scalar(value)
     return root
 
 
@@ -52,6 +115,8 @@ class Manifest:
     name: str
     version: str
     description: str
+    category: str
+    core_compatibility: str
     entry: str
     commands: list[Command]
     capabilities: dict[str, Any] = field(default_factory=dict)
@@ -59,13 +124,23 @@ class Manifest:
     @classmethod
     def load(cls, path: Path) -> "Manifest":
         raw = load_yaml_subset(path)
-        required = ("schema_version", "name", "version", "description", "entry", "commands")
+        required = ("schema_version", "name", "version", "description", "category", "core_compatibility", "entry", "commands", "capabilities")
         missing = [key for key in required if key not in raw]
         if missing: raise ValueError(f"manifest 缺少字段: {', '.join(missing)}")
         if raw["schema_version"] != "1" and raw["schema_version"] != 1: raise ValueError("仅支持 schema_version: 1")
         if not NAME_RE.fullmatch(str(raw["name"])): raise ValueError("插件 name 必须为小写字母、数字和连字符")
         if not VERSION_RE.fullmatch(str(raw["version"])): raise ValueError("插件 version 必须为语义化版本")
+        if not isinstance(raw["category"], str) or not raw["category"].strip(): raise ValueError("插件 category 必须为非空字符串")
+        if not isinstance(raw["core_compatibility"], str) or not raw["core_compatibility"].strip(): raise ValueError("插件 core_compatibility 必须为非空字符串")
+        if not _core_compatible(raw["core_compatibility"]): raise ValueError("插件与当前 Core 版本不兼容")
         if ":" not in str(raw["entry"]): raise ValueError("entry 必须为 module:Class")
-        commands = [Command(str(item.get("name", "")), str(item.get("description", "")), item.get("input_schema")) for item in raw["commands"]]
+        if not isinstance(raw["commands"], list): raise ValueError("commands 必须为列表")
+        commands = [Command(str(item.get("name", "")), str(item.get("description", "")), item.get("input_schema")) for item in raw["commands"] if isinstance(item, dict)]
         if not commands or any(not COMMAND_RE.fullmatch(command.name) for command in commands): raise ValueError("commands 必须包含小写点分命令")
-        return cls(path.parent, str(raw["name"]), str(raw["version"]), str(raw["description"]), str(raw["entry"]), commands, raw.get("capabilities", {}))
+        capabilities = raw["capabilities"]
+        if not isinstance(capabilities, dict): raise ValueError("capabilities 必须为对象")
+        if set(capabilities) - {"concurrency", "network", "filesystem", "resources"}: raise ValueError("capabilities 包含不支持的字段")
+        if not isinstance(capabilities.get("concurrency"), bool) or not isinstance(capabilities.get("network"), bool): raise ValueError("capabilities.concurrency 和 network 必须为布尔值")
+        if capabilities.get("filesystem") != "output-only": raise ValueError("capabilities.filesystem 必须为 output-only")
+        if not isinstance(capabilities.get("resources"), list) or not all(isinstance(item, str) for item in capabilities["resources"]): raise ValueError("capabilities.resources 必须为字符串列表")
+        return cls(path.parent, str(raw["name"]), str(raw["version"]), str(raw["description"]), str(raw["category"]), str(raw["core_compatibility"]), str(raw["entry"]), commands, capabilities)

@@ -2,8 +2,13 @@
   "type": "object",
   "required": ["count", "format"],
   "properties": {
-    "count": {"type": "integer", "minimum": 1},
+    "count": {"type": "integer", "minimum": 1, "maximum": 100000},
     "format": {"type": "string", "enum": ["json", "csv", "xlsx"]},
-    "seed": {"type": "integer"}
+    "seed": {"type": "integer"},
+    "template": {"type": "string", "enum": ["retail_customer", "account", "product", "transaction"]},
+    "rules": {"type": "array"},
+    "rule_set": {"type": "string", "format": "file-path"},
+    "source_file": {"type": "string", "format": "file-path"},
+    "source_format": {"type": "string", "enum": ["sql", "excel"]}
   }
 }
