@@ -22,6 +22,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install runtime dependencies
+        run: python -m pip install --upgrade .
       - name: Run tests
         run: python -m unittest discover -s tests -v
       - name: Create Windows executable
@@ -32,9 +34,11 @@ jobs:
         run: |
           ./dist/TestBox.exe plugin list
           ./dist/TestBox.exe run data.mock --count 2 --format csv --seed 10001
-      - name: Upload TestBox.exe
+      - name: Upload Windows applications
         uses: actions/upload-artifact@v4
         with:
-          name: TestBox-windows
-          path: dist/TestBox.exe
+          name: TestBox-windows-applications
+          path: |
+            dist/TestBox.exe
+            dist/TestBox-GUI.exe
           if-no-files-found: error

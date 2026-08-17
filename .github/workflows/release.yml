@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install runtime dependencies
+        run: python -m pip install --upgrade .
       - name: Verify runtime
         run: python -m unittest discover -s tests -v
       - name: Build distribution and plugin archives
@@ -25,6 +27,7 @@ jobs:
           mkdir -p plugin-dist
           python -m testbox.cli plugin package plugins/data-generator --output plugin-dist/data-generator-1.0.0.zip
           python -m testbox.cli plugin package plugins/sql-parser --output plugin-dist/sql-parser-1.0.0.zip
+          python -m testbox.cli plugin package plugins/evidence-tool --output plugin-dist/evidence-tool-1.0.0.zip
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -46,6 +49,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install runtime dependencies
+        run: python -m pip install --upgrade .
       - name: Verify runtime
         run: python -m unittest discover -s tests -v
       - name: Build Windows executable
@@ -56,13 +61,18 @@ jobs:
         run: |
           ./dist/TestBox.exe plugin list
           ./dist/TestBox.exe run data.mock --count 2 --format csv --seed 10001
-      - name: Upload Windows artifact
+      - name: Upload Windows applications
         uses: actions/upload-artifact@v4
         with:
-          name: testbox-windows
-          path: dist/TestBox.exe
-      - name: Add executable to GitHub release
+          name: testbox-windows-applications
+          path: |
+            dist/TestBox.exe
+            dist/TestBox-GUI.exe
+          if-no-files-found: error
+      - name: Add Windows applications to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/TestBox.exe
+          files: |
+            dist/TestBox.exe
+            dist/TestBox-GUI.exe

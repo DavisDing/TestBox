@@ -74,7 +74,7 @@ GitHub Release 会提供独立的 `TestBox.exe`，无需安装 Python。将它�
 .\TestBox.exe run data.mock --count 100 --format csv --seed 10001
 ```
 
-发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`。程序内置插件；通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
+发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`，两者均内置当前版本的官方插件，可直接使用。Release 中的 `data-generator`、`sql-parser` 与 `evidence-tool` ZIP 是独立插件包，用于为已安装的软件额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
 
 ## 任务历史与清理
 
