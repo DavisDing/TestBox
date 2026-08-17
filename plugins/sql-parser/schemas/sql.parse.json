@@ -2,10 +2,11 @@
   "type": "object",
   "required": ["input", "format"],
   "properties": {
-    "input": {"type": "string", "format": "file-path"},
-    "format": {"type": "string", "enum": ["json", "csv", "xlsx"]},
-    "dialect": {"type": "string", "enum": ["auto", "mysql", "postgresql", "sqlserver", "oracle", "sqlite"]},
-    "include_constraints": {"type": "boolean"},
-    "fail_on_unsupported": {"type": "boolean"}
-  }
+    "input": {"type": "string", "format": "file-path", "description": "SQL 文件"},
+    "format": {"type": "string", "enum": ["json", "csv", "xlsx"], "description": "输出格式"},
+    "dialect": {"type": "string", "enum": ["auto", "mysql", "postgresql", "sqlserver", "oracle", "sqlite", "hudi", "hive", "hbase", "maxcompute", "mc"], "default": "auto", "description": "数据库类型"},
+    "include_constraints": {"type": "boolean", "default": true, "description": "包含约束信息"},
+    "fail_on_unsupported": {"type": "boolean", "default": false, "description": "遇到不支持语法时失败"}
+  },
+  "additionalProperties": false
 }

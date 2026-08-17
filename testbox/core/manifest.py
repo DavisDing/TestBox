@@ -68,6 +68,7 @@ def load_yaml_subset(path: Path) -> dict[str, Any]:
 
     root: dict[str, Any] = {}
     current_list: list[dict[str, Any]] | None = None
+    current_list_key: str | None = None
     current_map: dict[str, Any] | None = None
     current_item: dict[str, Any] | None = None
     for raw_line in content.splitlines():
@@ -80,16 +81,19 @@ def load_yaml_subset(path: Path) -> dict[str, Any]:
             current_item = None
             if value:
                 root[key] = _scalar(value)
-                current_list = current_map = None
+                current_list = None
+                current_list_key = None
+                current_map = None
             else:
                 root[key] = {}
                 current_map = root[key]
                 current_list = None
-        elif indent == 2 and text.startswith("- ") and current_map is not None:
+                current_list_key = key
+        elif indent == 2 and text.startswith("- ") and current_list_key is not None:
             key, value = (part.strip() for part in text[2:].split(":", 1))
-            if not isinstance(root.get(next(reversed(root))), list):
-                root[next(reversed(root))] = []
-            current_list = root[next(reversed(root))]
+            if not isinstance(root.get(current_list_key), list):
+                root[current_list_key] = []
+            current_list = root[current_list_key]
             current_item = {key: _scalar(value)}
             current_list.append(current_item)
             current_map = None

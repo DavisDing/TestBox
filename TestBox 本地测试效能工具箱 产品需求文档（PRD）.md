@@ -420,4 +420,6 @@ Data Generator 从固定个人信息输出演进为字段规则驱动的模拟�
 - 首批金融模板为客户、账户、产品、交易，提供客户类型、风险等级、账户类型、金额、币种、渠道、状态和时间等默认规则；用户可创建具名、版本化规则集复用。
 - 不支持跨任务唯一性，不读取真实生产数据，不生成可用于真实认证的金融凭证或身份材料。
 
+Data Generator 必须支持 JSON、CSV、XLSX、TXT、SQL 和 ZIP 数据包输出。TXT 支持分隔符、表头、编码与字段顺序；SQL 支持 MySQL、PostgreSQL、SQL Server、Oracle、SQLite 的批量 `INSERT`，并必须正确处理标识符、空值、布尔值、数值、日期和单引号转义。ZIP 可组合多种格式并包含生成摘要与规则版本。
+
 行政区划资源可引用开源数据，但必须在插件中保留固定提交、来源 URL、许可证文本、许可证标识和文件 SHA-256。当前地址资源引用 `modood/Administrative-divisions-of-China` 的 `c49d495` 提交，许可证为 WTFPL-2.0。

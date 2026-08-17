@@ -2,7 +2,7 @@
 
 TestBox 是面向测试工程师的本地化、插件化测试效能工具框架。它通过统一 CLI、任务工作区和插件 SDK，把测试数据生成、SQL 字段解析、环境检查等高频工具纳入同一套可追溯运行机制。
 
-> 当前仓库已完成 V1.0 的首个可运行闭环：本地 CLI、插件发现与校验、Host 子进程执行、任务工作区、结构化结果/报告，以及 Data Generator、SQL Parser 两个 P0 插件。
+> 当前仓库已完成本地 CLI、桌面 GUI、插件发现与校验、Host 子进程执行、任务工作区、结构化结果/报告，以及 Data Generator、SQL Parser 和 Evidence Tool 插件。
 
 ## 文档导航
 
@@ -13,11 +13,24 @@ TestBox 是面向测试工程师的本地化、插件化测试效能工具框架
 | [插件开发规范与 SDK](./TestBox%20插件开发规范与%20SDK%20设计文档.md) | 定义插件清单、生命周期、Context、结果与发布要求 |
 | [UI 设计规范](./TestBox%20UI%20设计规范.md) | 定义 GUI 信息架构、组件、状态、视觉与可访问性约束 |
 
-## V1.0 边界
+## 当前能力
 
 - 交付本地 CLI、插件发现与运行、独立工作区、日志、结构化结果和 Markdown 报告。
 - 首批 P0 插件：Data Generator 与 SQL Parser。
-- GUI 客户端、插件市场、AI 插件和远程执行不属于 V1.0；GUI 设计约束已在本仓库固化，确保后续实现不偏离 Core 契约。
+- 桌面 GUI 从插件 Schema 生成参数表单，并提供 Excel 用例识别、截图标注和 Word 证据报告的专用流程。
+- 插件市场、AI 插件和远程执行仍不属于当前交付范围。
+
+## 桌面端
+
+安装桌面与证据插件依赖并启动：
+
+```text
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[desktop]'
+.venv/bin/python -m testbox.gui
+```
+
+也可执行 `testbox gui` 或安装后使用 `testbox-gui`。截图仅保存在本地任务工作区；macOS 首次截图时需要授予屏幕录制权限。
 
 ## 统一使用方式（设计目标）
 
@@ -61,7 +74,7 @@ GitHub Release 会提供独立的 `TestBox.exe`，无需安装 Python。将它�
 .\TestBox.exe run data.mock --count 100 --format csv --seed 10001
 ```
 
-程序内置 P0 插件；通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
+发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`。程序内置插件；通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
 
 ## 任务历史与清理
 
@@ -75,5 +88,7 @@ testbox workspace clean --before 2026-01-01 --confirm
 ## Data Generator 规则
 
 `data.mock` 支持默认个人信息、客户/账户/产品/交易金融模板，以及 `rules`、规则集、SQL DDL、Excel 字段清单驱动的字段规则。字段唯一性由 `unique` 显式控制，只保证本次任务内不重复；地址可按全国、省、市筛选，手机号使用常用中国大陆号段。
+
+数据可输出 JSON、CSV、XLSX、TXT、SQL 或 ZIP 包；SQL 输出支持 MySQL、PostgreSQL、SQL Server、Oracle、SQLite 的批量 `INSERT` 与安全字面量转义。
 
 Data Generator 的大陆省市区县街道及港澳台数据引用 [modood/Administrative-divisions-of-China](https://github.com/modood/Administrative-divisions-of-China/tree/c49d495b40ac73eb1a66f6eeae5f8fd10696f035)，上游许可证为 WTFPL-2.0；固定版本、许可证和校验值保留在插件资源目录。

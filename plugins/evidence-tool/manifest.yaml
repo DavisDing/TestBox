@@ -1,0 +1,19 @@
+schema_version: 1
+name: evidence-tool
+version: 1.0.0
+description: 从 Excel 测试用例和截图生成可追溯的 Word 证据报告
+category: evidence
+core_compatibility: ">=1.0,<2.0"
+capabilities:
+  concurrency: false
+  network: false
+  filesystem: output-only
+  resources: []
+entry: src.main:Plugin
+commands:
+  - name: evidence.inspect
+    description: 识别 Excel 用例字段并列出待执行项
+    input_schema: schemas/evidence.inspect.json
+  - name: evidence.build
+    description: 将测试用例和截图生成 Word 证据包
+    input_schema: schemas/evidence.build.json

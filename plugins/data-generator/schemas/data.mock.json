@@ -3,12 +3,19 @@
   "required": ["count", "format"],
   "properties": {
     "count": {"type": "integer", "minimum": 1, "maximum": 100000},
-    "format": {"type": "string", "enum": ["json", "csv", "xlsx"]},
+    "format": {"type": "string", "enum": ["json", "csv", "xlsx", "txt", "sql", "zip"]},
     "seed": {"type": "integer"},
     "template": {"type": "string", "enum": ["retail_customer", "account", "product", "transaction"]},
     "rules": {"type": "array"},
     "rule_set": {"type": "string", "format": "file-path"},
     "source_file": {"type": "string", "format": "file-path"},
-    "source_format": {"type": "string", "enum": ["sql", "excel"]}
+    "source_format": {"type": "string", "enum": ["sql", "excel"]},
+    "txt_delimiter": {"type": "string"},
+    "txt_header": {"type": "boolean"},
+    "sql_dialect": {"type": "string", "enum": ["mysql", "postgresql", "sqlserver", "oracle", "sqlite"]},
+    "sql_table": {"type": "string"},
+    "sql_batch_size": {"type": "integer", "minimum": 1, "maximum": 1000},
+    "sql_transaction": {"type": "boolean"},
+    "zip_formats": {"type": "array"}
   }
 }

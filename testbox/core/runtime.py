@@ -13,6 +13,45 @@ from testbox.sdk import Result
 EXIT_CODES = {"success": 0, "cancelled": 130, "failed": 4}
 
 
+class PluginExecutionLock:
+    """A cross-process lock used for plugins that declare no concurrency support."""
+    def __init__(self, path: Path):
+        self.path = path
+        self.handle = None
+
+    def __del__(self):
+        self.release()
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("a+b")
+        self.handle.seek(0)
+        self.handle.write(b"0")
+        self.handle.flush()
+        if os.name == "nt":
+            import msvcrt
+            self.handle.seek(0)
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+
+    def release(self) -> None:
+        if self.handle is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self.handle.seek(0)
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+            self.handle = None
+
+
 class PluginManager:
     def __init__(self, plugins_dirs: list[Path]):
         self.plugins_dirs = plugins_dirs; self.available: dict[str, Manifest] = {}; self.unavailable: dict[str, str] = {}
@@ -101,19 +140,29 @@ class Runtime:
         staged_params = params.copy()
         records: list[dict[str, Any]] = []
         for key, definition in schema.get("properties", {}).items():
-            if definition.get("format") != "file-path" or key not in params:
+            if key not in params:
                 continue
-            source = Path(params[key]).expanduser().resolve()
-            if not source.is_file():
-                raise ValueError(f"{key} 输入文件不存在")
-            size = source.stat().st_size
-            if size > self.MAX_INPUT_BYTES:
-                raise ValueError(f"{key} 输入文件超过 {self.MAX_INPUT_BYTES // (1024 * 1024)} MB 限制")
-            digest = hashlib.sha256(source.read_bytes()).hexdigest()
-            destination = input_dir / f"{key}-{digest[:12]}{source.suffix}"
-            shutil.copy2(source, destination)
-            staged_params[key] = str(destination)
-            records.append({"parameter": key, "source_path": str(source), "staged_path": str(destination.relative_to(input_dir.parent)), "size": size, "sha256": digest})
+            is_single = definition.get("format") == "file-path"
+            is_array = definition.get("type") == "array" and definition.get("items", {}).get("format") == "file-path"
+            if not is_single and not is_array:
+                continue
+            values = [params[key]] if is_single else params[key]
+            staged_values = []
+            for index, value in enumerate(values):
+                source = Path(value).expanduser().resolve()
+                if not source.is_file():
+                    raise ValueError(f"{key} 输入文件不存在: {source}")
+                size = source.stat().st_size
+                if size > self.MAX_INPUT_BYTES:
+                    raise ValueError(f"{key} 输入文件超过 {self.MAX_INPUT_BYTES // (1024 * 1024)} MB 限制")
+                digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                marker = f"-{index + 1}" if is_array else ""
+                destination = input_dir / f"{key}{marker}-{digest[:12]}" / source.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                staged_values.append(str(destination))
+                records.append({"parameter": key, "source_path": str(source), "staged_path": str(destination.relative_to(input_dir.parent)), "size": size, "sha256": digest})
+            staged_params[key] = staged_values[0] if is_single else staged_values
         return staged_params, records
 
     def run(self, command: str, params: dict[str, Any]) -> tuple[str, Result]:
@@ -133,7 +182,15 @@ class Runtime:
             package_root = str(Path(__file__).resolve().parents[2])
             environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
             host_command = [sys.executable, "-m", "testbox.core.host"]
-        process = subprocess.Popen(host_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.root, env=environment)
+        execution_lock = None
+        if not manifest.capabilities["concurrency"]:
+            execution_lock = PluginExecutionLock(self.workspace_dir / ".locks" / f"{manifest.name}.lock")
+            execution_lock.acquire()
+        try:
+            process = subprocess.Popen(host_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.root, env=environment)
+        except Exception:
+            if execution_lock: execution_lock.release()
+            raise
         self.history.set_host_pid(task_id, process.pid)
         manifest_record = json.loads((task_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest_record["host_pid"] = process.pid
@@ -146,6 +203,7 @@ class Runtime:
             result = Result("failed", f"插件执行超过 {self.timeout_seconds:g} 秒限制", data={"error_code": "TIMEOUT", "timeout_seconds": self.timeout_seconds})
             self._write_json(task_dir / "result.json", result.to_dict()); self._write_report(task_dir, task_id, manifest, result)
             self.history.finish(task_id, status="FAILED", finished_at=datetime.now(UTC).isoformat(), error_code="TIMEOUT")
+            if execution_lock: execution_lock.release()
             return task_id, result
         try:
             event = json.loads(stdout)
@@ -170,6 +228,7 @@ class Runtime:
         self._write_json(task_dir / "result.json", result.to_dict()); self._write_report(task_dir, task_id, manifest, result)
         task_status = {"success": "SUCCEEDED", "failed": "FAILED", "cancelled": "CANCELLED"}[result.status]
         self.history.finish(task_id, status=task_status, finished_at=datetime.now(UTC).isoformat(), error_code=result.data.get("error_code"))
+        if execution_lock: execution_lock.release()
         return task_id, result
 
     def clean_workspace(self, before: date) -> int:
@@ -183,6 +242,32 @@ class Runtime:
                 import shutil
                 shutil.rmtree(task_dir); removed += 1
         return removed
+
+    def commit_output(self, task_id: str, relative_path: str, destination: Path) -> Path:
+        """Explicitly export one declared task output to a user-selected path."""
+        record = self.history.get(task_id)
+        if not record:
+            raise LookupError("未找到任务")
+        result_path = Path(record["result_path"])
+        if not result_path.is_file():
+            raise ValueError("任务结果不存在")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if result.get("status") != "success" or relative_path not in result.get("files", []):
+            raise ValueError("只能提交成功任务声明的输出文件")
+        output_root = Path(record["workspace_path"]) / "output"
+        source = (output_root / relative_path).resolve()
+        try:
+            source.relative_to(output_root.resolve())
+        except ValueError as error:
+            raise ValueError("输出路径不合法") from error
+        if not source.is_file():
+            raise ValueError("输出文件不存在")
+        destination = destination.expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.testbox-{task_id}.tmp")
+        shutil.copy2(source, temporary)
+        temporary.replace(destination)
+        return destination
 
     @staticmethod
     def _write_json(path: Path, data: dict[str, Any]) -> None:

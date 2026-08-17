@@ -24,7 +24,11 @@ def main() -> None:
     try:
         spec = importlib.util.spec_from_file_location(f"testbox_plugin_{request['task_id']}", source)
         if spec is None or spec.loader is None: raise RuntimeError("无法加载插件入口")
-        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); plugin = getattr(module, class_name)()
+        module = importlib.util.module_from_spec(spec)
+        # Dataclasses and plugins with package-local imports resolve their module
+        # metadata through sys.modules during execution.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module); plugin = getattr(module, class_name)()
         plugin.init(context); result = plugin.execute(request["command"], request["params"])
         if not isinstance(result, Result): raise RuntimeError("插件 execute 必须返回 Result")
         payload = result.to_dict()

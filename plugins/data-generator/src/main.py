@@ -176,6 +176,76 @@ def excel_rules(path: Path) -> list[dict]:
     return result
 
 
+def delimited_text(rows: list[dict[str, object]], delimiter: str, include_header: bool) -> str:
+    if len(delimiter) != 1:
+        raise PluginError("INVALID_PARAMS", "txt_delimiter 必须为单个字符")
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(rows[0]), delimiter=delimiter, lineterminator="\n")
+    if include_header:
+        writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue()
+
+
+def sql_identifier(value: str, dialect: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*", value):
+        raise PluginError("INVALID_PARAMS", "sql_table 只能包含字母、数字、下划线和点")
+    left, right = {"mysql": ("`", "`"), "postgresql": ('"', '"'), "sqlite": ('"', '"'), "sqlserver": ("[", "]"), "oracle": ('"', '"')}[dialect]
+    return ".".join(f"{left}{part}{right}" for part in value.split("."))
+
+
+def sql_literal(value: object, dialect: str) -> str:
+    if value is None: return "NULL"
+    if isinstance(value, bool): return ("1" if value else "0") if dialect in {"mysql", "sqlserver", "oracle"} else ("TRUE" if value else "FALSE")
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))): raise PluginError("INVALID_PARAMS", "SQL 不支持 NaN 或无穷数值")
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def sql_script(rows: list[dict[str, object]], params: dict) -> str:
+    dialect = params.get("sql_dialect", "mysql")
+    table = sql_identifier(params.get("sql_table", "test_data"), dialect)
+    columns = [sql_identifier(str(column), dialect) for column in rows[0]]
+    batch_size = params.get("sql_batch_size", 500)
+    values = ["(" + ", ".join(sql_literal(row.get(column), dialect) for column in rows[0]) + ")" for row in rows]
+    statements = []
+    if dialect == "oracle":
+        for offset in range(0, len(values), batch_size):
+            batch = values[offset:offset + batch_size]
+            statements.append("INSERT ALL\n" + "\n".join(f"  INTO {table} (" + ", ".join(columns) + f") VALUES {value}" for value in batch) + "\nSELECT 1 FROM DUAL;")
+    else:
+        for offset in range(0, len(values), batch_size):
+            batch = values[offset:offset + batch_size]
+            statements.append(f"INSERT INTO {table} (" + ", ".join(columns) + ") VALUES\n  " + ",\n  ".join(batch) + ";")
+    if params.get("sql_transaction", True):
+        if dialect == "sqlserver": return "BEGIN TRANSACTION;\n\n" + "\n\n".join(statements) + "\n\nCOMMIT TRANSACTION;\n"
+        return "BEGIN;\n\n" + "\n\n".join(statements) + "\n\nCOMMIT;\n"
+    return "\n\n".join(statements) + "\n"
+
+
+def render_output(rows: list[dict[str, object]], output_format: str, params: dict) -> tuple[str, bytes]:
+    if output_format == "json": return "mock-data.json", json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
+    if output_format == "csv": return "mock-data.csv", delimited_text(rows, ",", True).encode("utf-8")
+    if output_format == "xlsx": return "mock-data.xlsx", xlsx(rows)
+    if output_format == "txt": return "mock-data.txt", delimited_text(rows, params.get("txt_delimiter", "|"), params.get("txt_header", True)).encode("utf-8")
+    if output_format == "sql": return "mock-data.sql", sql_script(rows, params).encode("utf-8")
+    raise PluginError("INVALID_PARAMS", f"不支持的输出格式: {output_format}")
+
+
+def zip_output(rows: list[dict[str, object]], params: dict) -> bytes:
+    formats = params.get("zip_formats", ["json", "csv", "xlsx", "txt", "sql"])
+    if not formats or any(item not in {"json", "csv", "xlsx", "txt", "sql"} for item in formats):
+        raise PluginError("INVALID_PARAMS", "zip_formats 必须是 json、csv、xlsx、txt、sql 的非空列表")
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for output_format in formats:
+            name, content = render_output(rows, output_format, params)
+            archive.writestr(name, content)
+        archive.writestr("generation-summary.json", json.dumps({"count": len(rows), "formats": formats, "sql_dialect": params.get("sql_dialect", "mysql")}, ensure_ascii=False, indent=2))
+    return output.getvalue()
+
+
 class Plugin:
     def init(self, context):
         self.context = context
@@ -303,11 +373,16 @@ class Plugin:
                 row[name] = value
             rows.append(row)
         output_format = params["format"]
-        if output_format == "json": name = "mock-data.json"; self.context.files.write_text(name, json.dumps(rows, ensure_ascii=False, indent=2))
-        elif output_format == "csv": name = "mock-data.csv"; buffer = io.StringIO(); writer = csv.DictWriter(buffer, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows); self.context.files.write_text(name, buffer.getvalue())
-        else: name = "mock-data.xlsx"; self.context.files.write_bytes(name, xlsx(rows))
+        if output_format == "zip":
+            name = "mock-data-bundle.zip"
+            self.context.files.write_bytes(name, zip_output(rows, params))
+            output_details = {"zip_formats": params.get("zip_formats", ["json", "csv", "xlsx", "txt", "sql"])}
+        else:
+            name, content = render_output(rows, output_format, params)
+            self.context.files.write_bytes(name, content)
+            output_details = {"format": output_format}
         self.context.logger.info(f"生成 {len(rows)} 条测试数据，启用 {len(rules)} 个字段规则")
-        return Result("success", f"已生成 {len(rows)} 条模拟测试数据", {"count": len(rows), "seed": params.get("seed"), "fields": [item["name"] for item in rules], "unique_fields": sorted(unique_values), "administrative_divisions_version": self.data_metadata["administrative_divisions"]["version"]}, [name])
+        return Result("success", f"已生成 {len(rows)} 条模拟测试数据", {"count": len(rows), "seed": params.get("seed"), "fields": [item["name"] for item in rules], "unique_fields": sorted(unique_values), "administrative_divisions_version": self.data_metadata["administrative_divisions"]["version"], **output_details}, [name])
 
     def destroy(self):
         pass

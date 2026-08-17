@@ -49,6 +49,7 @@ def main() -> None:
         return
     parser = argparse.ArgumentParser(prog="testbox")
     sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("gui")
     plugin = sub.add_parser("plugin"); plugin_sub = plugin.add_subparsers(dest="plugin_action", required=True); plugin_sub.add_parser("list"); validate = plugin_sub.add_parser("validate"); validate.add_argument("path")
     install = plugin_sub.add_parser("install"); install.add_argument("path"); install.add_argument("--force", action="store_true")
     uninstall = plugin_sub.add_parser("uninstall"); uninstall.add_argument("name")
@@ -58,6 +59,11 @@ def main() -> None:
     workspace = sub.add_parser("workspace"); workspace_sub = workspace.add_subparsers(dest="workspace_action", required=True); clean = workspace_sub.add_parser("clean"); clean.add_argument("--before", required=True); clean.add_argument("--confirm", action="store_true")
     arguments, unknown = parser.parse_known_args(); runtime = Runtime()
     if unknown and arguments.action != "run": parser.error(f"无法识别的参数: {' '.join(unknown)}")
+    if arguments.action == "gui":
+        runtime.close()
+        from testbox.gui import main as gui_main
+        gui_main()
+        return
     if arguments.action == "plugin" and arguments.plugin_action == "list":
         for command, manifest in runtime.manager.available.items(): print(f"{command}\t{manifest.name}\t{manifest.version}\t可用")
         for path, reason in runtime.manager.unavailable.items(): print(f"{path}\t-\t-\t不可用: {reason}")
