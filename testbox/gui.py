@@ -8,6 +8,15 @@ from typing import Any
 from testbox.core.runtime import Runtime
 
 
+# The frozen GUI executable is also the plugin Host for GUI-initiated tasks.
+# Handle that internal mode before importing or starting Qt so it works in
+# headless child processes as well as in the desktop application.
+if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--plugin-host":
+    from testbox.core.host import main as host_main
+    host_main()
+    raise SystemExit
+
+
 def _qt():
     try:
         from PySide6 import QtCore, QtGui, QtWidgets

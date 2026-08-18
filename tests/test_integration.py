@@ -35,6 +35,16 @@ class RuntimeIntegrationTests(unittest.TestCase):
         second = PluginExecutionLock(lock_path); started = time.monotonic(); second.acquire(); elapsed = time.monotonic() - started; second.release(); process.wait(timeout=2)
         process.stdout.close()
         self.assertGreaterEqual(elapsed, 0.15)
+    def test_gui_entrypoint_can_run_plugin_host_without_desktop_dependencies(self):
+        workspace = self.temp / "gui-host-workspace"
+        for child in ("input", "output", "logs"):
+            (workspace / child).mkdir(parents=True, exist_ok=True)
+        request = {"protocol_version": 1, "task_id": "gui-host-test", "plugin_path": str(self.temp / "plugins" / "data-generator"), "entry": "src.main:Plugin", "command": "data.mock", "params": {"count": 1, "format": "json", "seed": 7}, "config": {}, "workspace": str(workspace)}
+        process = subprocess.run([sys.executable, "-m", "testbox.gui", "--plugin-host"], input=json.dumps(request), capture_output=True, text=True, timeout=10)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        event = json.loads(process.stdout)
+        self.assertEqual(event["result"]["status"], "success")
+        self.assertTrue((workspace / "output" / event["result"]["files"][0]).is_file())
     def test_mock_is_repeatable_and_traced(self):
         first_id, first = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7})
         second_id, second = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7})

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib, json, os, secrets, shutil, sqlite3, subprocess, sys
+import hashlib, json, os, secrets, shutil, sqlite3, subprocess, sys, threading, time
 from datetime import UTC, datetime, date
 from pathlib import Path
 from typing import Any
@@ -13,28 +13,56 @@ from testbox.sdk import Result
 EXIT_CODES = {"success": 0, "cancelled": 130, "failed": 4}
 
 
+_PROCESS_LOCKS_GUARD = threading.Lock()
+_PROCESS_LOCKS: dict[Path, threading.Lock] = {}
+
+
+def _process_lock(path: Path) -> threading.Lock:
+    """Return the process-local companion lock for a cross-process lock file."""
+    resolved = path.resolve()
+    with _PROCESS_LOCKS_GUARD:
+        return _PROCESS_LOCKS.setdefault(resolved, threading.Lock())
+
+
 class PluginExecutionLock:
     """A cross-process lock used for plugins that declare no concurrency support."""
     def __init__(self, path: Path):
-        self.path = path
+        self.path = path.resolve()
+        self.local_lock = _process_lock(self.path)
         self.handle = None
 
     def __del__(self):
         self.release()
 
     def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("a+b")
-        self.handle.seek(0)
-        self.handle.write(b"0")
-        self.handle.flush()
-        if os.name == "nt":
-            import msvcrt
+        self.local_lock.acquire()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.handle = self.path.open("a+b")
             self.handle.seek(0)
-            msvcrt.locking(self.handle.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+            self.handle.write(b"0")
+            self.handle.flush()
+            if os.name == "nt":
+                import msvcrt
+                self.handle.seek(0)
+                # LK_LOCK gives up after roughly ten seconds. Retry the
+                # non-blocking operation so a long-running plugin remains
+                # serialized instead of failing spuriously on Windows.
+                while True:
+                    try:
+                        msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+            else:
+                import fcntl
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            if self.handle is not None:
+                self.handle.close()
+                self.handle = None
+            self.local_lock.release()
+            raise
 
     def release(self) -> None:
         if self.handle is None:
@@ -50,6 +78,7 @@ class PluginExecutionLock:
         finally:
             self.handle.close()
             self.handle = None
+            self.local_lock.release()
 
 
 class PluginManager:
