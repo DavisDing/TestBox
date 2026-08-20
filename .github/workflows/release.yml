@@ -37,6 +37,10 @@ jobs:
             plugin-dist/*
   windows:
     runs-on: windows-latest
+    env:
+      # Keep Python subprocess pipes UTF-8 on Windows; plugin data and reports
+      # legitimately contain Chinese text.
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

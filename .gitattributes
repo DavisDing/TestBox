@@ -1,0 +1,2 @@
+# Data Generator validates these bundled resource bytes with SHA-256.
+plugins/data-generator/data/*.json -text

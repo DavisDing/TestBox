@@ -42,6 +42,9 @@ class RuntimeIntegrationTests(unittest.TestCase):
         request = {"protocol_version": 1, "task_id": "gui-host-test", "plugin_path": str(self.temp / "plugins" / "data-generator"), "entry": "src.main:Plugin", "command": "data.mock", "params": {"count": 1, "format": "json", "seed": 7}, "config": {}, "workspace": str(workspace)}
         process = subprocess.run([sys.executable, "-m", "testbox.gui", "--plugin-host"], input=json.dumps(request), capture_output=True, text=True, timeout=10)
         self.assertEqual(process.returncode, 0, process.stderr)
+        # The host protocol must remain portable when Windows uses a legacy
+        # subprocess-pipe code page; JSON escaping preserves Unicode semantics.
+        self.assertTrue(process.stdout.isascii())
         event = json.loads(process.stdout)
         self.assertEqual(event["result"]["status"], "success")
         self.assertTrue((workspace / "output" / event["result"]["files"][0]).is_file())

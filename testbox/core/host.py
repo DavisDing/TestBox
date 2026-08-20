@@ -41,7 +41,10 @@ def main() -> None:
             try: plugin.destroy()
             except Exception: logger.error("插件 destroy 失败")
     event = {"protocol_version": 1, "event": "result", "task_id": request["task_id"], "result": payload}
-    sys.stdout.write(json.dumps(event, ensure_ascii=False))
+    # The host protocol travels through subprocess pipes.  Keep it ASCII-only so
+    # Windows runners using a legacy code page can reliably decode the response;
+    # json.loads restores the original Unicode strings in the parent process.
+    sys.stdout.write(json.dumps(event, ensure_ascii=True))
 
 
 if __name__ == "__main__": main()
