@@ -34,8 +34,20 @@ def main() -> None:
         payload = result.to_dict()
     except PluginError as error:
         logger.error(str(error)); payload = Result("failed", str(error), data={"error_code": error.code, "details": error.details}).to_dict()
-    except Exception:
-        logger.error(traceback.format_exc()); payload = Result("failed", "插件执行失败", data={"error_code": "EXECUTION_FAILED"}).to_dict()
+    except Exception as error:
+        # Keep the public summary stable, but return a compact, structured
+        # diagnostic. This is essential for frozen applications, where the
+        # task workspace may be the only place a user can inspect failures.
+        logger.error(traceback.format_exc())
+        payload = Result(
+            "failed",
+            "插件执行失败",
+            data={
+                "error_code": "EXECUTION_FAILED",
+                "exception_type": type(error).__name__,
+                "exception_message": str(error),
+            },
+        ).to_dict()
     finally:
         if plugin is not None:
             try: plugin.destroy()

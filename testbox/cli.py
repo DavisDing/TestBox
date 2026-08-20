@@ -108,6 +108,12 @@ def main() -> None:
     try:
         task_id, result = runtime.run(arguments.command, parse_params(arguments.set + parse_scalar_options(unknown), arguments.params_file))
         print(f"任务 {task_id}: {result.status} — {result.message}"); print(f"工作区: {runtime.workspace_dir / task_id}")
+        if result.status == "failed":
+            diagnostic_keys = ("error_code", "exception_type", "exception_message", "host_exit_code", "host_stderr", "task_log_tail")
+            diagnostics = {key: result.data[key] for key in diagnostic_keys if key in result.data}
+            if diagnostics:
+                print("失败诊断:")
+                print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
         raise SystemExit(0 if result.status == "success" else 130 if result.status == "cancelled" else 4)
     except (ValueError, LookupError) as error: print(f"参数或命令错误: {error}"); raise SystemExit(2)
 

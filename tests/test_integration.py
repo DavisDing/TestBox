@@ -559,6 +559,25 @@ capabilities:
         self.assertEqual(self.runtime.clean_workspace(date.today() + timedelta(days=1)), 1)
     def test_sensitive_params_are_redacted(self):
         self.assertEqual(Runtime._redact_params({"api_token": "private", "count": 1}), {"api_token": "***", "count": 1})
+    def test_host_failure_includes_actionable_diagnostics(self):
+        source = self.temp / "plugins" / "data-generator" / "src" / "main.py"
+        source.write_text(
+            "from testbox.sdk import Result\n"
+            "class Plugin:\n"
+            "    def init(self, context):\n"
+            "        raise RuntimeError('intentional host failure')\n"
+            "    def execute(self, command, params):\n"
+            "        return Result('success', 'unexpected')\n",
+            encoding="utf-8",
+        )
+        _, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.data["error_code"], "EXECUTION_FAILED")
+        self.assertEqual(result.data["exception_type"], "RuntimeError")
+        self.assertIn("intentional host failure", result.data["exception_message"])
+        self.assertEqual(result.data["host_exit_code"], 0)
+        self.assertIn("RuntimeError: intentional host failure", result.data["task_log_tail"])
+
     def test_host_timeout_is_recorded(self):
         timed_runtime = Runtime(self.temp, timeout_seconds=0)
         task_id, result = timed_runtime.run("data.mock", {"count": 1, "format": "json"})

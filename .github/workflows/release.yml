@@ -58,6 +58,19 @@ jobs:
         run: |
           ./dist/TestBox.exe plugin list
           ./dist/TestBox.exe run data.mock --count 2 --format csv --seed 10001
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            $workspaceRoot = Join-Path $env:LOCALAPPDATA "TestBox\workspace"
+            $latestTask = Get-ChildItem -Path $workspaceRoot -Directory -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime | Select-Object -Last 1
+            if ($latestTask) {
+              Write-Host "--- TestBox task result: $($latestTask.FullName) ---"
+              Get-Content (Join-Path $latestTask.FullName "result.json") -Raw -ErrorAction SilentlyContinue
+              Write-Host "--- TestBox Host log ---"
+              Get-Content (Join-Path $latestTask.FullName "logs\task.log") -Raw -ErrorAction SilentlyContinue
+            }
+            exit $exitCode
+          }
       - name: Upload Windows applications
         uses: actions/upload-artifact@v4
         with:

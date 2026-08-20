@@ -225,7 +225,7 @@ class Runtime:
         manifest_record["host_pid"] = process.pid
         self._write_json(task_dir / "manifest.json", manifest_record)
         try:
-            stdout, _ = process.communicate(json.dumps(request), timeout=self.timeout_seconds)
+            stdout, stderr = process.communicate(json.dumps(request), timeout=self.timeout_seconds)
         except subprocess.TimeoutExpired:
             process.kill()
             process.communicate()
@@ -244,6 +244,17 @@ class Runtime:
         if process.returncode and payload.get("status") == "success":
             payload = {"status": "failed", "message": "插件 Host 异常退出", "data": {"error_code": "HOST_CRASHED", "exit_code": process.returncode}, "files": [], "warnings": []}
         result = Result(**payload)
+        if result.status == "failed":
+            # Surface bounded Host diagnostics in result.json and the CLI so a
+            # packaged executable failure is actionable without manually
+            # locating the ephemeral PyInstaller extraction directory.
+            diagnostics: dict[str, Any] = {"host_exit_code": process.returncode}
+            if stderr.strip():
+                diagnostics["host_stderr"] = stderr.strip()[-4_000:]
+            task_log = task_dir / "logs" / "task.log"
+            if task_log.is_file():
+                diagnostics["task_log_tail"] = task_log.read_text(encoding="utf-8", errors="replace")[-8_000:]
+            result.data = {**result.data, **diagnostics}
         output_size = 0
         for file_name in result.files:
             try: (task_dir / "output" / file_name).resolve().relative_to((task_dir / "output").resolve())
