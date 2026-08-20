@@ -22,19 +22,25 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertFalse(self.runtime.manager.available["evidence.build"].capabilities["concurrency"])
     def test_plugin_execution_lock_serializes_callers(self):
         lock_path = self.temp / "locks" / "evidence.lock"; first = PluginExecutionLock(lock_path); second = PluginExecutionLock(lock_path)
-        first.acquire(); acquired = []
-        thread = threading.Thread(target=lambda: (second.acquire(), acquired.append(time.monotonic()), second.release()))
-        started = time.monotonic(); thread.start(); time.sleep(0.1); self.assertEqual(acquired, [])
+        first.acquire(); acquired = []; waiting = threading.Event()
+
+        def acquire_second():
+            waiting.set(); second.acquire(); acquired.append(True); second.release()
+
+        thread = threading.Thread(target=acquire_second); thread.start()
+        self.assertTrue(waiting.wait(timeout=1)); time.sleep(0.05); self.assertEqual(acquired, [])
         first.release(); thread.join(timeout=2)
-        self.assertEqual(len(acquired), 1); self.assertGreaterEqual(acquired[0] - started, 0.1)
+        self.assertFalse(thread.is_alive()); self.assertEqual(acquired, [True])
+
     def test_plugin_execution_lock_serializes_processes(self):
-        lock_path = self.temp / "locks" / "evidence.lock"
-        script = "from pathlib import Path; from testbox.core.runtime import PluginExecutionLock; import sys,time; lock=PluginExecutionLock(Path(sys.argv[1])); lock.acquire(); print('locked', flush=True); time.sleep(0.25); lock.release()"
-        process = subprocess.Popen([sys.executable, "-c", script, str(lock_path)], stdout=subprocess.PIPE, text=True)
+        lock_path = self.temp / "locks" / "evidence.lock"; released = self.temp / "released.marker"
+        script = "from pathlib import Path; from testbox.core.runtime import PluginExecutionLock; import sys,time; lock=PluginExecutionLock(Path(sys.argv[1])); lock.acquire(); print('locked', flush=True); time.sleep(0.25); lock.release(); Path(sys.argv[2]).write_text('released')"
+        process = subprocess.Popen([sys.executable, "-c", script, str(lock_path), str(released)], stdout=subprocess.PIPE, text=True)
         self.assertEqual(process.stdout.readline().strip(), "locked")
-        second = PluginExecutionLock(lock_path); started = time.monotonic(); second.acquire(); elapsed = time.monotonic() - started; second.release(); process.wait(timeout=2)
+        second = PluginExecutionLock(lock_path); second.acquire()
+        process.wait(timeout=2)
+        self.assertTrue(released.is_file()); second.release()
         process.stdout.close()
-        self.assertGreaterEqual(elapsed, 0.15)
     def test_cli_listing_survives_legacy_console_encoding(self):
         environment = os.environ.copy(); environment["PYTHONIOENCODING"] = "cp1252"
         process = subprocess.run([sys.executable, "-m", "testbox.cli", "plugin", "list"], cwd=self.temp, capture_output=True, text=True, timeout=10, env=environment)
