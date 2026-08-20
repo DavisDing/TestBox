@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import csv, importlib.util, json, shutil, subprocess, sys, tempfile, threading, time, unittest
+import csv, importlib.util, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -35,6 +35,11 @@ class RuntimeIntegrationTests(unittest.TestCase):
         second = PluginExecutionLock(lock_path); started = time.monotonic(); second.acquire(); elapsed = time.monotonic() - started; second.release(); process.wait(timeout=2)
         process.stdout.close()
         self.assertGreaterEqual(elapsed, 0.15)
+    def test_cli_listing_survives_legacy_console_encoding(self):
+        environment = os.environ.copy(); environment["PYTHONIOENCODING"] = "cp1252"
+        process = subprocess.run([sys.executable, "-m", "testbox.cli", "plugin", "list"], cwd=self.temp, capture_output=True, text=True, timeout=10, env=environment)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertIn("data.mock\tdata-generator", process.stdout)
     def test_gui_entrypoint_can_run_plugin_host_without_desktop_dependencies(self):
         workspace = self.temp / "gui-host-workspace"
         for child in ("input", "output", "logs"):

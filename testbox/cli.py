@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import argparse, json
+import argparse, json, sys
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -8,6 +8,17 @@ from typing import Any
 from testbox.core.manifest import Manifest
 from testbox.core.plugin_packages import PluginPackageError, install_plugin, package_plugin, uninstall_plugin
 from testbox.core.runtime import Runtime
+
+
+def configure_console_unicode() -> None:
+    """Use UTF-8 for CLI text when a Windows console exposes a legacy code page."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError):
+            # Keep supporting embedders that replace standard streams with a
+            # file-like object without TextIOWrapper.reconfigure().
+            pass
 
 
 def parse_value(value: str) -> Any:
@@ -43,7 +54,8 @@ def parse_scalar_options(values: list[str]) -> list[str]:
 
 
 def main() -> None:
-    if len(__import__("sys").argv) == 2 and __import__("sys").argv[1] == "--plugin-host":
+    configure_console_unicode()
+    if len(sys.argv) == 2 and sys.argv[1] == "--plugin-host":
         from testbox.core.host import main as host_main
         host_main()
         return
