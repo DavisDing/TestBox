@@ -1,69 +1,43 @@
-# UI资产清单
+# UI INVENTORY
 
 
-## 状态说明
+## 页面
 
 
-confirmed:
-
-已确认UI。
-
-禁止修改。
-
-
-pending_confirmation:
-
-待确认UI。
-
-
-unknown:
-
-已有代码但未登记。
-
-
-
----
-
-
-# 页面
-
-
-## 页面名称
+|名称|路径|状态|版本|
+|-|-|-|-|
 
 
 状态：
 
+confirmed
 
-文件路径：
+pending_confirmation
 
-
-设计来源：
-
-Gemini
+unknown
 
 
-组件：
+## 组件
 
 
-保护范围：
+|组件|位置|用途|状态|
+|-|-|-|-|
 
-- 布局
+
+## Protection Rule
+
+
+confirmed:
+
+禁止修改：
+
 - DOM
 - CSS
-- 样式
+- Layout
 
 
-允许修改：
+允许：
 
-- 数据
+- 数据绑定
 - API
-- 状态
-
-
-禁止：
-
-- 重构
-- 改设计
-
-
-备注：
+- 权限

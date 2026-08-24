@@ -1,73 +1,56 @@
-# 编码规范
+# CODING STANDARD
 
 
-## 通用
+# Frontend
+
+
+## Component
+
+要求：
+
+- 单一职责
+- 可复用
+
+
+## TypeScript
+
+要求：
+
+- 禁止any
+- 类型明确
+
+
+# Backend
+
+
+## Layer
+
+
+Controller
+
+↓
+
+Service
+
+↓
+
+Repository
+
+
+# Database
 
 
 要求：
 
-- 简洁
-- 可维护
-- 可测试
+- 字段命名规范
+- 禁止危险SQL
 
 
-禁止：
-
-- 重复代码
-- 无意义封装
+# Testing
 
 
+必须：
 
-# 前端
-
-
-要求：
-
-- 组件化
-- TypeScript
-- 清晰目录
-
-
-禁止：
-
-- 页面大量堆代码
-- 随意引入依赖
-
-
-
-# 后端
-
-
-Controller：
-
-接口层
-
-
-Service：
-
-业务层
-
-
-Repository：
-
-数据层
-
-
-
-禁止：
-
-Controller包含复杂业务。
-
-
-
-# 数据库
-
-
-禁止：
-
-- 未确认修改表结构
-- 删除字段
-- 删除数据
-
-
-变更必须说明影响。
+- 单元测试
+- 接口测试
+- 回归验证
