@@ -3,7 +3,7 @@
   "required": ["input"],
   "properties": {
     "input": {"type": "string", "format": "file-path", "description": "测试用例 Excel（.xlsx/.xlsm）"},
-    "column_mapping": {"type": "object", "description": "可选的角色到表头名称映射"}
+    "column_mapping": {"type": "object", "description": "可选的角色到表头名称映射", "additionalProperties": true}
   },
   "additionalProperties": false
 }

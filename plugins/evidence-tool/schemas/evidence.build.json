@@ -6,7 +6,7 @@
     "screenshots": {"type": "array", "items": {"type": "string", "format": "file-path"}, "description": "按待执行项顺序排列的截图"},
     "row_indexes": {"type": "array", "items": {"type": "integer"}, "description": "每张截图对应的 Excel 行号"},
     "existing_reports": {"type": "array", "items": {"type": "string", "format": "file-path"}, "description": "可选的已有 Word 报告，用于继续追加"},
-    "column_mapping": {"type": "object", "description": "可选的角色到表头名称映射"},
+    "column_mapping": {"type": "object", "description": "可选的角色到表头名称映射", "additionalProperties": true},
     "status": {"type": "string", "description": "回写到测试结果列的状态"},
     "update_excel": {"type": "boolean", "default": true},
     "include_unmatched": {"type": "boolean", "default": false}

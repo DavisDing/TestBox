@@ -12,6 +12,7 @@ except ModuleNotFoundError:
 
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 COMMAND_RE = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
+ENTRY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
@@ -137,14 +138,27 @@ class Manifest:
         if not isinstance(raw["category"], str) or not raw["category"].strip(): raise ValueError("插件 category 必须为非空字符串")
         if not isinstance(raw["core_compatibility"], str) or not raw["core_compatibility"].strip(): raise ValueError("插件 core_compatibility 必须为非空字符串")
         if not _core_compatible(raw["core_compatibility"]): raise ValueError("插件与当前 Core 版本不兼容")
-        if ":" not in str(raw["entry"]): raise ValueError("entry 必须为 module:Class")
+        entry = str(raw["entry"])
+        if not ENTRY_RE.fullmatch(entry): raise ValueError("entry 必须为 module:Class")
+        module_name, _ = entry.split(":", 1)
+        entry_path = path.parent / (module_name.replace(".", "/") + ".py")
+        if not entry_path.is_file(): raise ValueError(f"插件入口不存在: {entry_path.relative_to(path.parent)}")
         if not isinstance(raw["commands"], list): raise ValueError("commands 必须为列表")
         commands = [Command(str(item.get("name", "")), str(item.get("description", "")), item.get("input_schema")) for item in raw["commands"] if isinstance(item, dict)]
         if not commands or any(not COMMAND_RE.fullmatch(command.name) for command in commands): raise ValueError("commands 必须包含小写点分命令")
+        if len({command.name for command in commands}) != len(commands): raise ValueError("commands 不能包含重复命令")
+        for command in commands:
+            if command.input_schema:
+                schema_path = path.parent / str(command.input_schema)
+                try:
+                    schema_path.relative_to(path.parent)
+                except ValueError as error:
+                    raise ValueError("input_schema 路径不能逃逸插件目录") from error
+                if not schema_path.is_file(): raise ValueError(f"命令 Schema 不存在: {command.input_schema}")
         capabilities = raw["capabilities"]
         if not isinstance(capabilities, dict): raise ValueError("capabilities 必须为对象")
         if set(capabilities) - {"concurrency", "network", "filesystem", "resources"}: raise ValueError("capabilities 包含不支持的字段")
         if not isinstance(capabilities.get("concurrency"), bool) or not isinstance(capabilities.get("network"), bool): raise ValueError("capabilities.concurrency 和 network 必须为布尔值")
         if capabilities.get("filesystem") != "output-only": raise ValueError("capabilities.filesystem 必须为 output-only")
         if not isinstance(capabilities.get("resources"), list) or not all(isinstance(item, str) for item in capabilities["resources"]): raise ValueError("capabilities.resources 必须为字符串列表")
-        return cls(path.parent, str(raw["name"]), str(raw["version"]), str(raw["description"]), str(raw["category"]), str(raw["core_compatibility"]), str(raw["entry"]), commands, capabilities)
+        return cls(path.parent, str(raw["name"]), str(raw["version"]), str(raw["description"]), str(raw["category"]), str(raw["core_compatibility"]), entry, commands, capabilities)

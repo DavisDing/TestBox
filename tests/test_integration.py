@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import csv, importlib.util, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest
+from unittest.mock import patch
 from datetime import date, timedelta
 from pathlib import Path
 
+from testbox.core.errors import ErrorCode
 from testbox.core.plugin_packages import install_plugin, package_plugin, uninstall_plugin
 from testbox.core.manifest import Manifest
+from testbox.core.plugin_registry import PluginManager
+from testbox.core.process_runner import HostExecution
 from testbox.core.runtime import PluginExecutionLock, Runtime
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,8 +45,85 @@ class RuntimeIntegrationTests(unittest.TestCase):
         process.wait(timeout=2)
         self.assertTrue(released.is_file()); second.release()
         process.stdout.close()
+    def test_concurrent_runtime_does_not_abandon_started_host(self):
+        outer = self
+
+        class InProcessRunner:
+            def run(self, request, *, task_id, on_started=None):
+                outer.assertIsNotNone(on_started)
+                on_started(os.getpid())
+                # A separate CLI/GUI Runtime can start while this task is
+                # running. Startup recovery must see the live Host PID and
+                # leave the task in RUNNING state.
+                peer = Runtime(outer.temp)
+                try:
+                    outer.assertEqual(peer.get_task(task_id)["status"], "RUNNING")
+                finally:
+                    peer.close()
+                output = Path(request["workspace"]) / "output" / "mock-data.json"
+                output.write_text("[]", encoding="utf-8")
+                return HostExecution(
+                    {"status": "success", "message": "ok", "data": {}, "files": ["mock-data.json"], "warnings": []},
+                    0,
+                    "",
+                    os.getpid(),
+                )
+
+        self.runtime.process_runner = InProcessRunner()
+        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json"})
+        self.assertEqual(result.status, "success")
+        self.assertEqual(self.runtime.get_task(task_id)["status"], "SUCCEEDED")
+
+    def test_runtime_falls_back_to_source_root_outside_checkout(self):
+        working_directory = self.temp / "empty-working-directory"
+        working_directory.mkdir()
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
+        process = subprocess.run(
+            [sys.executable, "-c", "from testbox.core.runtime import Runtime; r=Runtime(); print(sorted(r.list_commands())); r.close()"],
+            cwd=self.temp / "empty-working-directory",
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=environment,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertIn("data.mock", process.stdout)
+
+    def test_cli_json_task_commands_and_export(self):
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
+
+        def cli(*args):
+            return subprocess.run([sys.executable, "-m", "testbox.cli", *args], cwd=self.temp, capture_output=True, text=True, timeout=20, env=environment)
+
+        inspect = cli("--json", "plugin", "inspect", "data-generator")
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        self.assertEqual(json.loads(inspect.stdout)["name"], "data-generator")
+        run = cli("--json", "run", "data.mock", "--set", "count=1", "--set", "format=json", "--set", "seed=7")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        task = json.loads(run.stdout)
+        task_id = task["task_id"]
+        listed = cli("--json", "task", "list", "--command", "data.mock", "--limit", "1")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed and json.loads(listed.stdout)["tasks"][0]["id"], task_id)
+        result = cli("--json", "task", "result", task_id)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["status"], "success")
+        destination = self.temp / "exported.json"
+        exported = cli("--json", "task", "export", task_id, "mock-data.json", "--output", str(destination))
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertTrue(destination.is_file())
+
+    def test_cli_uses_stable_exit_code_and_json_error(self):
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
+        process = subprocess.run([sys.executable, "-m", "testbox.cli", "--json", "run", "unknown.command"], cwd=self.temp, capture_output=True, text=True, timeout=20, env=environment)
+        self.assertEqual(process.returncode, 2)
+        self.assertEqual(json.loads(process.stderr)["error"]["code"], "COMMAND_NOT_FOUND")
+
     def test_cli_listing_survives_legacy_console_encoding(self):
-        environment = os.environ.copy(); environment["PYTHONIOENCODING"] = "cp1252"
+        environment = os.environ.copy(); environment["PYTHONIOENCODING"] = "cp1252"; environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
         process = subprocess.run([sys.executable, "-m", "testbox.cli", "plugin", "list"], cwd=self.temp, capture_output=True, text=True, timeout=10, env=environment)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertIn("data.mock\tdata-generator", process.stdout)
@@ -441,6 +522,57 @@ class RuntimeIntegrationTests(unittest.TestCase):
         _, result = self.runtime.run("sql.parse", {"input": str(sql), "format": "json", "dialect": "hive"})
         self.assertEqual(result.data["requested_dialect"], "hive")
         self.assertEqual(result.data["dialect"], "hive")
+    def test_plugin_command_conflict_isolated_to_conflicting_plugin(self):
+        registry_root = self.temp / "conflict-plugins"
+        shutil.copytree(ROOT / "plugins" / "data-generator", registry_root / "first")
+        shutil.copytree(ROOT / "plugins" / "data-generator", registry_root / "second")
+        for directory, name in ((registry_root / "first", "first-plugin"), (registry_root / "second", "second-plugin")):
+            manifest = directory / "manifest.yaml"
+            text = manifest.read_text(encoding="utf-8").replace("name: data-generator", f"name: {name}").replace("name: data.mock", "name: conflict.run")
+            manifest.write_text(text, encoding="utf-8")
+        manager = PluginManager([registry_root])
+        manager.discover()
+        self.assertIn("conflict.run", manager.available)
+        self.assertEqual(len(manager.unavailable), 1)
+        self.assertIn("命令冲突", next(iter(manager.unavailable.values())))
+
+    def test_plugin_dependency_failure_is_structured(self):
+        plugin = self.temp / "plugins" / "missing-dependency"
+        (plugin / "src").mkdir(parents=True)
+        (plugin / "manifest.yaml").write_text("""schema_version: 1
+name: missing-dependency
+version: 1.0.0
+description: dependency failure fixture
+category: test
+core_compatibility: ">=1.0,<2.0"
+entry: src.main:Plugin
+commands:
+  - name: dependency.check
+    description: dependency check
+capabilities:
+  concurrency: true
+  network: false
+  filesystem: output-only
+  resources: []
+""", encoding="utf-8")
+        (plugin / "src" / "main.py").write_text("""from testbox.sdk import PluginError, Result
+class Plugin:
+    def init(self, context):
+        raise PluginError("DEPENDENCY_MISSING", "missing optional dependency")
+    def execute(self, command, params):
+        return Result("success", "unexpected")
+    def destroy(self):
+        pass
+""", encoding="utf-8")
+        runtime = Runtime(self.temp)
+        try:
+            _, result = runtime.run("dependency.check", {})
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.data["error_code"], ErrorCode.DEPENDENCY_MISSING)
+            self.assertEqual(runtime.history.list_tasks(command="dependency.check", limit=1)[0]["status"], "FAILED")
+        finally:
+            runtime.close()
+
     def test_manifest_requires_minimum_capabilities(self):
         plugin = self.temp / "invalid-plugin"; plugin.mkdir()
         (plugin / "manifest.yaml").write_text("""schema_version: 1
@@ -557,6 +689,13 @@ capabilities:
         self.assertIn(rows[0]["risk_level"], {"低", "中", "高"})
     def test_unknown_parameter_is_rejected(self):
         with self.assertRaises(ValueError): self.runtime.run("data.mock", {"count": 1, "format": "json", "oops": True})
+    def test_failed_file_staging_does_not_leave_orphan_workspace(self):
+        before = {path.name for path in (self.temp / "workspace").iterdir() if path.is_dir()}
+        with self.assertRaises(ValueError):
+            self.runtime.run("sql.parse", {"input": str(self.temp / "missing.sql"), "format": "json"})
+        after = {path.name for path in (self.temp / "workspace").iterdir() if path.is_dir()}
+        self.assertEqual(after, before)
+
     def test_task_history_and_workspace_clean(self):
         task_id, _ = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
         record = self.runtime.history.get(task_id)
@@ -565,6 +704,29 @@ capabilities:
         self.assertEqual(self.runtime.clean_workspace(date.today() + timedelta(days=1)), 1)
     def test_sensitive_params_are_redacted(self):
         self.assertEqual(Runtime._redact_params({"api_token": "private", "count": 1}), {"api_token": "***", "count": 1})
+
+    def test_sensitive_params_are_redacted_recursively(self):
+        value = {"config": {"password": "private"}, "rules": [{"api_key": "secret"}], "count": 1}
+        self.assertEqual(Runtime._redact_params(value), {"config": {"password": "***"}, "rules": [{"api_key": "***"}], "count": 1})
+
+    def test_runtime_application_api_exposes_commands_tasks_and_results(self):
+        self.assertIn("data.mock", self.runtime.list_commands())
+        schema = self.runtime.get_command_schema("data.mock")
+        self.assertEqual(schema["type"], "object")
+        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+        self.assertEqual(self.runtime.get_task(task_id)["status"], "SUCCEEDED")
+        self.assertEqual(self.runtime.get_task_result(task_id)["status"], "success")
+        self.assertEqual(self.runtime.list_tasks(command="data.mock", limit=1)[0]["id"], task_id)
+    def test_lock_failure_is_recorded_as_failed_task(self):
+        manifest = self.runtime.manager.available["data.mock"]
+        manifest.capabilities["concurrency"] = False
+        with patch.object(PluginExecutionLock, "acquire", side_effect=OSError("lock unavailable")):
+            task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.data["error_code"], ErrorCode.CORE_EXECUTION_FAILED)
+        self.assertEqual(self.runtime.history.get(task_id)["status"], "FAILED")
+        self.assertTrue((self.temp / "workspace" / task_id / "result.json").is_file())
+
     def test_host_failure_includes_actionable_diagnostics(self):
         source = self.temp / "plugins" / "data-generator" / "src" / "main.py"
         source.write_text(

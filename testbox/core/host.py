@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util, json, sys, traceback
 from pathlib import Path
 
+from testbox.core.errors import ErrorCode
 from testbox.sdk import Context, PluginError, Result, SafeFiles, Task, Workspace
 
 
