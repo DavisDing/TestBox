@@ -3,13 +3,13 @@
 `sql.parse` 使用不会执行 SQL 的文本扫描器解析常见 `CREATE TABLE` 语句，提取表、字段、完整类型、长度/精度/小数位、可空性、默认值、主键、唯一、外键、自增、注释、分区表达式和解析警告。
 
 ```text
-# JSON，生成 fields.json
+# 输出文件名使用本次任务 ID，例如 <task-id>.json
 testbox run sql.parse --input ./schema.sql --format json
 
-# CSV，生成 fields.csv
+# CSV 输出为 <task-id>.csv
 testbox run sql.parse --input ./schema.sql --format csv
 
-# Excel，生成 fields.xlsx
+# Excel 输出为 <task-id>.xlsx
 testbox run sql.parse --input ./schema.sql --format xlsx
 ```
 

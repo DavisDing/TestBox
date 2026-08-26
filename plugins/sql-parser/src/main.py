@@ -325,7 +325,7 @@ class Plugin:
         if not params.get("include_constraints", True):
             constraint_fields = {"primary_key", "unique", "foreign_table", "foreign_field"}
             rows = [{key: value for key, value in row.items() if key not in constraint_fields} for row in rows]
-        name = {"json": "fields.json", "csv": "fields.csv", "xlsx": "fields.xlsx"}[params["format"]]
+        name = f"{self.context.task.id}.{params['format']}"
         if params["format"] == "json": self.context.files.write_text(name, json.dumps(rows, ensure_ascii=False, indent=2))
         elif params["format"] == "csv":
             buffer = io.StringIO(); writer = csv.DictWriter(buffer, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows); self.context.files.write_text(name, buffer.getvalue())

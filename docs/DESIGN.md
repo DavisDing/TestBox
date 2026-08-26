@@ -215,15 +215,16 @@ plugin-name/
 └── tests/                    # 插件测试（目标）
 ```
 
-插件之间不能直接依赖。Core/SDK 提供公共能力；插件只负责自己的输入转换、业务逻辑和输出文件生成。
+插件之间不能直接依赖。Core/SDK 提供公共能力；插件只负责自己的输入转换、业务逻辑和输出文件生成。下游插件通过用户选择的上游任务 output 文件消费产物，不导入上游插件代码。
 
 ### 6.2 当前插件
 
 | 插件 | 命令 | 当前状态 |
 | --- | --- | --- |
-| data-generator | `data.mock` | `CURRENT`；有规则 Schema、固定行政区划数据和多种输出 |
-| sql-parser | `sql.parse` | `CURRENT`；覆盖多种 DDL 解析场景并支持警告/严格模式 |
-| evidence-tool | `evidence.inspect`, `evidence.build` | `CURRENT/PARTIAL`；依赖可选包，部分集成测试在当前环境跳过 |
+| data-generator | `data.mock` | `CURRENT`；有规则 Schema、固定行政区划数据和多种输出，输出文件名使用任务 ID |
+| sql-parser | `sql.parse` | `CURRENT`；覆盖多种 DDL 解析场景并支持警告/严格模式，输出文件名使用任务 ID |
+| sql-select | `sql.select` | `CURRENT`；消费 SQL Parser 的 JSON/CSV/XLSX 字段清单并生成 SELECT 文本 |
+| evidence-tool | `evidence.build` | `CURRENT/PARTIAL`；单次任务内完成 Excel 识别、截图关联、Word/Excel 输出；依赖可选包，部分集成测试在当前环境跳过 |
 
 ### 6.3 插件能力与安全边界
 

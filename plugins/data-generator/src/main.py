@@ -109,33 +109,100 @@ def default_rules() -> list[dict]:
     ]
 
 
-def infer_rule(name: str, data_type: str, comment: str = "") -> dict:
+def _type_info(data_type: str) -> tuple[str, int | None, int | None, int | None]:
+    """Return normalized SQL type, length, precision and scale."""
+    normalized = re.sub(r"\s+", " ", str(data_type or "VARCHAR").strip()).upper()
+    base_match = re.match(r"([A-Z][A-Z0-9_]*)", normalized)
+    base = base_match.group(1) if base_match else "VARCHAR"
+    numbers = [int(item) for item in re.findall(r"\d+", normalized)]
+    if base in {"DECIMAL", "NUMERIC", "NUMBER"}:
+        return base, numbers[0] if numbers else None, numbers[0] if numbers else None, numbers[1] if len(numbers) > 1 else 2
+    return base, numbers[0] if numbers else None, None, None
+
+
+def _field_rule(name: str, data_type: str = "VARCHAR", comment: str = "", **metadata) -> dict:
+    base, length, precision, scale = _type_info(data_type)
     probe = f"{name} {comment}".lower()
-    if any(item in probe for item in ("mobile", "phone", "手机号", "电话")): return rule(name, "mobile_cn")
-    if any(item in probe for item in ("address", "地址")): return rule(name, "china_address")
-    if any(item in probe for item in ("name", "姓名")): return rule(name, "name_cn")
-    if any(item in probe for item in ("customer", "客户")) and "id" in probe: return rule(name, "sequence", unique=True, options={"prefix": "TEST-CUST-", "width": 8})
-    if any(item in probe for item in ("account", "账户", "账号")): return rule(name, "sequence", unique=True, options={"prefix": "TEST-ACCT-", "width": 12})
-    if any(item in probe for item in ("transaction", "trade", "流水", "交易")): return rule(name, "transaction_id", unique=True)
-    if any(item in probe for item in ("risk", "风险")): return rule(name, "weighted_enum", options={"values": ["低", "中", "高"]})
-    if any(item in probe for item in ("type", "类型", "status", "状态")): return rule(name, "weighted_enum", options={"values": ["默认值"]})
-    if any(item in probe for item in ("amount", "balance", "金额", "余额")) or data_type.upper().startswith(("DECIMAL", "NUMERIC")): return rule(name, "decimal_random", options={"min": 0, "max": 100000, "scale": 2})
-    if data_type.upper().startswith(("DATE", "DATETIME", "TIMESTAMP")): return rule(name, "datetime_random", options={"start": "2020-01-01T00:00:00", "end": "2026-12-31T23:59:59"})
-    if name.lower() == "id" or name.lower().endswith("_id"): return rule(name, "sequence", unique=True, options={"prefix": "TEST-", "width": 8})
-    return rule(name, "template", options={"value": f"TEST-{name}-{{index}}"})
+    options: dict[str, object] = {}
+    generator = "string_random"
+    unique = bool(metadata.get("unique", False))
+
+    if any(item in probe for item in ("mobile", "phone", "手机号", "电话")):
+        generator = "mobile_cn"
+    elif any(item in probe for item in ("email", "邮箱", "邮件")):
+        generator = "email"
+    elif any(item in probe for item in ("address", "地址")):
+        generator = "china_address"
+    elif any(item in probe for item in ("name", "姓名")):
+        generator = "name_cn"
+    elif any(item in probe for item in ("customer", "客户")) and "id" in probe:
+        generator, unique, options = "sequence", True, {"prefix": "TEST-CUST-", "width": 8}
+    elif any(item in probe for item in ("account", "账户", "账号")) and "id" in probe:
+        generator, unique, options = "sequence", True, {"prefix": "TEST-ACCT-", "width": 12}
+    elif any(item in probe for item in ("transaction", "trade", "流水", "交易")) and "id" in probe:
+        generator, unique = "transaction_id", True
+    elif any(item in probe for item in ("risk", "风险")):
+        generator, options = "weighted_enum", {"values": ["低", "中", "高"]}
+    elif any(item in probe for item in ("type", "类型", "status", "状态")):
+        generator, options = "weighted_enum", {"values": ["默认值"]}
+    elif base in {"BOOL", "BOOLEAN", "BIT"}:
+        generator = "boolean_random"
+    elif base in {"TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT", "SERIAL", "BIGSERIAL"}:
+        generator = "integer_random"
+    elif base in {"DECIMAL", "NUMERIC", "NUMBER", "REAL", "FLOAT", "DOUBLE", "MONEY"} or any(item in probe for item in ("amount", "balance", "金额", "余额")):
+        generator = "decimal_random"
+    elif base in {"DATE"}:
+        generator = "date_random"
+    elif base in {"DATETIME", "TIMESTAMP", "TIMESTAMPTZ", "TIME"}:
+        generator = "datetime_random"
+    elif base in {"UUID"} or name.lower() == "uuid":
+        generator = "uuid"
+    elif name.lower() == "id" or name.lower().endswith("_id"):
+        generator, unique, options = "sequence", True, {"prefix": "TEST-", "width": 8}
+
+    if length is not None and generator in {"string_random", "email", "name_cn", "template"}:
+        options["length"] = length
+    if precision is not None and generator == "decimal_random":
+        options["scale"] = scale if scale is not None else 2
+        options["max"] = float(10 ** max(1, min(12, precision - (scale or 0))) - 1)
+    if metadata.get("auto_increment"):
+        generator, unique, options = "sequence", True, {"start": 1, "width": max(1, length or 0)}
+    if metadata.get("primary_key") or metadata.get("unique"):
+        unique = True
+
+    item = rule(name, generator, unique=unique, options=options)
+    item["type"] = data_type
+    if comment:
+        item["comment"] = comment
+    if metadata.get("primary_key"):
+        item["primary_key"] = True
+    if metadata.get("auto_increment"):
+        item["auto_increment"] = True
+    return item
+
+
+def infer_rule(name: str, data_type: str, comment: str = "", **metadata) -> dict:
+    return _field_rule(name, data_type, comment, **metadata)
 
 
 def sql_rules(path: Path) -> list[dict]:
-    body = first_create_table_body(path.read_text(encoding="utf-8"))
+    content = path.read_text(encoding="utf-8")
+    body = first_create_table_body(content)
     if body is None:
         raise PluginError("INPUT_INVALID", "未找到支持的 CREATE TABLE 语句")
     rules = []
-    for definition in split_fields(body):
+    definitions = split_fields(body)
+    table_constraints = " ".join(item for item in definitions if re.match(r"^\s*(PRIMARY|UNIQUE|CONSTRAINT|INDEX|KEY)\b", item, re.I))
+    for definition in definitions:
         match = FIELD_RE.match(definition)
         if not match or match.group(1).upper() in {"PRIMARY", "KEY", "UNIQUE", "CONSTRAINT", "INDEX"}:
             continue
-        comment = re.search(r"COMMENT\s+['\"]([^'\"]+)", match.group(3), re.I)
-        rules.append(infer_rule(match.group(1), match.group(2), comment.group(1) if comment else ""))
+        name, data_type, tail = match.group(1), match.group(2), match.group(3)
+        comment_match = re.search(r"COMMENT\s+['\"]([^'\"]+)", tail, re.I)
+        primary = bool(re.search(r"\bPRIMARY\s+KEY\b", tail, re.I)) or bool(re.search(rf"PRIMARY\s+KEY\s*\([^)]*\b{re.escape(name)}\b", table_constraints, re.I))
+        unique = bool(re.search(r"\bUNIQUE\b", tail, re.I)) or bool(re.search(rf"\bUNIQUE(?:\s+KEY)?\s*\([^)]*\b{re.escape(name)}\b", table_constraints, re.I))
+        auto_increment = bool(re.search(r"\b(AUTO_INCREMENT|IDENTITY|SERIAL|BIGSERIAL)\b", f"{data_type} {tail}", re.I))
+        rules.append(infer_rule(name, data_type, comment_match.group(1) if comment_match else "", primary_key=primary, unique=unique, auto_increment=auto_increment))
     if not rules:
         raise PluginError("INPUT_INVALID", "DDL 中未解析到字段")
     return rules
@@ -162,19 +229,41 @@ def excel_rules(path: Path) -> list[dict]:
     if len(rows) < 2:
         raise PluginError("INPUT_INVALID", "Excel 字段清单至少需要表头和一行字段")
     headers = [item.strip().lower() for item in rows[0]]
-    aliases = {"field": {"field", "name", "字段", "字段名"}, "type": {"type", "类型", "字段类型"}, "comment": {"comment", "注释", "说明"}}
+    aliases = {
+        "field": {"field", "name", "字段", "字段名"},
+        "type": {"type", "类型", "字段类型", "数据类型"},
+        "comment": {"comment", "注释", "说明", "备注"},
+        "generator": {"generator", "生成器", "规则"},
+        "options": {"options", "选项", "参数"},
+        "unique": {"unique", "唯一"},
+        "nullable_rate": {"nullable_rate", "可空比例", "空值比例"},
+    }
     positions = {key: next((index for index, header in enumerate(headers) if header in names), None) for key, names in aliases.items()}
     if positions["field"] is None:
         raise PluginError("INPUT_INVALID", "Excel 字段清单缺少字段名列")
     result = []
     for row in rows[1:]:
-        name = row[positions["field"]] if positions["field"] < len(row) else ""
-        if name:
-            data_type = row[positions["type"]] if positions["type"] is not None and positions["type"] < len(row) else "VARCHAR"
-            comment = row[positions["comment"]] if positions["comment"] is not None and positions["comment"] < len(row) else ""
-            result.append(infer_rule(name, data_type, comment))
+        get = lambda key, default="": row[positions[key]] if positions[key] is not None and positions[key] < len(row) else default
+        name = get("field").strip()
+        if not name:
+            continue
+        item = infer_rule(name, get("type", "VARCHAR") or "VARCHAR", get("comment").strip(), unique=str(get("unique")).lower() in {"true", "1", "yes", "是"})
+        if get("generator").strip():
+            item["generator"] = get("generator").strip()
+        if get("options").strip():
+            try:
+                item["options"] = json.loads(get("options"))
+            except json.JSONDecodeError as error:
+                raise PluginError("INPUT_INVALID", f"字段 {name} 的 options 必须是 JSON 对象") from error
+        if get("nullable_rate").strip():
+            try:
+                item["nullable_rate"] = float(get("nullable_rate"))
+            except ValueError as error:
+                raise PluginError("INPUT_INVALID", f"字段 {name} 的 nullable_rate 无效") from error
+        result.append(item)
+    if not result:
+        raise PluginError("INPUT_INVALID", "Excel 字段清单未解析到字段")
     return result
-
 
 def delimited_text(rows: list[dict[str, object]], delimiter: str, include_header: bool) -> str:
     if len(delimiter) != 1:
@@ -224,23 +313,24 @@ def sql_script(rows: list[dict[str, object]], params: dict) -> str:
     return "\n\n".join(statements) + "\n"
 
 
-def render_output(rows: list[dict[str, object]], output_format: str, params: dict) -> tuple[str, bytes]:
-    if output_format == "json": return "mock-data.json", json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
-    if output_format == "csv": return "mock-data.csv", delimited_text(rows, ",", True).encode("utf-8")
-    if output_format == "xlsx": return "mock-data.xlsx", xlsx(rows)
-    if output_format == "txt": return "mock-data.txt", delimited_text(rows, params.get("txt_delimiter", "|"), params.get("txt_header", True)).encode("utf-8")
-    if output_format == "sql": return "mock-data.sql", sql_script(rows, params).encode("utf-8")
+def render_output(rows: list[dict[str, object]], output_format: str, params: dict, task_id: str) -> tuple[str, bytes]:
+    name = f"{task_id}.{output_format}"
+    if output_format == "json": return name, json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
+    if output_format == "csv": return name, delimited_text(rows, ",", True).encode("utf-8")
+    if output_format == "xlsx": return name, xlsx(rows)
+    if output_format == "txt": return name, delimited_text(rows, params.get("txt_delimiter", "|"), params.get("txt_header", True)).encode("utf-8")
+    if output_format == "sql": return name, sql_script(rows, params).encode("utf-8")
     raise PluginError("INVALID_PARAMS", f"不支持的输出格式: {output_format}")
 
 
-def zip_output(rows: list[dict[str, object]], params: dict) -> bytes:
+def zip_output(rows: list[dict[str, object]], params: dict, task_id: str) -> bytes:
     formats = params.get("zip_formats", ["json", "csv", "xlsx", "txt", "sql"])
     if not formats or any(item not in {"json", "csv", "xlsx", "txt", "sql"} for item in formats):
         raise PluginError("INVALID_PARAMS", "zip_formats 必须是 json、csv、xlsx、txt、sql 的非空列表")
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for output_format in formats:
-            name, content = render_output(rows, output_format, params)
+            name, content = render_output(rows, output_format, params, task_id)
             archive.writestr(name, content)
         archive.writestr("generation-summary.json", json.dumps({"count": len(rows), "formats": formats, "sql_dialect": params.get("sql_dialect", "mysql")}, ensure_ascii=False, indent=2))
     return output.getvalue()
@@ -262,17 +352,69 @@ class Plugin:
             raise PluginError("EXECUTION_FAILED", f"内置行政区划资源校验失败: {file_name}")
         return json.loads(content)
 
+    def _normalize_rule(self, item: dict) -> dict:
+        if not isinstance(item, dict):
+            raise PluginError("INVALID_PARAMS", "字段定义必须是对象")
+        name = str(item.get("name", item.get("field", ""))).strip()
+        if not name:
+            raise PluginError("INVALID_PARAMS", "字段定义必须包含 name")
+        result = dict(item)
+        result["name"] = name
+        result["options"] = dict(item.get("options") or {})
+        data_type = item.get("type") or item.get("data_type") or "VARCHAR"
+        result["type"] = str(data_type)
+        if not item.get("generator"):
+            result["generator"] = infer_rule(name, result["type"], str(item.get("comment", ""))).get("generator")
+        if result["generator"] == "phone_cn":
+            result["generator"] = "mobile_cn"
+        # A field type is also a useful contract when the user does not want to
+        # understand generator names. Keep explicit generator/options authoritative.
+        base, length, precision, scale = _type_info(result["type"])
+        options = result["options"]
+        if length is not None and "length" not in options and result["generator"] in {"string_random", "email", "name_cn", "template"}:
+            options["length"] = length
+        if result["generator"] == "decimal_random" and scale is not None and "scale" not in options:
+            options["scale"] = scale
+        if result["generator"] == "integer_random" and "min" not in options and "max" not in options:
+            limits = {"TINYINT": (-128, 127), "SMALLINT": (-32768, 32767), "INT": (-2147483648, 2147483647), "INTEGER": (-2147483648, 2147483647), "BIGINT": (-9223372036854775808, 9223372036854775807)}
+            if base in limits:
+                options.update({"min": limits[base][0], "max": limits[base][1]})
+        result["options"] = options
+        return result
+
     def _rules(self, params: dict) -> list[dict]:
-        if params.get("rules"):
-            return params["rules"]
+        self._source_table = params.get("table") or params.get("sql_table")
+        raw = params.get("fields") or params.get("rules")
+        if raw:
+            if params.get("fields") and params.get("rules"):
+                raise PluginError("INVALID_PARAMS", "fields 与 rules 只能填写一个")
+            return [self._normalize_rule(item) for item in raw]
         if params.get("rule_set"):
-            loaded = json.loads(Path(params["rule_set"]).read_text(encoding="utf-8"))
-            return loaded["fields"] if isinstance(loaded, dict) else loaded
+            try:
+                loaded = json.loads(Path(params["rule_set"]).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise PluginError("INPUT_INVALID", "无法读取规则集 JSON") from error
+            if isinstance(loaded, dict):
+                self._source_table = loaded.get("table") or loaded.get("table_name")
+                raw = loaded.get("fields") or loaded.get("rules")
+            else:
+                raw = loaded
+            if not isinstance(raw, list):
+                raise PluginError("INPUT_INVALID", "规则集必须是字段数组，或包含 fields 的对象")
+            return [self._normalize_rule(item) for item in raw]
         if params.get("source_file"):
-            if params.get("source_format") == "sql": return sql_rules(Path(params["source_file"]))
-            if params.get("source_format") == "excel": return excel_rules(Path(params["source_file"]))
-            raise PluginError("INVALID_PARAMS", "source_file 需要 source_format")
-        return template_rules(params["template"]) if params.get("template") else default_rules()
+            source = Path(params["source_file"])
+            if params.get("source_format") == "sql":
+                match = CREATE_START_RE.search(source.read_text(encoding="utf-8"))
+                self._source_table = match.group(1) if match else None
+                raw = sql_rules(source)
+            elif params.get("source_format") == "excel":
+                raw = excel_rules(source)
+            else:
+                raise PluginError("INVALID_PARAMS", "source_file 需要 source_format=sql 或 excel")
+            return [self._normalize_rule(item) for item in raw]
+        raw = template_rules(params["template"]) if params.get("template") else default_rules()
+        return [self._normalize_rule(item) for item in raw]
 
     def _address(self, options: dict, rng: random.Random) -> str:
         provinces = set(options.get("province", []))
@@ -311,43 +453,100 @@ class Plugin:
         if generator == "name_cn":
             lengths = options.get("given_name_length", [1, 2])
             return len(SURNAMES) * sum(len(GIVEN) ** int(length) for length in lengths)
-        if generator == "weighted_enum":
-            values = options.get("values", [])
+        if generator in {"weighted_enum", "constant"}:
+            values = options.get("values", []) if generator == "weighted_enum" else [options.get("value")]
             return len({entry.get("value") if isinstance(entry, dict) else entry for entry in values})
+        if generator == "string_random" and options.get("length"):
+            alphabet = str(options.get("alphabet", "abcdefghijklmnopqrstuvwxyz0123456789"))
+            return len(alphabet) ** int(options["length"])
         if generator == "template" and "{index}" not in str(options.get("value", "")):
             return 1
         return None
 
     def _value(self, item: dict, index: int, rng: random.Random) -> object:
         generator, options = item.get("generator"), item.get("options", {})
-        if generator == "sequence": return f"{options.get('prefix', '')}{int(options.get('start', 1)) + index:0{int(options.get('width', 0))}d}"
-        if generator == "name_cn": return rng.choice(SURNAMES) + "".join(rng.choice(GIVEN) for _ in range(rng.choice(options.get("given_name_length", [1, 2]))))
+        if generator == "sequence":
+            return f"{options.get('prefix', '')}{int(options.get('start', 1)) + index:0{int(options.get('width', 0))}d}"
+        if generator == "name_cn":
+            return rng.choice(SURNAMES) + "".join(rng.choice(GIVEN) for _ in range(rng.choice(options.get("given_name_length", [1, 2]))))
         if generator == "mobile_cn":
             configured = options.get("prefixes") or self.context.config.get("phone_prefixes") or MOBILE_PREFIXES
             prefixes = tuple(item.strip() for item in configured.split(",")) if isinstance(configured, str) else tuple(map(str, configured))
+            if not prefixes or any(not re.fullmatch(r"\d{3}", prefix) for prefix in prefixes):
+                raise PluginError("INVALID_PARAMS", f"字段 {item.get('name')} 的手机号前缀必须是 3 位数字")
             return rng.choice(prefixes) + f"{rng.randrange(100000000):08d}"
-        if generator == "china_address": return self._address(options, rng)
+        if generator == "email":
+            length = int(options.get("length", 0) or 0)
+            value = f"test{index + 1}@example.test"
+            if length and len(value) > length:
+                local_length = max(1, length - len("@example.test"))
+                value = ("u" * local_length)[:local_length] + "@example.test"
+                if len(value) > length:
+                    value = value[:length]
+            return value
+        if generator == "china_address":
+            return self._address(options, rng)
         if generator in {"date_random", "datetime_random"}:
-            start = datetime.fromisoformat(options.get("start", "2020-01-01T00:00:00")); end = datetime.fromisoformat(options.get("end", "2026-12-31T23:59:59"))
+            start_text = options.get("start", "2020-01-01T00:00:00")
+            end_text = options.get("end", "2026-12-31T23:59:59")
+            start = datetime.fromisoformat(str(start_text))
+            end = datetime.fromisoformat(str(end_text))
+            if end < start:
+                raise PluginError("INVALID_PARAMS", f"字段 {item.get('name')} 的时间范围无效")
             value = start + timedelta(seconds=rng.randrange(int((end - start).total_seconds()) + 1))
             return value.date().isoformat() if generator == "date_random" else value.isoformat(sep=" ")
-        if generator == "decimal_random": return round(rng.uniform(float(options.get("min", 0)), float(options.get("max", 1))), int(options.get("scale", 2)))
+        if generator == "decimal_random":
+            low, high = float(options.get("min", 0)), float(options.get("max", 1))
+            if high < low:
+                raise PluginError("INVALID_PARAMS", f"字段 {item.get('name')} 的数值范围无效")
+            return round(rng.uniform(low, high), int(options.get("scale", 2)))
+        if generator == "integer_random":
+            low, high = int(options.get("min", 0)), int(options.get("max", 1000000))
+            if high < low:
+                raise PluginError("INVALID_PARAMS", f"字段 {item.get('name')} 的整数范围无效")
+            return rng.randint(low, high)
+        if generator == "boolean_random":
+            return bool(rng.randrange(2))
+        if generator == "string_random":
+            length = options.get("length")
+            if length is None:
+                length = rng.randint(int(options.get("min_length", 8)), int(options.get("max_length", 16)))
+            length = int(length)
+            if length < 0:
+                raise PluginError("INVALID_PARAMS", f"字段 {item.get('name')} 的 length 不能小于 0")
+            alphabet = str(options.get("alphabet", "abcdefghijklmnopqrstuvwxyz0123456789"))
+            if not alphabet:
+                raise PluginError("INVALID_PARAMS", f"字段 {item.get('name')} 的 alphabet 不能为空")
+            return "".join(rng.choice(alphabet) for _ in range(length))
+        if generator == "constant":
+            return options.get("value")
         if generator == "weighted_enum":
             values = options.get("values", [])
-            if not values: raise PluginError("INVALID_PARAMS", f"{item.get('name')} 的枚举值不能为空")
-            values, weights = zip(*[(entry.get("value"), entry.get("weight", 1)) if isinstance(entry, dict) else (entry, 1) for entry in values])
-            return rng.choices(values, weights=weights, k=1)[0]
-        if generator == "transaction_id": return f"TEST-TXN-{date.today():%Y%m%d}-{index + 1:08d}"
-        if generator == "uuid": return f"TEST-{uuid.UUID(int=rng.getrandbits(128))}"
-        if generator == "template": return str(options.get("value", "TEST-{index}")).format(index=index + 1)
+            if not values:
+                raise PluginError("INVALID_PARAMS", f"{item.get('name')} 的枚举值不能为空")
+            pairs = [(entry.get("value"), entry.get("weight", 1)) if isinstance(entry, dict) else (entry, 1) for entry in values]
+            try:
+                return rng.choices([pair[0] for pair in pairs], weights=[float(pair[1]) for pair in pairs], k=1)[0]
+            except (TypeError, ValueError) as error:
+                raise PluginError("INVALID_PARAMS", f"{item.get('name')} 的枚举权重无效") from error
+        if generator == "transaction_id":
+            return f"TEST-TXN-{index + 1:08d}"
+        if generator == "uuid":
+            return f"TEST-{uuid.UUID(int=rng.getrandbits(128))}"
+        if generator == "template":
+            return str(options.get("value", "TEST-{index}")).format(index=index + 1)
         raise PluginError("INVALID_PARAMS", f"不支持的生成器: {generator}")
 
     def execute(self, command, params):
-        if command != "data.mock": raise PluginError("INVALID_PARAMS", "不支持的命令")
-        raw_rules = self._rules(params)
-        if any(not isinstance(item, dict) or not item.get("name") for item in raw_rules): raise PluginError("INVALID_PARAMS", "字段规则必须包含 name")
-        rules = [item for item in raw_rules if item.get("enabled", True)]
-        if not rules: raise PluginError("INVALID_PARAMS", "至少需要一个启用字段")
+        if command != "data.mock":
+            raise PluginError("INVALID_PARAMS", "不支持的命令")
+        rules = self._rules(params)
+        rules = [item for item in rules if item.get("enabled", True)]
+        if not rules:
+            raise PluginError("INVALID_PARAMS", "至少需要一个启用字段")
+        names = [item["name"] for item in rules]
+        if len(names) != len(set(names)):
+            raise PluginError("INVALID_PARAMS", "字段名不能重复")
         for item in rules:
             if item.get("unique"):
                 capacity = self._unique_capacity(item)
@@ -355,10 +554,13 @@ class Plugin:
                     raise PluginError("INVALID_PARAMS", f"字段 {item['name']} 的唯一值容量为 {capacity}，不足以生成 {params['count']} 条")
         rng, unique_values, rows = random.Random(params.get("seed")), {}, []
         for index in range(params["count"]):
-            row = {"record_id": f"TEST-{index + 1:06d}"}
+            row = {}
             for item in rules:
                 name, attempts = item["name"], 0
-                nullable_rate = float(item.get("nullable_rate", 0))
+                try:
+                    nullable_rate = float(item.get("nullable_rate", 0))
+                except (TypeError, ValueError) as error:
+                    raise PluginError("INVALID_PARAMS", f"字段 {name} 的 nullable_rate 无效") from error
                 if not 0 <= nullable_rate <= 1:
                     raise PluginError("INVALID_PARAMS", f"字段 {name} 的 nullable_rate 必须在 0 到 1 之间")
                 if rng.random() < nullable_rate:
@@ -366,23 +568,29 @@ class Plugin:
                     continue
                 while True:
                     value = self._value(item, index, rng)
-                    if not item.get("unique") or value not in unique_values.setdefault(name, set()): break
+                    if not item.get("unique") or value not in unique_values.setdefault(name, set()):
+                        break
                     attempts += 1
-                    if attempts >= 1000: raise PluginError("INVALID_PARAMS", f"字段 {name} 的唯一值容量不足")
-                if item.get("unique"): unique_values[name].add(value)
+                    if attempts >= 1000:
+                        raise PluginError("INVALID_PARAMS", f"字段 {name} 的唯一值容量不足")
+                if item.get("unique"):
+                    unique_values[name].add(value)
                 row[name] = value
             rows.append(row)
         output_format = params["format"]
+        output_params = dict(params)
+        if not output_params.get("sql_table") and self._source_table:
+            output_params["sql_table"] = self._source_table
         if output_format == "zip":
-            name = "mock-data-bundle.zip"
-            self.context.files.write_bytes(name, zip_output(rows, params))
-            output_details = {"zip_formats": params.get("zip_formats", ["json", "csv", "xlsx", "txt", "sql"])}
+            name = f"{self.context.task.id}.zip"
+            self.context.files.write_bytes(name, zip_output(rows, output_params, self.context.task.id))
+            output_details = {"zip_formats": output_params.get("zip_formats", ["json", "csv", "xlsx", "txt", "sql"])}
         else:
-            name, content = render_output(rows, output_format, params)
+            name, content = render_output(rows, output_format, output_params, self.context.task.id)
             self.context.files.write_bytes(name, content)
             output_details = {"format": output_format}
         self.context.logger.info(f"生成 {len(rows)} 条测试数据，启用 {len(rules)} 个字段规则")
-        return Result("success", f"已生成 {len(rows)} 条模拟测试数据", {"count": len(rows), "seed": params.get("seed"), "fields": [item["name"] for item in rules], "unique_fields": sorted(unique_values), "administrative_divisions_version": self.data_metadata["administrative_divisions"]["version"], **output_details}, [name])
+        return Result("success", f"已生成 {len(rows)} 条模拟测试数据", {"count": len(rows), "seed": params.get("seed"), "table": output_params.get("sql_table") or self._source_table, "fields": [item["name"] for item in rules], "unique_fields": sorted(unique_values), "administrative_divisions_version": self.data_metadata["administrative_divisions"]["version"], **output_details}, [name])
 
     def destroy(self):
         pass

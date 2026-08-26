@@ -51,6 +51,7 @@ jobs:
           mkdir -p plugin-dist
           python -m testbox.cli plugin package plugins/data-generator --output "plugin-dist/data-generator-${RELEASE_VERSION}.zip"
           python -m testbox.cli plugin package plugins/sql-parser --output "plugin-dist/sql-parser-${RELEASE_VERSION}.zip"
+          python -m testbox.cli plugin package plugins/sql-select --output "plugin-dist/sql-select-${RELEASE_VERSION}.zip"
           python -m testbox.cli plugin package plugins/evidence-tool --output "plugin-dist/evidence-tool-${RELEASE_VERSION}.zip"
       - name: Upload Python and plugin artifacts
         uses: actions/upload-artifact@v4
@@ -140,11 +141,31 @@ jobs:
         with:
           name: testbox-windows-applications
           path: release-assets
+      - name: Check out source for release metadata
+        uses: actions/checkout@v4
+      - name: Set up Python for release metadata
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          declared_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            release_version="${GITHUB_REF_NAME#v}"
+          else
+            release_version="$declared_version"
+          fi
+          echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('TestBox {0}', github.ref_name) || 'TestBox latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('TestBox {0}', github.ref_name) || format('TestBox v{0} (latest)', steps.version.outputs.release_version) }}
+          body: |
+            TestBox version: v${{ steps.version.outputs.release_version }}
+            Commit: ${{ github.sha }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           make_latest: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}

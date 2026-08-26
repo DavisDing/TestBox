@@ -4,10 +4,11 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from testbox.core.plugin_packages import PluginPackageError
 from testbox.core.runtime import Runtime
 
 
@@ -29,6 +30,123 @@ def _qt():
 
 
 QtCore, QtGui, QtWidgets = _qt()
+
+
+# Schema 字段与枚举值统一使用“中文说明 + 英文键名/原始值”的展示方式。
+# 英文键名仍保留，便于用户与 CLI、插件文档和任务结果对应。
+PARAMETER_LABELS = {
+    "count": "生成数量",
+    "format": "输出格式",
+    "seed": "随机种子",
+    "template": "数据模板",
+    "rules": "字段规则",
+    "rule_set": "规则集文件",
+    "source_file": "来源文件",
+    "source_format": "来源格式",
+    "txt_delimiter": "文本分隔符",
+    "txt_header": "包含表头",
+    "sql_dialect": "SQL 方言",
+    "sql_table": "SQL 表名",
+    "sql_batch_size": "SQL 批量大小",
+    "sql_transaction": "使用事务",
+    "zip_formats": "压缩包内格式",
+    "input": "输入文件",
+    "input_format": "字段清单格式",
+    "dialect": "数据库类型 / SQL 方言",
+    "include_constraints": "包含约束信息",
+    "fail_on_unsupported": "遇到不支持语法时失败",
+    "include_comments": "在 SELECT 中保留字段注释",
+    "screenshots": "截图文件",
+    "row_indexes": "截图对应行号",
+    "existing_reports": "已有报告",
+    "column_mapping": "列名映射",
+    "status": "测试结果状态",
+    "update_excel": "回写 Excel",
+    "include_unmatched": "包含未匹配项",
+    "interactive": "交互式截图",
+    "image_width_inches": "报告图片宽度",
+}
+
+PARAMETER_DESCRIPTIONS = {
+    "count": "要生成的测试数据条数。",
+    "format": "生成文件的格式。",
+    "seed": "固定后可复现相同结果；留空则使用随机种子。",
+    "template": "选择内置测试数据模板。",
+    "rules": "直接输入字段规则数组，适合高级场景。",
+    "rule_set": "包含字段规则的 JSON/YAML 文件。",
+    "source_file": "用于提取字段规则的 SQL、Excel 或文本文件。",
+    "source_format": "来源文件的类型。",
+    "txt_delimiter": "TXT 输出使用的字段分隔符。",
+    "txt_header": "是否在 TXT 输出中写入字段名。",
+    "sql_dialect": "生成 INSERT SQL 时使用的数据库方言。",
+    "sql_table": "生成 INSERT SQL 使用的表名。",
+    "sql_batch_size": "每批 INSERT 包含的记录数。",
+    "sql_transaction": "是否用事务包裹批量 INSERT。",
+    "zip_formats": "压缩包中要包含的输出格式列表。",
+    "input": "选择要处理的输入文件。",
+    "input_format": "输入字段清单的文件格式；自动检测可按扩展名判断。",
+    "dialect": "决定 SQL 标识符的引用方式；自动检测可按内容判断。",
+    "include_constraints": "是否导出主键、唯一键、外键等约束信息。",
+    "fail_on_unsupported": "遇到无法识别的语法时直接失败，而不是仅给出警告。",
+    "include_comments": "是否把字段注释作为 SELECT 列的注释保留。",
+    "screenshots": "按待执行项顺序选择对应截图。",
+    "row_indexes": "每张截图对应的 Excel 行号列表。",
+    "existing_reports": "可选的已有 Word 报告，用于继续追加内容。",
+    "column_mapping": "将业务角色映射到 Excel 表头名称。",
+    "status": "回写到测试结果列中的状态文本。",
+    "update_excel": "是否将识别或执行结果回写到原 Excel。",
+    "include_unmatched": "是否允许截图数量少于待执行项；未匹配项会保留在索引警告中。",
+    "interactive": "启动逐条执行面板，使用 F8 截图并进入标注窗口；需要桌面环境和屏幕录制权限。",
+    "image_width_inches": "插入 Word 报告时的截图宽度，单位为英寸。",
+}
+
+ENUM_LABELS = {
+    "format": {"json": "JSON（json）", "csv": "CSV（csv）", "xlsx": "Excel（xlsx）", "txt": "文本（txt）", "sql": "SQL（sql）", "zip": "压缩包（zip）"},
+    "template": {"retail_customer": "零售客户（retail_customer）", "account": "账户（account）", "product": "商品（product）", "transaction": "交易（transaction）"},
+    "source_format": {"sql": "SQL（sql）", "excel": "Excel（excel）"},
+    "sql_dialect": {"mysql": "MySQL", "postgresql": "PostgreSQL", "sqlserver": "SQL Server", "oracle": "Oracle", "sqlite": "SQLite"},
+    "input_format": {"auto": "自动检测（auto）", "json": "JSON（json）", "csv": "CSV（csv）", "xlsx": "Excel（xlsx）"},
+    "dialect": {"auto": "自动检测（auto）", "mysql": "MySQL", "postgresql": "PostgreSQL", "sqlserver": "SQL Server", "oracle": "Oracle", "sqlite": "SQLite", "hudi": "Apache Hudi（hudi）", "hive": "Apache Hive（hive）", "hbase": "Apache HBase（hbase）", "maxcompute": "MaxCompute（maxcompute）", "mc": "MaxCompute 简写（mc）"},
+}
+
+TYPE_LABELS = {
+    "string": "文本",
+    "integer": "整数",
+    "number": "数字",
+    "boolean": "开关",
+    "array": "列表",
+    "object": "对象",
+}
+
+PLUGIN_LABELS = {
+    "data-generator": "测试数据生成器",
+    "sql-parser": "SQL 字段解析器",
+    "sql-select": "SQL 查询生成器",
+    "evidence-tool": "测试证据工具",
+}
+
+CATEGORY_LABELS = {
+    "data": "数据",
+    "parser": "解析",
+    "sql": "SQL",
+    "evidence": "证据",
+}
+
+def _parameter_label(key: str) -> str:
+    return PARAMETER_LABELS.get(key, key.replace("_", " ").capitalize())
+
+
+def _parameter_description(key: str, spec: dict[str, Any]) -> str:
+    return str(spec.get("description") or PARAMETER_DESCRIPTIONS.get(key) or "")
+
+
+def _enum_label(key: str, value: Any) -> str:
+    return ENUM_LABELS.get(key, {}).get(str(value), str(value))
+
+
+def _file_dialog_options():
+    # 使用 Qt 自绘文件选择器，避免 macOS/Windows 原生白底对话框绕过深色主题。
+    return QtWidgets.QFileDialog.Option.DontUseNativeDialog
 
 
 # ==============================================================================
@@ -232,7 +350,7 @@ class SingleFilePicker(QtWidgets.QWidget):
     """单个文件选择组件"""
     valueChanged = QtCore.Signal(str)
 
-    def __init__(self, placeholder: str = "点击选择或拖入文件...", filter_str: str = "All Files (*.*)", parent=None):
+    def __init__(self, placeholder: str = "点击选择或拖入文件...", filter_str: str = "所有文件 (*.*)", parent=None):
         super().__init__(parent)
         self.filter_str = filter_str
         self._path = ""
@@ -245,7 +363,7 @@ class SingleFilePicker(QtWidgets.QWidget):
         self.line_edit.setPlaceholderText(placeholder)
         self.line_edit.setReadOnly(True)
 
-        self.btn_browse = QtWidgets.QPushButton("选择文件...")
+        self.btn_browse = QtWidgets.QPushButton("选择文件…")
         self.btn_browse.setObjectName("secondaryButton")
         self.btn_browse.clicked.connect(self._choose_file)
 
@@ -262,7 +380,7 @@ class SingleFilePicker(QtWidgets.QWidget):
         layout.addWidget(self.btn_clear)
 
     def _choose_file(self):
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "选择文件", "", self.filter_str)
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "选择文件", "", self.filter_str, options=_file_dialog_options())
         if file_path:
             self.set_path(file_path)
 
@@ -291,7 +409,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
     """多文件列表选择组件"""
     valueChanged = QtCore.Signal(list)
 
-    def __init__(self, filter_str: str = "All Files (*.*)", parent=None):
+    def __init__(self, filter_str: str = "所有文件 (*.*)", parent=None):
         super().__init__(parent)
         self.filter_str = filter_str
         self._paths: list[str] = []
@@ -303,7 +421,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
         btn_bar = QtWidgets.QHBoxLayout()
         btn_bar.setSpacing(8)
 
-        self.btn_add = QtWidgets.QPushButton("➕ 添加文件...")
+        self.btn_add = QtWidgets.QPushButton("➕ 添加文件…")
         self.btn_add.setObjectName("secondaryButton")
         self.btn_add.clicked.connect(self._add_files)
 
@@ -315,7 +433,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
         self.btn_clear.setObjectName("smallButton")
         self.btn_clear.clicked.connect(self.clear)
 
-        self.count_label = QtWidgets.QLabel("已选 0 个文件")
+        self.count_label = QtWidgets.QLabel("已选择 0 个文件")
         self.count_label.setObjectName("mutedText")
 
         btn_bar.addWidget(self.btn_add)
@@ -332,7 +450,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
         layout.addWidget(self.list_widget)
 
     def _add_files(self):
-        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "选择多个文件", "", self.filter_str)
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "选择多个文件", "", self.filter_str, options=_file_dialog_options())
         if files:
             for f in files:
                 if f not in self._paths:
@@ -372,7 +490,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
             item.setToolTip(path_str)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, path_str)
             self.list_widget.addItem(item)
-        self.count_label.setText(f"已选 {len(self._paths)} 个文件")
+        self.count_label.setText(f"已选择 {len(self._paths)} 个文件")
         self.valueChanged.emit(self._paths)
 
 
@@ -415,7 +533,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
 
         # 1. 必填与主要参数组
         if basic_props:
-            basic_box = QtWidgets.QGroupBox("主要参数设置 (Basic Parameters)")
+            basic_box = QtWidgets.QGroupBox("主要参数设置")
             basic_layout = QtWidgets.QVBoxLayout(basic_box)
             basic_layout.setSpacing(12)
             basic_layout.setContentsMargins(14, 16, 14, 14)
@@ -434,7 +552,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             adv_layout.setSpacing(10)
 
             # 折叠切换按钮
-            self.adv_toggle_btn = QtWidgets.QPushButton("▶ 展开高级参数配置 (Advanced Options)")
+            self.adv_toggle_btn = QtWidgets.QPushButton("▶ 展开高级参数配置")
             self.adv_toggle_btn.setObjectName("secondaryButton")
             self.adv_toggle_btn.setCheckable(True)
             self.adv_toggle_btn.setChecked(False)
@@ -460,9 +578,9 @@ class DynamicSchemaForm(QtWidgets.QWidget):
     def _on_toggle_advanced(self, checked: bool):
         self.adv_content_widget.setVisible(checked)
         if checked:
-            self.adv_toggle_btn.setText("▼ 收起高级参数配置 (Advanced Options)")
+            self.adv_toggle_btn.setText("▼ 收起高级参数配置")
         else:
-            self.adv_toggle_btn.setText("▶ 展开高级参数配置 (Advanced Options)")
+            self.adv_toggle_btn.setText("▶ 展开高级参数配置")
 
     def _create_field_widget(self, key: str, spec: dict[str, Any], is_required: bool) -> QtWidgets.QWidget:
         container = QtWidgets.QWidget()
@@ -474,7 +592,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         label_bar = QtWidgets.QHBoxLayout()
         label_bar.setSpacing(6)
 
-        title_text = f"<b>{key}</b>"
+        title_text = f"<b>{_parameter_label(key)}</b> <span style='color: #94a3b8;'>（{key}）</span>"
         if is_required:
             title_text += " <span style='color: #ef4444; font-weight: bold;'>*必填</span>"
         lbl = QtWidgets.QLabel(title_text)
@@ -483,14 +601,14 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         # 类型或格式标记
         type_str = spec.get("type", "string")
         fmt = spec.get("format")
-        badge_text = f"{type_str}" + (f":{fmt}" if fmt else "")
+        badge_text = TYPE_LABELS.get(type_str, type_str) + (f" / {type_str}" if type_str in TYPE_LABELS else "") + (f": {fmt}" if fmt else "")
         badge = QtWidgets.QLabel(f"[{badge_text}]")
         badge.setObjectName("tagLabelMuted")
         label_bar.addWidget(badge)
 
-        desc = spec.get("description")
+        desc = _parameter_description(key, spec)
         if desc:
-            desc_lbl = QtWidgets.QLabel(f"- {desc}")
+            desc_lbl = QtWidgets.QLabel(f"— {desc}")
             desc_lbl.setObjectName("mutedText")
             label_bar.addWidget(desc_lbl)
 
@@ -503,12 +621,12 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         default_val = spec.get("default")
 
         if fmt == "file-path":
-            filter_str = "All Files (*.*)"
+            filter_str = "所有文件 (*.*)"
             if "sql" in key or "sql" in self.command_name:
-                filter_str = "SQL Files (*.sql *.ddl);;All Files (*.*)"
+                filter_str = "SQL 文件 (*.sql *.ddl);;所有文件 (*.*)"
             elif "excel" in key or "input" in key:
-                filter_str = "Excel / SQL / Text (*.xlsx *.xlsm *.sql *.csv *.json);;All Files (*.*)"
-            ctrl = SingleFilePicker(placeholder=f"请选择 {key} 文件...", filter_str=filter_str)
+                filter_str = "Excel / SQL / 文本 (*.xlsx *.xlsm *.sql *.csv *.json);;所有文件 (*.*)"
+            ctrl = SingleFilePicker(placeholder=f"请选择 {_parameter_label(key)}（{key}）文件...", filter_str=filter_str)
             if default_val:
                 ctrl.set_path(str(default_val))
             self.fields[key] = ("file-path", ctrl)
@@ -520,14 +638,14 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             if not is_required and default_val is None:
                 combo.addItem("(未指定 / 默认)", None)
             for item in enum_values:
-                combo.addItem(str(item), item)
+                combo.addItem(_enum_label(key, item), item)
             if default_val is not None and default_val in enum_values:
                 combo.setCurrentText(str(default_val))
             self.fields[key] = ("enum", combo)
             layout.addWidget(combo)
 
         elif type_str == "boolean":
-            chk = QtWidgets.QCheckBox("启用 / 设为 True")
+            chk = QtWidgets.QCheckBox("启用（True）")
             if default_val is not None:
                 chk.setChecked(bool(default_val))
             else:
@@ -554,7 +672,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         elif type_str == "array":
             items_spec = spec.get("items", {})
             if items_spec.get("format") == "file-path" or key in ("screenshots", "existing_reports"):
-                ctrl = MultiFilesPicker(filter_str="Image / Report Files (*.png *.jpg *.jpeg *.docx *.xlsx);;All Files (*.*)")
+                ctrl = MultiFilesPicker(filter_str="图片 / 报告文件 (*.png *.jpg *.jpeg *.docx *.xlsx);;所有文件 (*.*)")
                 self.fields[key] = ("array-files", ctrl)
                 layout.addWidget(ctrl)
             else:
@@ -578,7 +696,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             edit = QtWidgets.QLineEdit()
             if default_val is not None:
                 edit.setText(str(default_val))
-            edit.setPlaceholderText(f"请输入 {key}...")
+            edit.setPlaceholderText(f"请输入 {_parameter_label(key)}（{key}）...")
             self.fields[key] = ("string", edit)
             layout.addWidget(edit)
 
@@ -697,7 +815,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
 
 
 # ==============================================================================
-# 视图 1：工具目录 (Tools Catalog)
+# 视图 1：工具目录
 # ==============================================================================
 
 class ToolCardWidget(QtWidgets.QFrame):
@@ -721,7 +839,7 @@ class ToolCardWidget(QtWidgets.QFrame):
         name_lbl = QtWidgets.QLabel(command_name)
         name_lbl.setObjectName("toolCardTitle")
 
-        plugin_tag = QtWidgets.QLabel(f"{manifest.name} v{manifest.version}")
+        plugin_tag = QtWidgets.QLabel(f"{PLUGIN_LABELS.get(manifest.name, manifest.name)}（{manifest.name}） v{manifest.version}")
         plugin_tag.setObjectName("tagLabel")
 
         top_bar.addWidget(name_lbl)
@@ -729,7 +847,7 @@ class ToolCardWidget(QtWidgets.QFrame):
         top_bar.addStretch()
 
         # 分类与状态徽标
-        cat_tag = QtWidgets.QLabel(manifest.category.upper())
+        cat_tag = QtWidgets.QLabel(f"{CATEGORY_LABELS.get(manifest.category, manifest.category)}（{manifest.category.upper()}）")
         cat_tag.setObjectName("tagLabelMuted")
         top_bar.addWidget(cat_tag)
 
@@ -758,7 +876,7 @@ class ToolCardWidget(QtWidgets.QFrame):
 
         caps_bar.addStretch()
 
-        action_lbl = QtWidgets.QLabel("进入命令配置 →")
+        action_lbl = QtWidgets.QLabel("配置此命令 →")
         action_lbl.setStyleSheet("color: #2563eb; font-weight: 600; font-size: 12px;")
         caps_bar.addWidget(action_lbl)
 
@@ -788,7 +906,7 @@ class ToolCatalogView(QtWidgets.QWidget):
         # 页面标题
         header_box = QtWidgets.QHBoxLayout()
         title_box = QtWidgets.QVBoxLayout()
-        title_lbl = QtWidgets.QLabel("工具目录 (Tools Catalog)")
+        title_lbl = QtWidgets.QLabel("工具目录")
         title_lbl.setObjectName("pageTitle")
         subtitle_lbl = QtWidgets.QLabel("浏览并运行 TestBox 已发现的测试效能工具插件与命令")
         subtitle_lbl.setObjectName("mutedText")
@@ -815,7 +933,7 @@ class ToolCatalogView(QtWidgets.QWidget):
         filter_bar.addWidget(self.search_input, 2)
 
         self.category_combo = QtWidgets.QComboBox()
-        self.category_combo.addItem("全部分类 (All Categories)", "all")
+        self.category_combo.addItem("全部分类", "all")
         self.category_combo.currentIndexChanged.connect(self._filter_cards)
         filter_bar.addWidget(self.category_combo, 1)
 
@@ -880,9 +998,9 @@ class ToolCatalogView(QtWidgets.QWidget):
         current_cat = self.category_combo.currentData()
         self.category_combo.blockSignals(True)
         self.category_combo.clear()
-        self.category_combo.addItem("全部分类 (All Categories)", "all")
+        self.category_combo.addItem("全部分类", "all")
         for cat in sorted(categories):
-            self.category_combo.addItem(f"分类: {cat.upper()}", cat)
+            self.category_combo.addItem(f"分类：{CATEGORY_LABELS.get(cat, cat)}（{cat.upper()}）", cat)
         if current_cat:
             idx = self.category_combo.findData(current_cat)
             if idx >= 0:
@@ -985,7 +1103,7 @@ class CommandDetailFormView(QtWidgets.QWidget):
 
         action_bar.addStretch()
 
-        self.submit_btn = QtWidgets.QPushButton("🚀 立即执行任务 (Run)")
+        self.submit_btn = QtWidgets.QPushButton("🚀 立即执行任务")
         self.submit_btn.setObjectName("primaryButton")
         self.submit_btn.setFixedHeight(36)
         self.submit_btn.setStyleSheet("font-size: 14px; font-weight: 700; padding: 0 24px;")
@@ -1063,12 +1181,12 @@ class CommandDetailFormView(QtWidgets.QWidget):
 
         self.cmd_title_lbl.setText(f"命令: {command_name}")
         if self.current_manifest:
-            self.plugin_badge.setText(f"{self.current_manifest.name} v{self.current_manifest.version}")
+            self.plugin_badge.setText(f"{PLUGIN_LABELS.get(self.current_manifest.name, self.current_manifest.name)}（{self.current_manifest.name}） v{self.current_manifest.version}")
             self.lbl_manifest_ver.setText(self.current_manifest.version)
-            self.lbl_category.setText(self.current_manifest.category.upper())
+            self.lbl_category.setText(f"{CATEGORY_LABELS.get(self.current_manifest.category, self.current_manifest.category)}（{self.current_manifest.category.upper()}）")
             caps = self.current_manifest.capabilities or {}
             self.lbl_concurrency.setText("支持并发" if caps.get("concurrency", True) else "仅串行执行")
-            self.lbl_filesystem.setText(caps.get("filesystem", "output-only"))
+            self.lbl_filesystem.setText({"output-only": "仅输出目录（output-only）", "none": "不写入文件（none）"}.get(caps.get("filesystem", "output-only"), str(caps.get("filesystem", "output-only"))))
             self.lbl_compat.setText(self.current_manifest.core_compatibility or "*")
 
             cmd_desc = ""
@@ -1124,9 +1242,9 @@ class RunningWorkspaceView(QtWidgets.QWidget):
 
         # 顶部标题
         title_box = QtWidgets.QVBoxLayout()
-        title_lbl = QtWidgets.QLabel("执行工作区 (Running Workspace)")
+        title_lbl = QtWidgets.QLabel("执行工作区")
         title_lbl.setObjectName("pageTitle")
-        self.sub_title_lbl = QtWidgets.QLabel("正在调度 Plugin Host 执行任务...")
+        self.sub_title_lbl = QtWidgets.QLabel("正在调度插件主进程执行任务…")
         self.sub_title_lbl.setObjectName("mutedText")
         title_box.addWidget(title_lbl)
         title_box.addWidget(self.sub_title_lbl)
@@ -1146,9 +1264,9 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         status_bar.addWidget(self.spinner_lbl)
 
         status_text_box = QtWidgets.QVBoxLayout()
-        self.status_title_lbl = QtWidgets.QLabel("任务正在运行中 (RUNNING)")
+        self.status_title_lbl = QtWidgets.QLabel("任务正在运行中")
         self.status_title_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #2563eb;")
-        self.status_desc_lbl = QtWidgets.QLabel("Plugin Host 正在子进程沙箱中处理，请稍候...")
+        self.status_desc_lbl = QtWidgets.QLabel("插件主进程正在后台处理，请稍候…")
         self.status_desc_lbl.setObjectName("mutedText")
         status_text_box.addWidget(self.status_title_lbl)
         status_text_box.addWidget(self.status_desc_lbl)
@@ -1177,7 +1295,7 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         card_layout.addLayout(meta_form)
 
         # 脱敏参数摘要
-        params_group = QtWidgets.QGroupBox("提交参数摘要 (Parameters Preview)")
+        params_group = QtWidgets.QGroupBox("提交参数摘要")
         params_layout = QtWidgets.QVBoxLayout(params_group)
         self.params_preview_txt = QtWidgets.QPlainTextEdit()
         self.params_preview_txt.setReadOnly(True)
@@ -1239,7 +1357,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
         top_bar.addStretch()
 
-        self.btn_re_execute = QtWidgets.QPushButton("🔄 修改参数并重新执行")
+        self.btn_re_execute = QtWidgets.QPushButton("🔄 修改参数后重新执行")
         self.btn_re_execute.setObjectName("secondaryButton")
         self.btn_re_execute.clicked.connect(self._on_re_execute)
         top_bar.addWidget(self.btn_re_execute)
@@ -1290,7 +1408,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
         diag_layout.setContentsMargins(16, 14, 16, 14)
         diag_layout.setSpacing(8)
 
-        diag_title = QtWidgets.QLabel("🚨 错误诊断与处理建议 (Error Diagnostics)")
+        diag_title = QtWidgets.QLabel("🚨 错误诊断与处理建议")
         diag_title.setObjectName("diagnosticTitle")
         diag_layout.addWidget(diag_title)
 
@@ -1339,8 +1457,8 @@ class TaskResultDetailView(QtWidgets.QWidget):
         data_layout.addWidget(self.data_summary_txt)
         self.content_layout.addWidget(self.data_summary_box)
 
-        # 5. 脱敏参数摘要 (Redacted Parameters)
-        params_box = QtWidgets.QGroupBox("任务脱敏参数 (Redacted Parameters)")
+        # 5. 脱敏参数摘要
+        params_box = QtWidgets.QGroupBox("任务脱敏参数")
         params_layout = QtWidgets.QVBoxLayout(params_box)
         self.params_txt = QtWidgets.QPlainTextEdit()
         self.params_txt.setReadOnly(True)
@@ -1592,7 +1710,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
     def _export_single_file(self, task_id: str, rel_path: str, filename: str):
         """调用 Runtime.commit_output 导出文件到用户选定路径，绝不在 UI 中私自复制"""
-        dest_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出任务产物", filename)
+        dest_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出任务产物", filename, options=_file_dialog_options())
         if not dest_path:
             return
         try:
@@ -1609,7 +1727,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
 
 # ==============================================================================
-# 视图 5：任务历史 (Task History) - 仅通过 Runtime 访问
+# 视图 5：任务历史 - 仅通过 Runtime 访问
 # ==============================================================================
 
 class TaskHistoryView(QtWidgets.QWidget):
@@ -1637,7 +1755,7 @@ class TaskHistoryView(QtWidgets.QWidget):
         # 头部标题
         header = QtWidgets.QHBoxLayout()
         title_box = QtWidgets.QVBoxLayout()
-        title_lbl = QtWidgets.QLabel("任务历史 (Task History)")
+        title_lbl = QtWidgets.QLabel("任务历史")
         title_lbl.setObjectName("pageTitle")
         sub_lbl = QtWidgets.QLabel("查看由 Runtime 记录的任务执行工作区、状态及结果")
         sub_lbl.setObjectName("mutedText")
@@ -1663,15 +1781,15 @@ class TaskHistoryView(QtWidgets.QWidget):
 
         self.status_combo = QtWidgets.QComboBox()
         self.status_combo.addItem("全部状态 (All Status)", None)
-        self.status_combo.addItem("✅ SUCCEEDED (成功)", "SUCCEEDED")
-        self.status_combo.addItem("❌ FAILED (失败)", "FAILED")
-        self.status_combo.addItem("⚠️ ABANDONED (中断)", "ABANDONED")
-        self.status_combo.addItem("⏹️ CANCELLED (取消)", "CANCELLED")
+        self.status_combo.addItem("✅ 成功（SUCCEEDED）", "SUCCEEDED")
+        self.status_combo.addItem("❌ 失败（FAILED）", "FAILED")
+        self.status_combo.addItem("⚠️ 异常中断（ABANDONED）", "ABANDONED")
+        self.status_combo.addItem("⏹️ 已取消（CANCELLED）", "CANCELLED")
         self.status_combo.currentIndexChanged.connect(self._on_filter_changed)
         filter_bar.addWidget(self.status_combo, 1)
 
         self.command_combo = QtWidgets.QComboBox()
-        self.command_combo.addItem("全部命令 (All Commands)", None)
+        self.command_combo.addItem("全部命令", None)
         self.command_combo.currentIndexChanged.connect(self._on_filter_changed)
         filter_bar.addWidget(self.command_combo, 1)
 
@@ -1679,7 +1797,7 @@ class TaskHistoryView(QtWidgets.QWidget):
 
         # 历史表格
         self.table = QtWidgets.QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["任务 ID", "命令", "插件/版本", "状态", "启动时间", "操作"])
+        self.table.setHorizontalHeaderLabels(["任务 ID", "命令", "插件 / 版本", "状态", "开始时间", "操作"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
@@ -1722,7 +1840,7 @@ class TaskHistoryView(QtWidgets.QWidget):
         current_cmd = self.command_combo.currentData()
         self.command_combo.blockSignals(True)
         self.command_combo.clear()
-        self.command_combo.addItem("全部命令 (All Commands)", None)
+        self.command_combo.addItem("全部命令", None)
         for cmd in sorted(self.runtime.list_commands().keys()):
             self.command_combo.addItem(cmd, cmd)
         if current_cmd:
@@ -1788,7 +1906,8 @@ class TaskHistoryView(QtWidgets.QWidget):
             self.table.setItem(row, 2, plugin_item)
 
             # 4. 状态
-            status_item = QtWidgets.QTableWidgetItem(t_status)
+            status_labels = {"SUCCEEDED": "成功（SUCCEEDED）", "FAILED": "失败（FAILED）", "ABANDONED": "异常中断（ABANDONED）", "CANCELLED": "已取消（CANCELLED）", "RUNNING": "运行中（RUNNING）", "PENDING": "排队中（PENDING）"}
+            status_item = QtWidgets.QTableWidgetItem(status_labels.get(t_status, t_status))
             if t_status == "SUCCEEDED":
                 status_item.setForeground(QtGui.QColor("#10b981"))
             elif t_status == "FAILED":
@@ -1831,14 +1950,14 @@ class TaskHistoryView(QtWidgets.QWidget):
 
 
 # ==============================================================================
-# 视图 6：插件诊断与系统设置 (Plugins & Diagnostics)
+# 视图 6：插件诊断与系统设置
 # ==============================================================================
 
 class PluginDiagnosticsView(QtWidgets.QWidget):
     """
     插件诊断与工作区清理页面：
     展示所有发现的插件元数据、命令索引、能力声明、工作区维护工具。
-    仅调用 Runtime.list_plugins, Runtime.clean_workspace
+    插件导入/卸载和工作区维护均通过 Runtime 完成，GUI 不复制插件包业务逻辑。
     """
     def __init__(self, runtime: Runtime, parent=None):
         super().__init__(parent)
@@ -1853,14 +1972,26 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         # 标题
         header = QtWidgets.QHBoxLayout()
         title_box = QtWidgets.QVBoxLayout()
-        title_lbl = QtWidgets.QLabel("插件诊断与状态 (Plugins & Diagnostics)")
+        title_lbl = QtWidgets.QLabel("插件诊断与状态")
         title_lbl.setObjectName("pageTitle")
-        sub_lbl = QtWidgets.QLabel("检查已加载插件的运行能力、清单规范及工作区存储维护")
+        sub_lbl = QtWidgets.QLabel("检查已加载插件，并从本机导入或卸载用户插件")
         sub_lbl.setObjectName("mutedText")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
         header.addLayout(title_box)
         header.addStretch()
+
+        self.import_btn = QtWidgets.QPushButton("📥 导入插件")
+        self.import_btn.setObjectName("primaryButton")
+        self.import_btn.setToolTip("从 ZIP 插件包导入到当前用户配置目录")
+        self.import_btn.clicked.connect(self._on_import_plugin)
+        header.addWidget(self.import_btn)
+
+        self.uninstall_btn = QtWidgets.QPushButton("🗑️ 卸载选中插件")
+        self.uninstall_btn.setObjectName("secondaryButton")
+        self.uninstall_btn.setEnabled(False)
+        self.uninstall_btn.clicked.connect(self._on_uninstall_plugin)
+        header.addWidget(self.uninstall_btn)
 
         refresh_btn = QtWidgets.QPushButton("🔄 重新扫描插件")
         refresh_btn.setObjectName("secondaryButton")
@@ -1877,6 +2008,9 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         self.plugins_table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.plugins_table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.plugins_table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.plugins_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.plugins_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.plugins_table.itemSelectionChanged.connect(self._on_plugin_selection_changed)
         layout.addWidget(self.plugins_table, 1)
 
         # 工作区维护工具箱
@@ -1907,6 +2041,11 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 
         layout.addWidget(clean_box)
 
+        plugin_path_lbl = QtWidgets.QLabel(f"用户插件目录：{self.runtime.plugins_dir}")
+        plugin_path_lbl.setObjectName("mutedText")
+        plugin_path_lbl.setWordWrap(True)
+        layout.addWidget(plugin_path_lbl)
+
         self.refresh_plugins()
 
     def refresh_plugins(self):
@@ -1920,6 +2059,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         for row, p in enumerate(plugins):
             # 1. 名称
             name_item = QtWidgets.QTableWidgetItem(f"📦 {p.name}")
+            name_item.setData(QtCore.Qt.ItemDataRole.UserRole, p.name)
             self.plugins_table.setItem(row, 0, name_item)
 
             # 2. 版本
@@ -1927,7 +2067,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
             self.plugins_table.setItem(row, 1, ver_item)
 
             # 3. 分类
-            cat_item = QtWidgets.QTableWidgetItem(p.category.upper())
+            cat_item = QtWidgets.QTableWidgetItem(f"{CATEGORY_LABELS.get(p.category, p.category)}（{p.category.upper()}）")
             self.plugins_table.setItem(row, 2, cat_item)
 
             # 4. 命令列表
@@ -1943,8 +2083,86 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 
             # 6. 文件系统
             fs_str = caps.get("filesystem", "output-only")
-            fs_item = QtWidgets.QTableWidgetItem(fs_str)
+            fs_item = QtWidgets.QTableWidgetItem({"output-only": "仅输出目录（output-only）", "none": "不写入文件（none）"}.get(fs_str, str(fs_str)))
             self.plugins_table.setItem(row, 5, fs_item)
+
+    def _on_plugin_selection_changed(self):
+        selected = self.plugins_table.selectedItems()
+        if not selected:
+            self.uninstall_btn.setEnabled(False)
+            return
+        name_item = self.plugins_table.item(selected[0].row(), 0)
+        name = name_item.data(QtCore.Qt.ItemDataRole.UserRole) if name_item else None
+        # EXE 内置插件位于只读的打包目录，只允许卸载用户插件。
+        self.uninstall_btn.setEnabled(bool(name and (self.runtime.plugins_dir / str(name)).is_dir()))
+
+    def _on_import_plugin(self):
+        source, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "选择插件包",
+            "",
+            "插件包 (*.zip);;所有文件 (*.*)",
+            options=_file_dialog_options(),
+        )
+        if not source:
+            return
+
+        try:
+            manifest = self.runtime.install_plugin(Path(source))
+        except PluginPackageError as error:
+            # 覆盖安装需要用户明确确认，避免误替换现有插件。
+            if "插件已安装:" not in str(error):
+                QtWidgets.QMessageBox.critical(self, "导入插件失败", str(error))
+                return
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "确认覆盖插件",
+                f"{error}\n\n是否覆盖安装？",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+            try:
+                manifest = self.runtime.install_plugin(Path(source), force=True)
+            except (PluginPackageError, OSError, ValueError) as retry_error:
+                QtWidgets.QMessageBox.critical(self, "导入插件失败", str(retry_error))
+                return
+        except (OSError, ValueError) as error:
+            QtWidgets.QMessageBox.critical(self, "导入插件失败", str(error))
+            return
+
+        self.refresh_plugins()
+        QtWidgets.QMessageBox.information(
+            self,
+            "导入成功",
+            f"插件 {manifest.name} v{manifest.version} 已导入。\n工具目录已同步更新。",
+        )
+
+    def _on_uninstall_plugin(self):
+        selected = self.plugins_table.selectedItems()
+        if not selected:
+            return
+        name_item = self.plugins_table.item(selected[0].row(), 0)
+        name = name_item.data(QtCore.Qt.ItemDataRole.UserRole) if name_item else None
+        if not name:
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "确认卸载插件",
+            f"确定要卸载插件“{name}”吗？\n\n卸载后，该插件提供的工具也会从工具目录移除。",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.runtime.uninstall_plugin(str(name))
+        except (PluginPackageError, OSError, ValueError) as error:
+            QtWidgets.QMessageBox.critical(self, "卸载插件失败", str(error))
+            return
+
+        self.refresh_plugins()
+        QtWidgets.QMessageBox.information(self, "卸载成功", f"插件 {name} 已卸载。\n工具目录已同步更新。")
 
     def _on_clean_workspace(self):
         qdate = self.date_picker.date()
@@ -1983,6 +2201,8 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self._runtime_root = root
         self.runtime = Runtime(root)
+        self._interactive_task = False
+        self._interactive_restore_geometry = None
         self.setWindowTitle("TestBox - 测试效能工具箱")
         self.resize(1120, 760)
         self.setMinimumSize(960, 640)
@@ -2086,6 +2306,16 @@ class MainWindow(QtWidgets.QMainWindow):
             page_index = item.data(QtCore.Qt.ItemDataRole.UserRole)
             self.switch_page(page_index)
 
+    def _select_nav_page(self, page_index: int):
+        """Keep the sidebar selection aligned with the active task context."""
+        for row in range(self.nav_list.count()):
+            item = self.nav_list.item(row)
+            if item and item.data(QtCore.Qt.ItemDataRole.UserRole) == page_index:
+                blocker = QtCore.QSignalBlocker(self.nav_list)
+                self.nav_list.setCurrentRow(row)
+                del blocker
+                return
+
     def switch_page(self, index: int):
         self.stack.setCurrentIndex(index)
         # 页面刷新钩子
@@ -2101,10 +2331,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.setCurrentIndex(1)
 
     def navigate_to_task_result(self, task_id: str):
+        self._select_nav_page(4)
         self.page_result.display_task(task_id)
         self.stack.setCurrentIndex(3)
 
     def execute_task(self, command_name: str, params: dict):
+        self._interactive_task = command_name == "evidence.build" and bool(params.get("interactive", False))
+        if self._interactive_task:
+            # 交互截图由插件 Host 在独立进程中执行；先隐藏 TestBox 主窗口，
+            # 避免主窗口被截图，并在任务结束/异常后恢复。
+            self._interactive_restore_geometry = self.saveGeometry()
+            self.hide()
         manifest = self.runtime.get_command(command_name)
         self.page_running.start_running(command_name, params, manifest)
         self.stack.setCurrentIndex(2)
@@ -2119,11 +2356,26 @@ class MainWindow(QtWidgets.QMainWindow):
         worker.signals.failed.connect(self._on_task_failed)
         QtCore.QThreadPool.globalInstance().start(worker)
 
+    def _restore_after_interactive(self):
+        if not self._interactive_task:
+            return
+        geometry = self._interactive_restore_geometry
+        self._interactive_task = False
+        self._interactive_restore_geometry = None
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
     def _on_task_finished(self, task_id: str, result: Any, elapsed: float):
+        self._restore_after_interactive()
+        self._select_nav_page(4)
         self.page_result.display_task(task_id, direct_result=result, elapsed=elapsed)
         self.stack.setCurrentIndex(3)
 
     def _on_task_failed(self, command: str, error_msg: str, elapsed: float):
+        self._restore_after_interactive()
         QtWidgets.QMessageBox.critical(self, "执行失败", f"任务执行遇到不可恢复的异常:\n{error_msg}")
         self.stack.setCurrentIndex(1)
 
@@ -2144,9 +2396,68 @@ STYLE = """
 * {
     font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
     font-size: 13px;
-    color: #EDEDED;
+    color: #F8FAFC;
 }
 
+/* 所有 Qt 原生弹窗也使用深色高对比度主题，避免白底灰字。
+   文件选择器通过 DontUseNativeDialog 使用此 QSS；消息框/输入框直接匹配。 */
+QDialog, QMessageBox, QInputDialog, QFileDialog {
+    background-color: #111318;
+    color: #F8FAFC;
+}
+QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel, QFileDialog QLabel {
+    color: #F8FAFC;
+}
+QDialogButtonBox QPushButton, QMessageBox QPushButton {
+    min-width: 78px;
+    min-height: 32px;
+    padding: 0 14px;
+    background-color: #232832;
+    color: #F8FAFC;
+    border: 1px solid #3B4554;
+    border-radius: 6px;
+}
+QDialogButtonBox QPushButton:hover, QMessageBox QPushButton:hover {
+    background-color: #303846;
+    border-color: #10B981;
+}
+QMessageBox QPushButton {
+    background-color: #166534;
+    border-color: #22C55E;
+}
+QMessageBox QPushButton:default {
+    background-color: #059669;
+    color: #FFFFFF;
+}
+QInputDialog QLineEdit, QFileDialog QLineEdit, QFileDialog QComboBox {
+    background-color: #0B0D11;
+    color: #F8FAFC;
+    border: 1px solid #3B4554;
+}
+QFileDialog QListView, QFileDialog QTreeView, QFileDialog QTableView {
+    background-color: #0B0D11;
+    color: #F8FAFC;
+    alternate-background-color: #141922;
+    selection-background-color: #14532D;
+    selection-color: #FFFFFF;
+}
+QFileDialog QToolButton, QFileDialog QPushButton {
+    color: #F8FAFC;
+    background-color: #232832;
+    border: 1px solid #3B4554;
+    border-radius: 6px;
+    padding: 5px 10px;
+}
+QFileDialog QHeaderView::section {
+    background-color: #1A1F28;
+    color: #E2E8F0;
+}
+QToolTip {
+    background-color: #111827;
+    color: #F8FAFC;
+    border: 1px solid #475569;
+    padding: 5px;
+}
 
 /* 失败、诊断和日志必须在深色主题中保持高对比度；避免浅色背景叠加浅灰文字。 */
 #statusBannerSuccess, #statusBannerWarning, #statusBannerFailed, #statusBannerAbandoned, #statusBannerCancelled {
@@ -2192,7 +2503,7 @@ QMainWindow, QStackedWidget#mainStack, QScrollArea, QScrollArea > QWidget > QWid
 }
 
 #nav::item {
-    color: #888888;
+    color: #CBD5E1;
     min-height: 40px;
     padding-left: 14px;
     border-radius: 6px;
@@ -2221,7 +2532,7 @@ QMainWindow, QStackedWidget#mainStack, QScrollArea, QScrollArea > QWidget > QWid
 }
 
 #mutedText {
-    color: #71717A;
+    color: #CBD5E1;
     font-size: 12px;
 }
 
@@ -2243,8 +2554,8 @@ QMainWindow, QStackedWidget#mainStack, QScrollArea, QScrollArea > QWidget > QWid
 }
 
 #tagLabelMuted {
-    background-color: #18181B;
-    color: #A1A1AA;
+    background-color: #20242C;
+    color: #CBD5E1;
     border: 1px solid #27272A;
     border-radius: 4px;
     padding: 2px 8px;
@@ -2272,7 +2583,7 @@ QMainWindow, QStackedWidget#mainStack, QScrollArea, QScrollArea > QWidget > QWid
 
 #toolCardDesc {
     font-size: 12px;
-    color: #A1A1AA;
+    color: #CBD5E1;
     line-height: 1.4;
 }
 
@@ -2296,7 +2607,7 @@ QGroupBox::title {
     left: 14px;
     padding: 0 6px;
     background-color: #000000;
-    color: #A1A1AA;
+    color: #CBD5E1;
     font-size: 12px;
 }
 

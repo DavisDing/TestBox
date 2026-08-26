@@ -59,7 +59,7 @@ AI 后续开发的主要知识源是：
 - CLI 和 GUI 必须复用同一个 Runtime；GUI 不能复制插件执行逻辑。
 - Runtime 负责插件发现、Schema 参数校验、文件暂存、任务状态、Host 调度、结果校验和工作区落盘。
 - 插件只负责自身业务逻辑和输出文件。
-- 插件之间不得直接依赖。
+- 插件之间不得直接依赖；下游插件通过任务工作区中的已登记输出文件消费上游产物。
 - 插件只能通过 SDK 的 Context、Result 和 PluginError 使用 Core 能力。
 - 任务工作区是可追溯性的基本边界：输入、输出、日志、manifest、result 和 report 都围绕任务 ID 保存。
 - 当前 Host 协议是一次 JSON 请求/一次 JSON 结果响应。不要在没有需求确认前假设存在实时进度、心跳或取消事件。
@@ -102,8 +102,9 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 ## 7. 当前插件
 
 - `data-generator`：命令 `data.mock`，生成可复现模拟数据，包含规则化输入和固定第三方行政区划资源。
-- `sql-parser`：命令 `sql.parse`，解析 SQL DDL 文本，不执行 SQL。
-- `evidence-tool`：命令 `evidence.inspect`、`evidence.build`，依赖部分可选库，属于已有但仍需确认优先级的能力。
+- `sql-parser`：命令 `sql.parse`，解析 SQL DDL 文本，不执行 SQL；输出文件名为 `<task-id>.<format>`。
+- `sql-select`：命令 `sql.select`，消费 `sql.parse` 生成的 JSON、CSV、XLSX 字段清单并生成 SELECT 文本。
+- `evidence-tool`：命令 `evidence.build`，在一次任务内完成 Excel 识别、截图关联、Word 报告生成和 Excel 状态回写；支持批处理和桌面交互模式，依赖部分可选库。
 
 新增插件必须提供清单、入口、命令 Schema、README 和必要测试。插件命令使用小写点分格式。
 

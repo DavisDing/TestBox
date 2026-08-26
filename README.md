@@ -16,7 +16,7 @@ TestBox 是面向测试工程师的本地化、插件化测试效能工具框架
 ## 当前能力
 
 - 交付本地 CLI、插件发现与运行、独立工作区、日志、结构化结果和 Markdown 报告。
-- 首批 P0 插件：Data Generator 与 SQL Parser。
+- 首批 P0 插件：Data Generator、SQL Parser，以及基于字段清单生成查询语句的 SQL Select。
 - 桌面 GUI 从插件 Schema 生成参数表单，并提供 Excel 用例识别、截图标注和 Word 证据报告的专用流程。
 - 插件市场、AI 插件和远程执行仍不属于当前交付范围。
 
@@ -38,6 +38,7 @@ python3 -m venv .venv
 testbox plugin list
 testbox run data.mock --count 100 --format csv --seed 10001
 testbox run sql.parse --input ./schema.sql --format xlsx
+testbox run sql.select --input ./workspace/<task-id>/output/<task-id>.xlsx --dialect mysql
 testbox task show <task-id>
 ```
 
@@ -74,9 +75,9 @@ GitHub Release 会提供独立的 `TestBox.exe`，无需安装 Python。将它�
 .\TestBox.exe run data.mock --count 100 --format csv --seed 10001
 ```
 
-发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`，两者均内置当前版本的官方插件，可直接使用。Release 中的 `data-generator`、`sql-parser` 与 `evidence-tool` ZIP 是独立插件包，用于为已安装的软件额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
+发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`，两者均内置当前版本的官方插件，可直接使用。桌面端进入左侧“插件与诊断”页面后，可以点击“导入插件”选择 ZIP 插件包，也可以选中用户插件后点击“卸载选中插件”；覆盖安装和卸载都会二次确认。Release 中的 `data-generator`、`sql-parser`、`sql-select` 与 `evidence-tool` ZIP 是独立插件包，用于为已安装的软件额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
 
-GitHub Actions 发布规则：推送到 `main`/`master` 且构建与冒烟测试通过后，会自动更新 `latest` 预发布版本；推送与 `pyproject.toml` 版本一致的 `vX.Y.Z` 标签（例如 `v1.0.0`）会创建正式版本 Release。Pull Request 只执行验证，不会发布 Release。
+GitHub Actions 发布规则：推送到 `main`/`master` 且构建与冒烟测试通过后，会自动更新 `latest` 预发布版本，Release 名称会显示当前版本（例如 `TestBox v1.0.0 (latest)`）；推送与 `pyproject.toml` 版本一致的 `vX.Y.Z` 标签（例如 `v1.0.0`）会创建正式版本 Release。Pull Request 只执行验证，不会发布 Release。
 
 ## 任务历史与清理
 

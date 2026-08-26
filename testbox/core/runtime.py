@@ -16,6 +16,7 @@ from testbox.core.history import TaskHistory
 from testbox.core.locks import PluginExecutionLock
 from testbox.core.manifest import Manifest
 from testbox.core.models import TaskPaths, TaskStatus
+from testbox.core.plugin_packages import PluginPackageError, install_plugin as install_plugin_package, uninstall_plugin as uninstall_plugin_package
 from testbox.core.plugin_registry import PluginManager
 from testbox.core.process_runner import ProcessRunner
 from testbox.core.report import write_json, write_report
@@ -38,6 +39,7 @@ class Runtime:
             self.plugins_dir = data_dir / "plugins"
             self.workspace_dir = data_dir / "workspace"
             bundled_plugins = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "plugins"
+        self.bundled_plugins_dir = bundled_plugins
         plugin_dirs = [self.plugins_dir] if bundled_plugins == self.plugins_dir else [self.plugins_dir, bundled_plugins]
         self.manager = PluginManager(plugin_dirs)
         self.manager.discover()
@@ -96,6 +98,31 @@ class Runtime:
 
     def list_commands(self) -> dict[str, Manifest]:
         return dict(self.manager.available)
+
+    def reload_plugins(self) -> None:
+        """重新扫描插件目录，使 GUI 安装/卸载后立即更新命令索引。"""
+        self.manager.discover()
+
+    def install_plugin(self, source: Path, *, force: bool = False) -> Manifest:
+        """安装用户插件并刷新当前 Runtime 的插件索引。"""
+        manifest = install_plugin_package(source, self.plugins_dir, force=force)
+        self.reload_plugins()
+        return manifest
+
+    def uninstall_plugin(self, name: str) -> None:
+        """卸载用户插件；冻结版不允许删除随程序发布的内置插件。"""
+        target = self.plugins_dir / name
+        if not target.is_dir():
+            raise PluginPackageError(f"未安装插件: {name}")
+        if self.bundled_plugins_dir.resolve() != self.plugins_dir.resolve():
+            try:
+                target.resolve().relative_to(self.bundled_plugins_dir.resolve())
+            except ValueError:
+                pass
+            else:
+                raise PluginPackageError("内置插件不能卸载，请先安装同名用户插件后再管理")
+        uninstall_plugin_package(name, self.plugins_dir)
+        self.reload_plugins()
 
     def get_command(self, command: str) -> Manifest:
         return self.manager.get_manifest(command)

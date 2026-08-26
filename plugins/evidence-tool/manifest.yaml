@@ -1,7 +1,7 @@
 schema_version: 1
 name: evidence-tool
-version: 1.0.0
-description: 从 Excel 测试用例和截图生成可追溯的 Word 证据报告
+version: 2.0.0
+description: 将 screenshot-to-word 的 Excel 用例识别、截图证据整理、Word 报告生成与执行状态回写能力接入 TestBox
 category: evidence
 core_compatibility: ">=1.0,<2.0"
 capabilities:
@@ -11,9 +11,6 @@ capabilities:
   resources: []
 entry: src.main:Plugin
 commands:
-  - name: evidence.inspect
-    description: 识别 Excel 用例字段并列出待执行项
-    input_schema: schemas/evidence.inspect.json
   - name: evidence.build
-    description: 将测试用例和截图生成 Word 证据包
+    description: 将截图按 Excel 行号写入 Word 证据报告并回写执行状态
     input_schema: schemas/evidence.build.json

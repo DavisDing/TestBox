@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["input"],
+  "properties": {
+    "input": {"type": "string", "format": "file-path", "description": "sql.parse 生成的 JSON、CSV 或 XLSX 字段清单"},
+    "input_format": {"type": "string", "enum": ["auto", "json", "csv", "xlsx"], "default": "auto", "description": "字段清单格式"},
+    "dialect": {"type": "string", "enum": ["auto", "mysql", "postgresql", "sqlserver", "oracle", "sqlite"], "default": "auto", "description": "SQL 方言，决定标识符引用方式"},
+    "include_comments": {"type": "boolean", "default": false, "description": "在 SELECT 中保留字段注释"}
+  },
+  "additionalProperties": false
+}

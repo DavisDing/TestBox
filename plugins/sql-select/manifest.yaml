@@ -1,0 +1,16 @@
+schema_version: 1
+name: sql-select
+version: 1.0.0
+description: 根据 SQL Parser 字段清单生成 SELECT 语句
+category: sql
+core_compatibility: ">=1.0,<2.0"
+capabilities:
+  concurrency: true
+  network: false
+  filesystem: output-only
+  resources: []
+entry: src.main:Plugin
+commands:
+  - name: sql.select
+    description: 根据字段清单生成 SELECT 语句
+    input_schema: schemas/sql.select.json
