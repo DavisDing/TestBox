@@ -31,10 +31,17 @@ class PluginExecutionLock:
         self.local_lock.acquire()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.handle = self.path.open("a+b")
+            # Do not use ``a+b`` here.  On Windows, append mode can make the
+            # descriptor's file position/file-region behavior surprising for
+            # ``msvcrt.locking``.  Open the lock file without append semantics
+            # and ensure that the byte we lock actually exists.
+            fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o666)
+            self.handle = os.fdopen(fd, "r+b", buffering=0)
+            self.handle.seek(0, os.SEEK_END)
+            if self.handle.tell() == 0:
+                self.handle.write(b"0")
+                self.handle.flush()
             self.handle.seek(0)
-            self.handle.write(b"0")
-            self.handle.flush()
             if os.name == "nt":
                 import msvcrt
 

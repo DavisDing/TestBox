@@ -10,6 +10,43 @@ from typing import Any, Iterable
 from testbox.core.models import TaskStatus
 
 
+def _is_process_alive(pid: int) -> bool:
+    """Return whether a recorded Host PID still refers to a live process."""
+    if pid <= 0:
+        return False
+
+    if os.name == "nt":
+        # ``os.kill(pid, 0)`` is not a portable liveness probe on Windows:
+        # non-zero signals are implemented via TerminateProcess.  Query the
+        # process exit code instead, without adding a third-party dependency.
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        process = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not process:
+            # Access denied still means that the PID exists.
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
+        try:
+            exit_code = wintypes.DWORD()
+            return bool(kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code))) and exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(process)
+
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
 class TaskHistory:
     SCHEMA_VERSION = 1
 
@@ -111,9 +148,7 @@ class TaskHistory:
             if host_pid is None:
                 abandoned.append(row["id"])
                 continue
-            try:
-                os.kill(host_pid, 0)
-            except OSError:
+            if not _is_process_alive(host_pid):
                 abandoned.append(row["id"])
         cursor = self.connection.executemany(
             "UPDATE task_history SET status = ?, finished_at = ?, error_code = 'HOST_INTERRUPTED' WHERE id = ? AND status = ?",
