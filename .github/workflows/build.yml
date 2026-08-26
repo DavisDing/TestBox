@@ -131,16 +131,8 @@ jobs:
       group: testbox-release-${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
       cancel-in-progress: false
     steps:
-      - name: Download Python and plugin artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: testbox-release
-          path: release-assets
-      - name: Download Windows applications
-        uses: actions/download-artifact@v4
-        with:
-          name: testbox-windows-applications
-          path: release-assets
+      # Checkout must happen before downloading artifacts. checkout cleans the
+      # working tree by default, which would otherwise delete release-assets.
       - name: Check out source for release metadata
         uses: actions/checkout@v4
       - name: Set up Python for release metadata
@@ -158,6 +150,22 @@ jobs:
             release_version="$declared_version"
           fi
           echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+      - name: Download Python and plugin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: testbox-release
+          path: release-assets
+      - name: Download Windows applications
+        uses: actions/download-artifact@v4
+        with:
+          name: testbox-windows-applications
+          path: release-assets
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -type f -print
+          test -n "$(find release-assets -type f -print -quit)"
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
