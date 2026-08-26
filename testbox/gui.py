@@ -1182,7 +1182,7 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         self.params_preview_txt = QtWidgets.QPlainTextEdit()
         self.params_preview_txt.setReadOnly(True)
         self.params_preview_txt.setFixedHeight(140)
-        self.params_preview_txt.setStyleSheet("background-color: #f8fafc; font-family: monospace; font-size: 12px;")
+        self.params_preview_txt.setObjectName("codeOutput")
         params_layout.addWidget(self.params_preview_txt)
         card_layout.addWidget(params_group)
 
@@ -1285,22 +1285,22 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
         # 2. 失败/异常诊断区域 (仅失败/中断时显示)
         self.diagnostic_box = QtWidgets.QWidget()
-        self.diagnostic_box.setStyleSheet("background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;")
+        self.diagnostic_box.setObjectName("diagnosticBox")
         diag_layout = QtWidgets.QVBoxLayout(self.diagnostic_box)
         diag_layout.setContentsMargins(16, 14, 16, 14)
         diag_layout.setSpacing(8)
 
         diag_title = QtWidgets.QLabel("🚨 错误诊断与处理建议 (Error Diagnostics)")
-        diag_title.setStyleSheet("color: #991b1b; font-weight: 700; font-size: 14px;")
+        diag_title.setObjectName("diagnosticTitle")
         diag_layout.addWidget(diag_title)
 
         self.diag_reason_lbl = QtWidgets.QLabel("")
-        self.diag_reason_lbl.setStyleSheet("color: #b91c1c; font-size: 13px; font-weight: 600;")
+        self.diag_reason_lbl.setObjectName("diagnosticReason")
         self.diag_reason_lbl.setWordWrap(True)
         diag_layout.addWidget(self.diag_reason_lbl)
 
         self.diag_advice_lbl = QtWidgets.QLabel("")
-        self.diag_advice_lbl.setStyleSheet("color: #7f1d1d; font-size: 12px;")
+        self.diag_advice_lbl.setObjectName("diagnosticAdvice")
         self.diag_advice_lbl.setWordWrap(True)
         diag_layout.addWidget(self.diag_advice_lbl)
 
@@ -1335,7 +1335,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.data_summary_txt = QtWidgets.QPlainTextEdit()
         self.data_summary_txt.setReadOnly(True)
         self.data_summary_txt.setFixedHeight(120)
-        self.data_summary_txt.setStyleSheet("background-color: #f8fafc; font-family: monospace; font-size: 12px;")
+        self.data_summary_txt.setObjectName("codeOutput")
         data_layout.addWidget(self.data_summary_txt)
         self.content_layout.addWidget(self.data_summary_box)
 
@@ -1345,7 +1345,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.params_txt = QtWidgets.QPlainTextEdit()
         self.params_txt.setReadOnly(True)
         self.params_txt.setFixedHeight(100)
-        self.params_txt.setStyleSheet("background-color: #f8fafc; font-family: monospace; font-size: 12px;")
+        self.params_txt.setObjectName("codeOutput")
         params_layout.addWidget(self.params_txt)
         self.content_layout.addWidget(params_box)
 
@@ -1367,7 +1367,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.report_txt = QtWidgets.QPlainTextEdit()
         self.report_txt.setReadOnly(True)
         self.report_txt.setFixedHeight(180)
-        self.report_txt.setStyleSheet("background-color: #1e293b; color: #f8fafc; font-family: monospace; font-size: 12px;")
+        self.report_txt.setObjectName("logOutput")
         logs_inner_layout.addWidget(self.report_txt)
 
         self.logs_content_widget.setVisible(False)
@@ -1446,7 +1446,41 @@ class TaskResultDetailView(QtWidgets.QWidget):
             report_content += f"错误码: {err_code}\n"
         if warnings:
             report_content += f"警告: {warnings}\n"
+
+        diagnostics = result_dict.get("data") or {}
+        host_stderr = diagnostics.get("host_stderr")
+        task_log_tail = diagnostics.get("task_log_tail")
+        if host_stderr:
+            report_content += f"\n--- Host 错误输出 ---\n{host_stderr.rstrip()}\n"
+
+        # Read the task log from the workspace as the source of truth. Failed
+        # results also carry a tail in result.data for CLI diagnostics, but a
+        # successful task does not need to duplicate its log into result.json.
+        task_log = ""
+        workspace_path = task_record.get("workspace_path")
+        if workspace_path:
+            log_path = Path(workspace_path) / "logs" / "task.log"
+            if log_path.is_file():
+                try:
+                    task_log = log_path.read_text(encoding="utf-8", errors="replace")[-8_000:]
+                except OSError:
+                    task_log = ""
+        if not task_log:
+            task_log = task_log_tail or ""
+        if task_log:
+            report_content += f"\n--- 插件执行日志（末尾） ---\n{task_log.rstrip()}\n"
+        if not host_stderr and not task_log:
+            report_content += "\n--- 插件执行日志 ---\n当前任务没有可显示的插件日志。\n"
         self.report_txt.setPlainText(report_content)
+
+    @staticmethod
+    def _apply_style_id(widget: QtWidgets.QWidget, style_id: str) -> None:
+        """Refresh QSS after changing a status-specific object selector."""
+        widget.setObjectName(style_id)
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+        widget.update()
 
     def _render_status_banner(self, status: str, result_dict: dict, task_record: dict):
         self.diagnostic_box.setVisible(False)
@@ -1454,24 +1488,24 @@ class TaskResultDetailView(QtWidgets.QWidget):
         if status == "SUCCEEDED":
             self.status_icon_lbl.setText("✅")
             self.status_main_text.setText("任务执行成功 (SUCCEEDED)")
-            self.status_main_text.setStyleSheet("font-size: 16px; font-weight: 700; color: #10b981;")
+            self._apply_style_id(self.status_main_text, "statusSuccess")
             self.status_sub_text.setText(result_dict.get("message") or "所有步骤已顺利完成，产物已落盘。")
-            self.status_banner.setStyleSheet("background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;")
+            self._apply_style_id(self.status_banner, "statusBannerSuccess")
 
         elif status == "WARNING":
             self.status_icon_lbl.setText("⚠️")
             self.status_main_text.setText("执行完成但包含警告 (WARNING)")
-            self.status_main_text.setStyleSheet("font-size: 16px; font-weight: 700; color: #d97706;")
+            self._apply_style_id(self.status_main_text, "statusWarning")
             self.status_sub_text.setText(result_dict.get("message") or "任务产物已生成，但存在部分警告提示。")
-            self.status_banner.setStyleSheet("background-color: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;")
+            self._apply_style_id(self.status_banner, "statusBannerWarning")
 
         elif status == "FAILED":
             self.status_icon_lbl.setText("❌")
             self.status_main_text.setText("任务执行失败 (FAILED)")
-            self.status_main_text.setStyleSheet("font-size: 16px; font-weight: 700; color: #ef4444;")
+            self._apply_style_id(self.status_main_text, "statusFailed")
             err_msg = result_dict.get("message") or "插件执行过程中遇到错误。"
             self.status_sub_text.setText(err_msg)
-            self.status_banner.setStyleSheet("background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;")
+            self._apply_style_id(self.status_banner, "statusBannerFailed")
 
             # 错误诊断与建议
             self.diagnostic_box.setVisible(True)
@@ -1482,9 +1516,9 @@ class TaskResultDetailView(QtWidgets.QWidget):
         elif status == "ABANDONED":
             self.status_icon_lbl.setText("⚠️")
             self.status_main_text.setText("任务异常中断 (ABANDONED)")
-            self.status_main_text.setStyleSheet("font-size: 16px; font-weight: 700; color: #ea580c;")
+            self._apply_style_id(self.status_main_text, "statusAbandoned")
             self.status_sub_text.setText("任务宿主进程非正常退出或超时中断。")
-            self.status_banner.setStyleSheet("background-color: #fff7ed; border: 1px solid #ffedd5; border-radius: 8px;")
+            self._apply_style_id(self.status_banner, "statusBannerAbandoned")
 
             self.diagnostic_box.setVisible(True)
             self.diag_reason_lbl.setText(f"【错误码: {task_record.get('error_code') or 'HOST_INTERRUPTED'}】 进程执行中断")
@@ -1493,9 +1527,9 @@ class TaskResultDetailView(QtWidgets.QWidget):
         elif status == "CANCELLED":
             self.status_icon_lbl.setText("⏹️")
             self.status_main_text.setText("任务已取消 (CANCELLED)")
-            self.status_main_text.setStyleSheet("font-size: 16px; font-weight: 700; color: #64748b;")
+            self._apply_style_id(self.status_main_text, "statusCancelled")
             self.status_sub_text.setText("用户已取消该任务执行。")
-            self.status_banner.setStyleSheet("background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;")
+            self._apply_style_id(self.status_banner, "statusBannerCancelled")
 
         else:
             self.status_icon_lbl.setText("❓")
@@ -1947,6 +1981,7 @@ class MainWindow(QtWidgets.QMainWindow):
     """
     def __init__(self, root: Path | None = None):
         super().__init__()
+        self._runtime_root = root
         self.runtime = Runtime(root)
         self.setWindowTitle("TestBox - 测试效能工具箱")
         self.resize(1120, 760)
@@ -2075,7 +2110,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.setCurrentIndex(2)
 
         # 启动后台 Worker
-        worker = RuntimeWorker(self.runtime.root, command_name, params)
+        # Keep the frozen-app root resolution inside Runtime. Passing
+        # ``self.runtime.root`` here would turn a packaged GUI task into an
+        # explicit source-root task and make it write into the executable
+        # directory (often read-only on Windows).
+        worker = RuntimeWorker(self._runtime_root, command_name, params)
         worker.signals.finished.connect(self._on_task_finished)
         worker.signals.failed.connect(self._on_task_failed)
         QtCore.QThreadPool.globalInstance().start(worker)
@@ -2103,10 +2142,38 @@ class MainWindow(QtWidgets.QMainWindow):
 
 STYLE = """
 * {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
     font-size: 13px;
     color: #EDEDED;
 }
+
+
+/* 失败、诊断和日志必须在深色主题中保持高对比度；避免浅色背景叠加浅灰文字。 */
+#statusBannerSuccess, #statusBannerWarning, #statusBannerFailed, #statusBannerAbandoned, #statusBannerCancelled {
+    border-radius: 8px;
+}
+#statusBannerSuccess { background-color: #10251f; border: 1px solid #17624a; }
+#statusBannerWarning { background-color: #2a2110; border: 1px solid #765718; }
+#statusBannerFailed { background-color: #2b1418; border: 1px solid #7f2635; }
+#statusBannerAbandoned { background-color: #2a1b0f; border: 1px solid #7c3b16; }
+#statusBannerCancelled { background-color: #171b22; border: 1px solid #374151; }
+#statusSuccess { color: #6ee7b7; font-size: 16px; font-weight: 700; }
+#statusWarning { color: #fbbf24; font-size: 16px; font-weight: 700; }
+#statusFailed { color: #fda4af; font-size: 16px; font-weight: 700; }
+#statusAbandoned { color: #fdba74; font-size: 16px; font-weight: 700; }
+#statusCancelled { color: #cbd5e1; font-size: 16px; font-weight: 700; }
+#diagnosticBox { background-color: #2b1418; border: 1px solid #7f2635; border-radius: 8px; }
+#diagnosticTitle { color: #fecdd3; font-size: 14px; font-weight: 700; }
+#diagnosticReason { color: #fda4af; font-size: 13px; font-weight: 600; }
+#diagnosticAdvice { color: #fecdd3; font-size: 12px; }
+#codeOutput, #logOutput {
+    background-color: #09090B;
+    color: #EDEDED;
+    border: 1px solid #27272A;
+    font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+    font-size: 12px;
+}
+#logOutput { background-color: #111827; color: #F8FAFC; }
 
 QMainWindow, QStackedWidget#mainStack, QScrollArea, QScrollArea > QWidget > QWidget {
     background-color: #000000;
@@ -2409,8 +2476,18 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 
 
 def main() -> None:
+    # Use a Windows-native UI font and point-sized application font. This
+    # avoids the blurry fallback produced by CSS pixel sizing on scaled
+    # Windows displays while retaining the existing layout.
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+        os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     app.setApplicationName("TestBox")
+    app_font = QtGui.QFont("Segoe UI" if sys.platform == "win32" else "Helvetica Neue")
+    app_font.setPointSize(10)
+    app_font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferQuality)
+    app.setFont(app_font)
     app.setStyleSheet(STYLE)
     window = MainWindow()
     window.show()

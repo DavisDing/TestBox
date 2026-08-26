@@ -1,4 +1,4 @@
-name: Windows build
+name: Build and release
 
 on:
   push:
@@ -8,12 +8,62 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# Build jobs only need to read repository contents. The release job below
+# elevates its permission explicitly so pull requests can never publish.
 permissions:
   contents: read
 
 jobs:
-  windows-executable:
-    name: Build TestBox.exe
+  package:
+    name: Build Python distribution and plugin packages
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime dependencies
+        run: python -m pip install --upgrade .
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+      - name: Resolve release version
+        shell: bash
+        run: |
+          declared_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          version="$declared_version"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [[ "$tag_version" != "$declared_version" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match pyproject.toml version $declared_version" >&2
+              exit 1
+            fi
+            version="$tag_version"
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build distribution and plugin archives
+        shell: bash
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+          mkdir -p plugin-dist
+          python -m testbox.cli plugin package plugins/data-generator --output "plugin-dist/data-generator-${RELEASE_VERSION}.zip"
+          python -m testbox.cli plugin package plugins/sql-parser --output "plugin-dist/sql-parser-${RELEASE_VERSION}.zip"
+          python -m testbox.cli plugin package plugins/evidence-tool --output "plugin-dist/evidence-tool-${RELEASE_VERSION}.zip"
+      - name: Upload Python and plugin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbox-release
+          path: |
+            dist/*
+            plugin-dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows applications
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     env:
       # Keep Python subprocess pipes UTF-8 on Windows; plugin data and reports
@@ -30,7 +80,7 @@ jobs:
         run: python -m pip install --upgrade .
       - name: Run tests
         run: python -m unittest discover -s tests -v
-      - name: Create Windows executable
+      - name: Create Windows executables
         shell: pwsh
         run: ./scripts/build_windows.ps1
       - name: Smoke test executable
@@ -54,8 +104,51 @@ jobs:
       - name: Upload Windows applications
         uses: actions/upload-artifact@v4
         with:
-          name: TestBox-windows-applications
+          name: testbox-windows-applications
           path: |
             dist/TestBox.exe
             dist/TestBox-GUI.exe
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [package, windows]
+    # Publish successful pushes to main/master as a moving "latest" release;
+    # publish v* tag pushes as immutable versioned releases. Never publish PRs.
+    if: >-
+      needs.package.result == 'success' &&
+      needs.windows.result == 'success' &&
+      (
+        github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/master' ||
+        startsWith(github.ref, 'refs/tags/v')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: testbox-release-${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+      cancel-in-progress: false
+    steps:
+      - name: Download Python and plugin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: testbox-release
+          path: release-assets
+      - name: Download Windows applications
+        uses: actions/download-artifact@v4
+        with:
+          name: testbox-windows-applications
+          path: release-assets
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('TestBox {0}', github.ref_name) || 'TestBox latest' }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          make_latest: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          files: release-assets/**/*
+          overwrite_files: true
+          fail_on_unmatched_files: true
