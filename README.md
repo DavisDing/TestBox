@@ -77,7 +77,14 @@ GitHub Release 会提供独立的 `TestBox.exe`，无需安装 Python。将它�
 
 发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`，两者均内置当前版本的官方插件，可直接使用。桌面端进入左侧“插件与诊断”页面后，可以点击“导入插件”选择 ZIP 插件包，也可以选中用户插件后点击“卸载选中插件”；覆盖安装和卸载都会二次确认。Release 中的 `data-generator`、`sql-parser`、`sql-select` 与 `evidence-tool` ZIP 是独立插件包，用于为已安装的软件额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
 
-GitHub Actions 发布规则：推送到 `main`/`master` 且构建与冒烟测试通过后，会自动更新 `latest` 预发布版本，Release 名称会显示当前版本（例如 `TestBox v1.0.0 (latest)`）；推送与 `pyproject.toml` 版本一致的 `vX.Y.Z` 标签（例如 `v1.0.0`）会创建正式版本 Release。Pull Request 只执行验证，不会发布 Release。
+GitHub Actions 发布规则：推送到 `main`/`master` 只执行构建、测试和冒烟验证，不会创建 Release。正式发布时，先将 `pyproject.toml` 中的版本递增（例如从 `1.0.0` 改为 `1.0.1`），再创建并推送同名的 `vX.Y.Z` 标签：
+
+```text
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+标签必须与 `pyproject.toml` 的版本完全一致。之后每次发布都递增版本号并创建新的标签（例如 `v1.0.1`、`v1.1.0`），GitHub Actions 会为每个标签创建独立的正式 Release。Pull Request 只执行验证，不会发布 Release。
 
 ## 任务历史与清理
 
