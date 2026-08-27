@@ -88,7 +88,7 @@ jobs:
         shell: pwsh
         run: |
           ./dist/TestBox.exe plugin list
-          ./dist/TestBox.exe run data.mock --count 2 --format csv --seed 10001
+          ./dist/TestBox.exe run data.mock --set count=2 --set format=csv --set seed=10001 --set 'fields=[{"name":"value","generator":"constant","options":{"value":"TEST DATA ONLY"}}]'
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
             $workspaceRoot = Join-Path $env:LOCALAPPDATA "TestBox\workspace"
