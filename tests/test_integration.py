@@ -164,6 +164,22 @@ class RuntimeIntegrationTests(unittest.TestCase):
         schema = self.runtime.get_command_schema("evidence.build")
         self.assertTrue(schema["properties"]["interactive"]["default"])
 
+    def test_evidence_interactive_mode_owns_screenshot_capture(self):
+        cases = self.temp / "mode.xlsx"
+        cases.write_bytes(b"placeholder")
+        shot = self.temp / "mode.png"
+        shot.write_bytes(b"placeholder")
+        _, result = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": [str(shot)]})
+        self.assertEqual(result.status, "failed")
+        self.assertIn("不接收 screenshots", result.message)
+
+    def test_evidence_batch_mode_requires_explicit_screenshots(self):
+        cases = self.temp / "mode.xlsx"
+        cases.write_bytes(b"placeholder")
+        _, result = self.runtime.run("evidence.build", {"input": str(cases), "interactive": False})
+        self.assertEqual(result.status, "failed")
+        self.assertIn("必须提供 screenshots", result.message)
+
     def test_evidence_build_discovers_and_builds(self):
         try:
             from openpyxl import Workbook, load_workbook

@@ -22,13 +22,13 @@
 ## 命令
 
 ```text
-testbox run evidence.build --input ./cases.xlsx --screenshots '["./1.png","./2.png"]' --row-indexes '[2,3]'
+testbox run evidence.build --input ./cases.xlsx --interactive false --screenshots '["./1.png","./2.png"]' --row-indexes '[2,3]'
 
 # 桌面交互模式：逐条执行、F8 截图、标注、跳过/结束
 testbox run evidence.build --input ./cases.xlsx --interactive true
 ```
 
-`evidence.build` 会在同一次任务中完成表头识别、列样例和映射诊断，并将这些信息写入 `evidence-index.json`。建议传入 `row_indexes`，这样截图与 Excel 行的关联不会因中间状态变化而漂移。
+`evidence.build` 默认使用交互截图流程：先确认 Excel 列映射，再逐条展示待执行项；按 F8 截图后进入标注，保存后立即写入 Word 并回写执行 Excel，确认完成后再进入下一条。批处理时必须显式设置 `interactive=false`，并提供 `screenshots`；建议同时传入 `row_indexes`，这样截图与 Excel 行的关联不会因中间状态变化而漂移。任务输出中的 `evidence-index.json` 会记录实际映射、待执行项、已保存证据、跳过/未完成项和报告文件。
 
 ## 与原桌面工具的对应关系
 
