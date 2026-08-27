@@ -14,7 +14,7 @@ DefaultDirName={localappdata}\Programs\TestBox
 DefaultGroupName={#AppName}
 UninstallDisplayIcon={app}\TestBox-GUI\{#AppExeName}
 OutputDir=..\dist
-OutputBaseFilename=TestBox-Setup-v{#AppVersion}
+OutputBaseFilename=TestBox-Install-v{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -27,6 +27,9 @@ Type: filesandordirs; Name: "{app}\TestBox"
 Type: filesandordirs; Name: "{app}\TestBox-GUI"
 Type: files; Name: "{app}\TestBox-Updater.exe"
 Type: files; Name: "{app}\update-manifest.json"
+
+[Registry]
+Root: HKCU; Subkey: "Software\TestBox"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletevalue
 
 [Files]
 Source: "..\dist\windows\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion

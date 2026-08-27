@@ -133,6 +133,12 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - GUI 必须展示任务 ID、插件版本、脱敏参数、输出文件和错误建议。
 - UI Agent 不应在 GUI 中重新实现文件写入、任务状态机或插件业务。
 
+## 9.1 Windows 发布与自动版本
+
+- Windows 主程序使用 PyInstaller `onedir`，发布物包含全量 Inno Setup 安装程序 `TestBox-Install-vX.Y.Z.exe`、增量 Inno Setup 程序 `TestBox-Setup-vX.Y.Z.exe`、更新清单、增量更新 ZIP 和独立 `TestBox-Updater.exe`。
+- 每次推送到 `main` 或 `master` 都由 GitHub Actions 创建一个正式版本：以最新 `vX.Y.Z` 标签为基准自动增加补丁号，并同步 `pyproject.toml`、安装包版本、标签及 GitHub Release。首次自动发布使用声明版本。
+- 自动生成的版本提交和标签由 `github-actions[bot]` 推送；PR 只执行验证，不创建 Release。
+
 ## 10. 编码规则
 
 - 先读三个核心 MD、相关代码和测试，再修改。

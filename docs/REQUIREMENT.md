@@ -180,6 +180,13 @@ CLI 与 GUI 必须使用相同的 Runtime、插件清单、Schema 和结果模�
 
 Evidence Tool、Excel Tool、Env Check、AI 插件、插件市场等作为后续能力，不在本轮基线中扩张。
 
+## 9.1 Windows 发布与自动版本
+
+- Windows 主程序使用 PyInstaller `onedir`，GitHub Release 必须同时提供全量安装程序 `TestBox-Install-vX.Y.Z.exe` 和增量安装程序 `TestBox-Setup-vX.Y.Z.exe`，不能只提供需要解压后运行的绿色包或只提供增量包。
+- 增量安装程序内部使用版本化更新载荷和 `TestBox-Updater.exe`，要求从对应的上一正式版本升级；更新清单和增量 ZIP 作为技术载荷随 Release 发布。
+- 每次推送到 `main` 或 `master` 都由 GitHub Actions 创建正式版本，版本号以最新 `vX.Y.Z` 标签为基准自动增加补丁号 `0.0.1`，并同步 Python 包、运行时版本和两个 Windows 安装程序的版本。
+- Pull Request 只执行测试和构建验证，不创建版本提交、标签或正式 Release。
+
 ## 10. Out of Scope
 
 - 云端数据库、云端任务队列和远程插件执行。

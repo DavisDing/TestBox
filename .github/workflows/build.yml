@@ -1,8 +1,8 @@
 name: Build and release
 
 on:
-  # Formal releases are created only from matching semantic-version tags.
-  # Normal pushes to main/master still run validation/build jobs only.
+  # Every push to the release branches creates a formal patch release.
+  # Version tags remain supported for an explicit/manual release retry.
   push:
     branches: [main, master]
     tags: ["v*"]
@@ -10,19 +10,96 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-# Build jobs only need to read repository contents. The release job below
-# elevates its permission explicitly so pull requests can never publish.
 permissions:
   contents: read
 
 jobs:
+  prepare-release:
+    name: Prepare automatic version and release
+    runs-on: ubuntu-latest
+    # Serialize version/tag allocation so two close pushes cannot choose the
+    # same patch number.
+    concurrency:
+      group: testbox-version-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      checkout_ref: ${{ steps.release.outputs.checkout_ref }}
+      publish_release: ${{ steps.release.outputs.publish_release }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          declared_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          publish_release=false
+          release_tag=""
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [[ "$tag_version" != "$declared_version" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match pyproject.toml version $declared_version" >&2
+              exit 1
+            fi
+            release_version="$tag_version"
+            release_tag="$GITHUB_REF_NAME"
+            publish_release=true
+            checkout_ref="$GITHUB_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == push && ( "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/master ) ]]; then
+            latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)"
+            release_version="$(python scripts/release_version.py resolve --declared-version "$declared_version" --latest-tag "$latest_tag")"
+            python scripts/release_version.py sync --version "$release_version"
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            if ! git diff --quiet -- pyproject.toml installer/TestBox.iss installer/TestBoxUpdate.iss; then
+              git add pyproject.toml installer/TestBox.iss installer/TestBoxUpdate.iss
+              git commit -m "chore: bump version to $release_version [skip ci]"
+              git push origin "HEAD:${GITHUB_REF_NAME}"
+            fi
+            checkout_ref="$(git rev-parse HEAD)"
+            release_tag="v$release_version"
+            publish_release=true
+            if git rev-parse --verify --quiet "refs/tags/$release_tag" >/dev/null; then
+              existing_target="$(git rev-list -n 1 "$release_tag")"
+              if [[ "$existing_target" != "$checkout_ref" ]]; then
+                echo "Release tag $release_tag already points to $existing_target, expected $checkout_ref" >&2
+                exit 1
+              fi
+            else
+              git tag -a "$release_tag" "$checkout_ref" -m "TestBox $release_tag"
+              git push origin "$release_tag"
+            fi
+          else
+            # PRs and manually dispatched verification runs build the checked
+            # out revision but never push a version commit, tag, or Release.
+            release_version="$declared_version"
+            checkout_ref="$GITHUB_SHA"
+          fi
+
+          echo "version=$release_version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+          echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
+
   package:
+    needs: [prepare-release]
     name: Build Python distribution and plugin packages
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -33,18 +110,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Resolve release version
         shell: bash
-        run: |
-          declared_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          version="$declared_version"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            tag_version="${GITHUB_REF_NAME#v}"
-            if [[ "$tag_version" != "$declared_version" ]]; then
-              echo "Tag $GITHUB_REF_NAME does not match pyproject.toml version $declared_version" >&2
-              exit 1
-            fi
-            version="$tag_version"
-          fi
-          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+        run: echo "RELEASE_VERSION=${{ needs.prepare-release.outputs.version }}" >> "$GITHUB_ENV"
       - name: Build distribution and plugin archives
         shell: bash
         run: |
@@ -65,8 +131,8 @@ jobs:
           if-no-files-found: error
 
   windows:
-    name: Build Windows applications
-    if: github.event_name != 'pull_request'
+    needs: [prepare-release]
+    name: Build Windows installers
     runs-on: windows-latest
     env:
       # Keep Python subprocess pipes UTF-8 on Windows; plugin data and reports
@@ -75,6 +141,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -85,18 +153,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Resolve release version
         shell: pwsh
-        run: |
-          $declaredVersion = python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
-          if ($env:GITHUB_REF -like 'refs/tags/v*') {
-            $tagVersion = $env:GITHUB_REF_NAME.Substring(1)
-            if ($tagVersion -ne $declaredVersion) {
-              throw "Tag $env:GITHUB_REF_NAME does not match pyproject.toml version $declaredVersion"
-            }
-            $releaseVersion = $tagVersion
-          } else {
-            $releaseVersion = $declaredVersion
-          }
-          "RELEASE_VERSION=$releaseVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        run: "RELEASE_VERSION=${{ needs.prepare-release.outputs.version }} | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append"
       - name: Create Windows executables
         shell: pwsh
         run: ./scripts/build_windows.ps1
@@ -126,7 +183,7 @@ jobs:
             exit $exitCode
           }
       - name: Resolve previous release manifest
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.prepare-release.outputs.publish_release == 'true'
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -138,7 +195,7 @@ jobs:
           }
           $releases = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
           $previous = $releases |
-            Where-Object { $_.tag_name -match '^v[0-9]+\.[0-9]+\.[0-9]+$' -and $_.tag_name -ne $env:GITHUB_REF_NAME } |
+            Where-Object { $_.tag_name -match '^v[0-9]+\.[0-9]+\.[0-9]+$' -and $_.tag_name -ne '${{ needs.prepare-release.outputs.release_tag }}' } |
             ForEach-Object {
               try { [pscustomobject]@{ Release = $_; Version = [version]$_.tag_name.Substring(1) } } catch {}
             } |
@@ -151,8 +208,7 @@ jobs:
               Write-Host "Using previous release manifest: $($previous.Release.tag_name)"
             }
           }
-      - name: Create Windows update package and portable archive
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Create incremental update package
         shell: pwsh
         run: |
           $previousArgs = @()
@@ -160,11 +216,13 @@ jobs:
           if (Test-Path $previousManifest) {
             $previousArgs = @('--previous-manifest', $previousManifest)
           }
-          $baseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME"
-          python scripts/build_update_package.py --root dist/windows --version $env:RELEASE_VERSION --output "dist/TestBox-update-v$env:RELEASE_VERSION.zip" --manifest dist/windows/update-manifest.json --package-base-url $baseUrl @previousArgs
-          Compress-Archive -Path dist/windows/* -DestinationPath "dist/TestBox-v$env:RELEASE_VERSION-windows.zip" -CompressionLevel Optimal
-      - name: Build Windows installer
-        if: startsWith(github.ref, 'refs/tags/v')
+          $packageBaseUrlArgs = @()
+          if ('${{ needs.prepare-release.outputs.publish_release }}' -eq 'true') {
+            $baseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/${{ needs.prepare-release.outputs.release_tag }}"
+            $packageBaseUrlArgs = @('--package-base-url', $baseUrl)
+          }
+          python scripts/build_update_package.py --root dist/windows --version $env:RELEASE_VERSION --output "dist/TestBox-update-v$env:RELEASE_VERSION.zip" --manifest dist/windows/update-manifest.json @packageBaseUrlArgs @previousArgs
+      - name: Build full installation and incremental setup programs
         shell: pwsh
         run: |
           $isccCandidates = @(
@@ -178,53 +236,48 @@ jobs:
           }
           if (-not $iscc) { throw 'Inno Setup compiler (ISCC.exe) was not found' }
           & $iscc "/DAppVersion=$env:RELEASE_VERSION" installer/TestBox.iss
-      - name: Upload Windows applications
-        if: startsWith(github.ref, 'refs/tags/v')
+          if ($LASTEXITCODE -ne 0) { throw "Full installer build failed with exit code $LASTEXITCODE" }
+          & $iscc "/DAppVersion=$env:RELEASE_VERSION" "/DUpdatePackage=TestBox-update-v$env:RELEASE_VERSION.zip" installer/TestBoxUpdate.iss
+          if ($LASTEXITCODE -ne 0) { throw "Incremental setup build failed with exit code $LASTEXITCODE" }
+          $expected = @(
+            "dist\TestBox-Install-v$env:RELEASE_VERSION.exe",
+            "dist\TestBox-Setup-v$env:RELEASE_VERSION.exe",
+            "dist\TestBox-update-v$env:RELEASE_VERSION.zip",
+            "dist\windows\update-manifest.json"
+          )
+          foreach ($path in $expected) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Expected Windows release asset was not created: $path" }
+          }
+      - name: Upload Windows release artifacts
+        if: needs.prepare-release.outputs.publish_release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: testbox-windows-applications
           path: |
+            dist/TestBox-Install-v*.exe
             dist/TestBox-Setup-v*.exe
-            dist/TestBox-v*-windows.zip
             dist/TestBox-update-v*.zip
             dist/windows/update-manifest.json
           if-no-files-found: error
 
   release:
     name: Publish GitHub release
-    needs: [package, windows]
-    # Only matching vX.Y.Z tag pushes publish immutable formal releases.
-    # Normal pushes to main/master never create or overwrite a release.
+    needs: [prepare-release, package, windows]
     if: >-
+      needs.prepare-release.outputs.publish_release == 'true' &&
       needs.package.result == 'success' &&
-      needs.windows.result == 'success' &&
-      startsWith(github.ref, 'refs/tags/v')
+      needs.windows.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: testbox-release-${{ github.ref_name }}
+      group: testbox-release-${{ needs.prepare-release.outputs.release_tag }}
       cancel-in-progress: false
     steps:
-      # Checkout must happen before downloading artifacts. checkout cleans the
-      # working tree by default, which would otherwise delete release-assets.
       - name: Check out source for release metadata
         uses: actions/checkout@v4
-      - name: Set up Python for release metadata
-        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          declared_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            release_version="${GITHUB_REF_NAME#v}"
-          else
-            release_version="$declared_version"
-          fi
-          echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
       - name: Download Python and plugin artifacts
         uses: actions/download-artifact@v4
         with:
@@ -244,12 +297,17 @@ jobs:
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: TestBox ${{ github.ref_name }}
+          tag_name: ${{ needs.prepare-release.outputs.release_tag }}
+          name: TestBox ${{ needs.prepare-release.outputs.release_tag }}
           body: |
-            TestBox version: v${{ steps.version.outputs.release_version }}
-            Commit: ${{ github.sha }}
-          target_commitish: ${{ github.sha }}
+            TestBox version: v${{ needs.prepare-release.outputs.version }}
+            Commit: ${{ needs.prepare-release.outputs.checkout_ref }}
+
+            Windows assets:
+            - TestBox-Install-v${{ needs.prepare-release.outputs.version }}.exe: full installation program
+            - TestBox-Setup-v${{ needs.prepare-release.outputs.version }}.exe: incremental setup program
+            - TestBox-update-v${{ needs.prepare-release.outputs.version }}.zip: updater payload
+          target_commitish: ${{ needs.prepare-release.outputs.checkout_ref }}
           prerelease: false
           make_latest: true
           generate_release_notes: true
