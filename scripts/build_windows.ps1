@@ -8,6 +8,10 @@ Set-Location $repoRoot
 python -m pip install --upgrade ".[desktop,windows-build]"
 
 $windowsDist = Join-Path $repoRoot "dist\windows"
+$pluginsSource = Join-Path $repoRoot "plugins"
+if (-not (Test-Path -LiteralPath $pluginsSource -PathType Container)) {
+    throw "Bundled plugins directory was not found: $pluginsSource"
+}
 if (Test-Path -LiteralPath $windowsDist) {
     Remove-Item -LiteralPath $windowsDist -Recurse -Force
 }
@@ -38,7 +42,7 @@ foreach ($module in $pluginHiddenImports) {
 & python -m PyInstaller --noconfirm --clean --onedir --name TestBox `
     --distpath $windowsDist --workpath (Join-Path $repoRoot "build\pyinstaller-cli") --specpath (Join-Path $repoRoot "build\specs\cli") `
     --collect-submodules testbox --collect-all openpyxl --collect-all docx --collect-all PIL `
-    @pluginHiddenImportArgs --add-data "plugins;plugins" testbox/cli.py
+    @pluginHiddenImportArgs --add-data "$pluginsSource;plugins" (Join-Path $repoRoot "testbox\cli.py")
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
     throw "PyInstaller CLI build failed with exit code $exitCode"
@@ -47,7 +51,7 @@ if ($exitCode -ne 0) {
 & python -m PyInstaller --noconfirm --clean --onedir --windowed --name TestBox-GUI `
     --distpath $windowsDist --workpath (Join-Path $repoRoot "build\pyinstaller-gui") --specpath (Join-Path $repoRoot "build\specs\gui") `
     --collect-submodules testbox --collect-all PySide6 --collect-all openpyxl --collect-all docx --collect-all PIL `
-    @pluginHiddenImportArgs --add-data "plugins;plugins" testbox/gui.py
+    @pluginHiddenImportArgs --add-data "$pluginsSource;plugins" (Join-Path $repoRoot "testbox\gui.py")
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
     throw "PyInstaller GUI build failed with exit code $exitCode"
@@ -57,7 +61,7 @@ if ($exitCode -ne 0) {
 # be available as a small bootstrap outside the files it replaces.
 & python -m PyInstaller --noconfirm --clean --onefile --name TestBox-Updater `
     --distpath (Join-Path $repoRoot "dist\updater") --workpath (Join-Path $repoRoot "build\pyinstaller-updater") --specpath (Join-Path $repoRoot "build\specs\updater") `
-    scripts/testbox_updater.py
+    (Join-Path $repoRoot "scripts\testbox_updater.py")
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
     throw "PyInstaller updater build failed with exit code $exitCode"
