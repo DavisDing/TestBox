@@ -32,37 +32,36 @@ foreach ($module in $pluginHiddenImports) {
     $pluginHiddenImportArgs += @("--hidden-import", $module)
 }
 
-function Invoke-CheckedPyInstaller {
-    param([string[]] $Arguments)
-    & python -m PyInstaller @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller failed with exit code $LASTEXITCODE"
-    }
+# onedir avoids extracting the complete Python/Qt runtime on every launch.
+# Keep these as direct PowerShell invocations instead of nesting arrays. This
+# preserves PyInstaller's expected option/value pairs on Windows PowerShell.
+& python -m PyInstaller --noconfirm --clean --onedir --name TestBox `
+    --distpath $windowsDist --workpath (Join-Path $repoRoot "build\pyinstaller-cli") --specpath (Join-Path $repoRoot "build\specs\cli") `
+    --collect-submodules testbox --collect-all openpyxl --collect-all docx --collect-all PIL `
+    @pluginHiddenImportArgs --add-data "plugins;plugins" testbox/cli.py
+$exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
+    throw "PyInstaller CLI build failed with exit code $exitCode"
 }
 
-# onedir avoids extracting the complete Python/Qt runtime on every launch.
-# CLI and GUI remain separate so the CLI does not carry the desktop stack.
-Invoke-CheckedPyInstaller @(
-    "--noconfirm", "--clean", "--onedir", "--name", "TestBox",
-    "--distpath", $windowsDist, "--workpath", (Join-Path $repoRoot "build\pyinstaller-cli"), "--specpath", (Join-Path $repoRoot "build\specs\cli"),
-    "--collect-submodules", "testbox", "--collect-all", "openpyxl", "--collect-all", "docx", "--collect-all", "PIL",
-    $pluginHiddenImportArgs, "--add-data", "plugins;plugins", "testbox/cli.py"
-)
-
-Invoke-CheckedPyInstaller @(
-    "--noconfirm", "--clean", "--onedir", "--windowed", "--name", "TestBox-GUI",
-    "--distpath", $windowsDist, "--workpath", (Join-Path $repoRoot "build\pyinstaller-gui"), "--specpath", (Join-Path $repoRoot "build\specs\gui"),
-    "--collect-submodules", "testbox", "--collect-all", "PySide6", "--collect-all", "openpyxl", "--collect-all", "docx", "--collect-all", "PIL",
-    $pluginHiddenImportArgs, "--add-data", "plugins;plugins", "testbox/gui.py"
-)
+& python -m PyInstaller --noconfirm --clean --onedir --windowed --name TestBox-GUI `
+    --distpath $windowsDist --workpath (Join-Path $repoRoot "build\pyinstaller-gui") --specpath (Join-Path $repoRoot "build\specs\gui") `
+    --collect-submodules testbox --collect-all PySide6 --collect-all openpyxl --collect-all docx --collect-all PIL `
+    @pluginHiddenImportArgs --add-data "plugins;plugins" testbox/gui.py
+$exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
+    throw "PyInstaller GUI build failed with exit code $exitCode"
+}
 
 # The updater is intentionally onefile: it runs only during an update and must
 # be available as a small bootstrap outside the files it replaces.
-Invoke-CheckedPyInstaller @(
-    "--noconfirm", "--clean", "--onefile", "--name", "TestBox-Updater",
-    "--distpath", (Join-Path $repoRoot "dist\updater"), "--workpath", (Join-Path $repoRoot "build\pyinstaller-updater"), "--specpath", (Join-Path $repoRoot "build\specs\updater"),
-    "scripts/testbox_updater.py"
-)
+& python -m PyInstaller --noconfirm --clean --onefile --name TestBox-Updater `
+    --distpath (Join-Path $repoRoot "dist\updater") --workpath (Join-Path $repoRoot "build\pyinstaller-updater") --specpath (Join-Path $repoRoot "build\specs\updater") `
+    scripts/testbox_updater.py
+$exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
+    throw "PyInstaller updater build failed with exit code $exitCode"
+}
 Copy-Item (Join-Path $repoRoot "dist\updater\TestBox-Updater.exe") (Join-Path $windowsDist "TestBox-Updater.exe")
 
 $expectedExecutables = @(
