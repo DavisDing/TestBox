@@ -103,8 +103,15 @@ jobs:
       - name: Smoke test executable
         shell: pwsh
         run: |
-          ./dist/windows/TestBox/TestBox.exe plugin list
-          ./dist/windows/TestBox/TestBox.exe run data.mock --set count=2 --set format=csv --set seed=10001 --set 'fields=[{"name":"value","generator":"constant","options":{"value":"TEST DATA ONLY"}}]'
+          $cliExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\TestBox\TestBox.exe"
+          if (-not (Test-Path -LiteralPath $cliExe -PathType Leaf)) {
+            Write-Host "--- Windows build output ---"
+            Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "dist\windows") -Recurse -File | Select-Object -ExpandProperty FullName
+            throw "TestBox CLI executable was not created: $cliExe"
+          }
+          & $cliExe plugin list
+          if ($LASTEXITCODE -ne 0) { throw "TestBox plugin list failed with exit code $LASTEXITCODE" }
+          & $cliExe run data.mock --set count=2 --set format=csv --set seed=10001 --set 'fields=[{"name":"value","generator":"constant","options":{"value":"TEST DATA ONLY"}}]'
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
             $workspaceRoot = Join-Path $env:LOCALAPPDATA "TestBox\workspace"
