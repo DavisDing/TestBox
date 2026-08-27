@@ -68,20 +68,29 @@ python3 -m testbox.cli plugin uninstall data-generator
 
 ## Windows 使用
 
-GitHub Release 会提供独立的 `TestBox.exe`，无需安装 Python。将它放在任意目录后，可在 PowerShell 或命令提示符执行：
+Windows 安装包会安装命令行工具和桌面端。绿色压缩包解压后，可在 PowerShell 或命令提示符执行：
 
 ```text
-.\TestBox.exe plugin list
-.\TestBox.exe run data.mock --count 100 --format csv --seed 10001
+.\TestBox\TestBox.exe plugin list
+.\TestBox\TestBox.exe run data.mock --count 100 --format csv --seed 10001
 ```
 
 发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`，两者均内置当前版本的官方插件，可直接使用。桌面端进入左侧“插件与诊断”页面后，可以点击“导入插件”选择 ZIP 插件包，也可以选中用户插件后点击“卸载选中插件”；覆盖安装和卸载都会二次确认。Release 中的 `data-generator`、`sql-parser`、`sql-select` 与 `evidence-tool` ZIP 是独立插件包，用于为已安装的软件额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
+Windows 发行版使用 PyInstaller `onedir`，首次启动不再解压整个 EXE。Release 同时提供 `TestBox-Setup-vX.Y.Z.exe` 安装包、`TestBox-vX.Y.Z-windows.zip` 绿色压缩包、`TestBox-update-vX.Y.Z.zip` 增量更新包和 `update-manifest.json`。安装包只管理程序安装目录；任务工作区、配置和用户插件继续保存在 `%LOCALAPPDATA%\TestBox\`，升级时不会覆盖这些用户数据。
+
+增量更新由安装目录中的 `TestBox-Updater.exe` 执行。它依据版本清单校验 SHA-256，只替换新增或变化的文件，删除新版本清单中已移除的受管文件，并保留未受管的用户文件。增量包要求从对应的上一正式版本升级；如果版本跨度不连续，请先使用最新完整安装包。
+
+手动执行更新示例：
+
+```text
+TestBox-Updater.exe --manifest-url https://github.com/DavisDing/TestBox/releases/latest/download/update-manifest.json
+```
 
 GitHub Actions 发布规则：推送到 `main`/`master` 只执行构建、测试和冒烟验证，不会创建 Release。正式发布时，先将 `pyproject.toml` 中的版本递增（例如从 `1.0.0` 改为 `1.0.1`），再创建并推送同名的 `vX.Y.Z` 标签：
 
 ```text
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 标签必须与 `pyproject.toml` 的版本完全一致。之后每次发布都递增版本号并创建新的标签（例如 `v1.0.1`、`v1.1.0`），GitHub Actions 会为每个标签创建独立的正式 Release。Pull Request 只执行验证，不会发布 Release。
