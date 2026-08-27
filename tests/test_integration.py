@@ -13,6 +13,8 @@ from testbox.core.process_runner import HostExecution
 from testbox.core.runtime import PluginExecutionLock, Runtime
 
 ROOT = Path(__file__).resolve().parents[1]
+MINIMAL_FIELDS = [{"name": "value", "type": "VARCHAR(16)", "generator": "template", "options": {"value": "test-{index}"}}]
+PHONE_FIELDS = [{"name": "phone", "type": "VARCHAR(11)", "generator": "mobile_cn"}]
 
 class RuntimeIntegrationTests(unittest.TestCase):
     def setUp(self):
@@ -70,7 +72,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
                 )
 
         self.runtime.process_runner = InProcessRunner()
-        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json"})
+        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "fields": MINIMAL_FIELDS})
         self.assertEqual(result.status, "success")
         self.assertEqual(self.runtime.get_task(task_id)["status"], "SUCCEEDED")
 
@@ -100,7 +102,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         inspect = cli("--json", "plugin", "inspect", "data-generator")
         self.assertEqual(inspect.returncode, 0, inspect.stderr)
         self.assertEqual(json.loads(inspect.stdout)["name"], "data-generator")
-        run = cli("--json", "run", "data.mock", "--set", "count=1", "--set", "format=json", "--set", "seed=7")
+        run = cli("--json", "run", "data.mock", "--set", "count=1", "--set", "format=json", "--set", "seed=7", "--set", 'fields=[{"name":"value","generator":"template","options":{"value":"test-{index}"}}]')
         self.assertEqual(run.returncode, 0, run.stderr)
         task = json.loads(run.stdout)
         task_id = task["task_id"]
@@ -131,7 +133,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         workspace = self.temp / "gui-host-workspace"
         for child in ("input", "output", "logs"):
             (workspace / child).mkdir(parents=True, exist_ok=True)
-        request = {"protocol_version": 1, "task_id": "gui-host-test", "plugin_path": str(self.temp / "plugins" / "data-generator"), "entry": "src.main:Plugin", "command": "data.mock", "params": {"count": 1, "format": "json", "seed": 7}, "config": {}, "workspace": str(workspace)}
+        request = {"protocol_version": 1, "task_id": "gui-host-test", "plugin_path": str(self.temp / "plugins" / "data-generator"), "entry": "src.main:Plugin", "command": "data.mock", "params": {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS}, "config": {}, "workspace": str(workspace)}
         process = subprocess.run([sys.executable, "-m", "testbox.gui", "--plugin-host"], input=json.dumps(request), capture_output=True, text=True, timeout=10)
         self.assertEqual(process.returncode, 0, process.stderr)
         # The host protocol must remain portable when Windows uses a legacy
@@ -141,8 +143,8 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(event["result"]["status"], "success")
         self.assertTrue((workspace / "output" / event["result"]["files"][0]).is_file())
     def test_mock_is_repeatable_and_traced(self):
-        first_id, first = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7})
-        second_id, second = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7})
+        first_id, first = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
+        second_id, second = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         self.assertEqual(first.status, "success"); self.assertEqual(second.status, "success")
         self.assertEqual(first.files, [f"{first_id}.json"]); self.assertEqual(second.files, [f"{second_id}.json"])
         first_data = (self.temp / "workspace" / first_id / "output" / first.files[0]).read_text()
@@ -158,6 +160,10 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(manifest["inputs"][0]["parameter"], "input")
         self.assertTrue((self.temp / "workspace" / task_id / manifest["inputs"][0]["staged_path"]).is_file())
         self.assertEqual(manifest["inputs"][0]["sha256"], __import__("hashlib").sha256(sql.read_bytes()).hexdigest())
+    def test_evidence_interactive_is_default(self):
+        schema = self.runtime.get_command_schema("evidence.build")
+        self.assertTrue(schema["properties"]["interactive"]["default"])
+
     def test_evidence_build_discovers_and_builds(self):
         try:
             from openpyxl import Workbook, load_workbook
@@ -169,7 +175,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         sheet.append(["Case Name", "Check Point", "Step", "Desc", "Expected", "Status"])
         sheet.append(["登录/功能", "登录成功", "1", "输入账号密码", "进入首页", ""]); workbook.save(cases)
         shot = self.temp / "shot.png"; Image.new("RGB", (320, 180), "white").save(shot)
-        task_id, result = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": [str(shot)], "update_excel": True})
+        task_id, result = self.runtime.run("evidence.build", {"input": str(cases), "interactive": False, "screenshots": [str(shot)], "update_excel": True})
         self.assertEqual(result.status, "success"); self.assertEqual(result.data["evidence_count"], 1)
         self.assertEqual(result.data["header_row"], 1)
         self.assertEqual(result.data["pending_count"], 0)
@@ -193,7 +199,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         shot = self.temp / "partial.png"; Image.new("RGB", (320, 180), "white").save(shot)
         selected_row = 24
         mapping = {"测试名称": "测试名称", "验证点": "验证点", "步骤名称": "步骤名称", "步骤描述": "步骤描述", "预期结果": "预期结果", "测试结果": "测试结果"}
-        task_id, result = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": [str(shot)], "row_indexes": [selected_row], "column_mapping": mapping, "update_excel": True})
+        task_id, result = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": [str(shot)], "interactive": False, "row_indexes": [selected_row], "column_mapping": mapping, "update_excel": True})
         self.assertEqual(result.status, "success"); self.assertEqual(result.data["rows"], [selected_row])
         excel_output = next(name for name in result.files if name.startswith("executed-"))
         self.runtime.commit_output(task_id, excel_output, cases)
@@ -210,7 +216,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         shots = []
         for index in range(2):
             path = self.temp / f"collision-{index}.png"; Image.new("RGB", (100, 60), "white").save(path); shots.append(str(path))
-        task_id, result = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": shots, "row_indexes": [2, 3]})
+        task_id, result = self.runtime.run("evidence.build", {"input": str(cases), "interactive": False, "screenshots": shots, "row_indexes": [2, 3]})
         reports = [name for name in result.files if name.endswith(".docx")]
         self.assertEqual(len(reports), 2); self.assertEqual(len(set(reports)), 2)
         self.assertTrue(all((self.temp / "workspace" / task_id / "output" / name).is_file() for name in reports))
@@ -224,9 +230,9 @@ class RuntimeIntegrationTests(unittest.TestCase):
         cases = self.temp / "append.xlsx"; workbook = Workbook(); sheet = workbook.active
         sheet.append(["测试名称", "验证点", "步骤名称", "测试结果"]); sheet.append(["支付功能", "支付成功", "1", ""]); workbook.save(cases)
         shot = self.temp / "append.png"; Image.new("RGB", (100, 60), "white").save(shot)
-        first_id, first = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": [str(shot)], "row_indexes": [2], "update_excel": False})
+        first_id, first = self.runtime.run("evidence.build", {"input": str(cases), "interactive": False, "screenshots": [str(shot)], "row_indexes": [2], "update_excel": False})
         first_report = self.temp / "workspace" / first_id / "output" / first.files[0]
-        second_id, second = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": [str(shot)], "row_indexes": [2], "existing_reports": [str(first_report)], "update_excel": False})
+        second_id, second = self.runtime.run("evidence.build", {"input": str(cases), "interactive": False, "screenshots": [str(shot)], "row_indexes": [2], "existing_reports": [str(first_report)], "update_excel": False})
         second_report = self.temp / "workspace" / second_id / "output" / second.files[0]; document = Document(second_report)
         self.assertEqual([p.text for p in document.paragraphs].count("验证点：支付成功"), 1)
         self.assertEqual(len(document.inline_shapes), 2)
@@ -243,7 +249,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         sheet["F2"] = "已执行"; workbook.save(cases)
         shot1 = self.temp / "merged-1.png"; shot2 = self.temp / "merged-2.png"
         Image.new("RGB", (100, 60), "white").save(shot1); Image.new("RGB", (100, 60), "white").save(shot2)
-        _, result = self.runtime.run("evidence.build", {"input": str(cases), "screenshots": [str(shot1), str(shot2)], "row_indexes": [3, 4], "update_excel": False})
+        _, result = self.runtime.run("evidence.build", {"input": str(cases), "interactive": False, "screenshots": [str(shot1), str(shot2)], "row_indexes": [3, 4], "update_excel": False})
         self.assertEqual([item["row_index"] for item in result.data["items"]], [3, 4])
         self.assertTrue(all(item["case_name"] == "合并用例" and item["checkpoint"] == "合并验证点" for item in result.data["items"]))
     def test_sql_parser_exports_xlsx(self):
@@ -644,12 +650,22 @@ capabilities:
             Manifest.load(plugin / "manifest.yaml")
     def test_project_config_is_injected_into_plugin(self):
         (self.temp / "config.yaml").write_text('phone_prefixes: "199"\n', encoding="utf-8")
-        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": PHONE_FIELDS})
         rows = json.loads((self.temp / "workspace" / task_id / "output" / result.files[0]).read_text(encoding="utf-8"))
         self.assertTrue(rows[0]["phone"].startswith("199"))
     def test_schema_maximum_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "不能大于"):
             self.runtime.run("data.mock", {"count": 100001, "format": "json"})
+    def test_data_generator_requires_explicit_schema(self):
+        _, result = self.runtime.run("data.mock", {"count": 1, "format": "json"})
+        self.assertEqual(result.status, "failed")
+        self.assertIn("请至少添加一个字段", result.message)
+
+    def test_data_generator_rejects_conflicting_schema_modes(self):
+        _, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "fields": MINIMAL_FIELDS, "template": "account"})
+        self.assertEqual(result.status, "failed")
+        self.assertIn("只能选择一种模式", result.message)
+
     def test_data_generator_supports_custom_fields_and_types(self):
         fields = [
             {"name": "id", "type": "BIGINT", "generator": "sequence", "unique": True, "options": {"prefix": "ID-", "width": 4}},
@@ -675,6 +691,17 @@ capabilities:
         self.assertIn("`id`", script)
         self.assertIn("`active`", script)
         self.assertEqual(result.data["table"], "orders")
+
+    def test_data_generator_sql_can_include_create_table(self):
+        fields = [
+            {"name": "id", "type": "BIGINT", "generator": "sequence", "primary_key": True, "unique": True},
+            {"name": "status", "type": "VARCHAR(10)", "generator": "constant", "options": {"value": "OK"}},
+        ]
+        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "sql", "table": "user_info", "fields": fields, "sql_create_table": True, "sql_transaction": False})
+        script = (self.temp / "workspace" / task_id / "output" / result.files[0]).read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE `user_info`", script)
+        self.assertIn("`id` BIGINT PRIMARY KEY", script)
+        self.assertIn("INSERT INTO `user_info`", script)
 
     def test_data_generator_supports_field_unique_phone_rule(self):
         rules = [{"name": "mobile", "generator": "mobile_cn", "unique": True, "options": {"prefixes": ["199"]}}]
@@ -722,7 +749,7 @@ capabilities:
         self.assertIn("O''Reilly-1", script)
         self.assertIn("BEGIN;", script)
     def test_data_generator_exports_zip_bundle(self):
-        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "zip", "seed": 7, "zip_formats": ["json", "txt", "sql"]})
+        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "zip", "seed": 7, "fields": MINIMAL_FIELDS, "zip_formats": ["json", "txt", "sql"]})
         bundle = self.temp / "workspace" / task_id / "output" / result.files[0]
         with __import__("zipfile").ZipFile(bundle) as archive:
             self.assertEqual(set(archive.namelist()), {f"{task_id}.json", f"{task_id}.txt", f"{task_id}.sql", "generation-summary.json"})
@@ -761,7 +788,7 @@ capabilities:
         self.assertEqual(after, before)
 
     def test_task_history_and_workspace_clean(self):
-        task_id, _ = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+        task_id, _ = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         record = self.runtime.history.get(task_id)
         self.assertEqual(record["status"], "SUCCEEDED")
         self.assertEqual(record["params"]["seed"], 7)
@@ -777,7 +804,7 @@ capabilities:
         self.assertIn("data.mock", self.runtime.list_commands())
         schema = self.runtime.get_command_schema("data.mock")
         self.assertEqual(schema["type"], "object")
-        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+        task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         self.assertEqual(self.runtime.get_task(task_id)["status"], "SUCCEEDED")
         self.assertEqual(self.runtime.get_task_result(task_id)["status"], "success")
         self.assertEqual(self.runtime.list_tasks(command="data.mock", limit=1)[0]["id"], task_id)
@@ -785,7 +812,7 @@ capabilities:
         manifest = self.runtime.manager.available["data.mock"]
         manifest.capabilities["concurrency"] = False
         with patch.object(PluginExecutionLock, "acquire", side_effect=OSError("lock unavailable")):
-            task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+            task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.data["error_code"], ErrorCode.CORE_EXECUTION_FAILED)
         self.assertEqual(self.runtime.history.get(task_id)["status"], "FAILED")
@@ -802,7 +829,7 @@ capabilities:
             "        return Result('success', 'unexpected')\n",
             encoding="utf-8",
         )
-        _, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7})
+        _, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.data["error_code"], "EXECUTION_FAILED")
         self.assertEqual(result.data["exception_type"], "RuntimeError")
@@ -812,7 +839,7 @@ capabilities:
 
     def test_host_timeout_is_recorded(self):
         timed_runtime = Runtime(self.temp, timeout_seconds=0)
-        task_id, result = timed_runtime.run("data.mock", {"count": 1, "format": "json"})
+        task_id, result = timed_runtime.run("data.mock", {"count": 1, "format": "json", "fields": MINIMAL_FIELDS})
         timed_runtime.close()
         self.assertEqual(result.data["error_code"], "TIMEOUT")
         self.assertEqual(self.runtime.history.get(task_id)["status"], "FAILED")

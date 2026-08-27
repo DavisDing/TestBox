@@ -1,9 +1,9 @@
 # Data Generator
 
-`data.mock` 支持两种模式：从 SQL DDL / Excel 字段清单自动匹配字段类型生成数据，或直接声明任意多个字段及其生成规则。生成结果可复现，仅用于测试。
+`data.mock` 默认使用“自定义字段”模式：用户先设计表结构，再按字段生成数据。可以生成任意 X 条、任意 X 个字段；每个字段都可以独立定义字段名、数据库类型、生成方式、生成参数、唯一性和空值比例。也支持从 SQL DDL / Excel 字段清单自动匹配字段类型生成数据，或使用快捷模板。未选择任何字段来源时不会再隐式生成固定字段，插件会提示先添加字段或选择其他模式。生成结果可复现，仅用于测试。
 
 ```text
-testbox run data.mock --count 100 --format csv --seed 10001
+testbox run data.mock --set count=100 --set format=csv --set seed=10001 --set 'fields=[{"name":"value","generator":"template","options":{"value":"test-{index}"}}]'
 ```
 
 支持 `json`、`csv`、`xlsx`、`txt`、`sql`、`zip` 输出，单次最多 100,000 条。导出文件名使用任务 ID 作为主体，例如 `<task-id>.json`；ZIP 内的数据文件也使用任务 ID 命名。`template` 支持 `retail_customer`、`account`、`product`、`transaction`。字段唯一性使用 `unique: true` 显式开启，仅在当前任务内保证不重复。
@@ -31,7 +31,7 @@ testbox run data.mock --count 100 --format csv --seed 10001
 
 SQL DDL 会读取字段类型、长度/精度、主键、唯一、自增和注释，并据此自动选择生成器；Excel 字段清单支持 `field/name`、`type`、`comment`、`generator`、`options`、`unique`、`nullable_rate` 列。
 
-`txt` 支持 `txt_delimiter`（默认 `|`）和 `txt_header`；`sql` 支持 MySQL、PostgreSQL、SQL Server、Oracle、SQLite 的批量 `INSERT`，并通过 `sql_table`、`sql_dialect`、`sql_batch_size`、`sql_transaction` 配置。`zip` 使用 `zip_formats` 将 JSON、CSV、XLSX、TXT、SQL 组合为数据包，内含生成摘要。
+`txt` 支持 `txt_delimiter`（默认 `|`）和 `txt_header`；`sql` 支持 MySQL、PostgreSQL、SQL Server、Oracle、SQLite 的批量 `INSERT`，并通过 `sql_table`、`sql_dialect`、`sql_batch_size`、`sql_transaction` 配置。设置 `sql_create_table: true` 时，还会根据字段的 `type`、`primary_key`、`unique`、`nullable`、`auto_increment` 元数据先生成 `CREATE TABLE`，只输出 SQL 文本，不会执行 SQL。`zip` 使用 `zip_formats` 将 JSON、CSV、XLSX、TXT、SQL 组合为数据包，内含生成摘要。
 
 地址可按全国、省、市筛选；内置资源覆盖 34 个省级行政区。可在项目根目录 `config.yaml` 设置 `phone_prefixes: "138,139"` 覆盖默认常用手机号段。
 
