@@ -606,14 +606,20 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         badge.setObjectName("tagLabelMuted")
         label_bar.addWidget(badge)
 
+        label_bar.addStretch()
+        layout.addLayout(label_bar)
+
+        # 描述单独占一行并允许换行，避免长描述把表单的最小宽度撑出窗口。
         desc = _parameter_description(key, spec)
         if desc:
             desc_lbl = QtWidgets.QLabel(f"— {desc}")
             desc_lbl.setObjectName("mutedText")
-            label_bar.addWidget(desc_lbl)
-
-        label_bar.addStretch()
-        layout.addLayout(label_bar)
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
+            layout.addWidget(desc_lbl)
 
         # 表单输入控件
         ctrl = None
@@ -1071,18 +1077,21 @@ class CommandDetailFormView(QtWidgets.QWidget):
         nav_bar.addStretch()
         main_layout.addLayout(nav_bar)
 
-        # 主体左右分栏
+        # 主体左右分栏。使用可伸缩布局，不固定右侧面板宽度，避免窗口变窄时
+        # 左右两栏的总宽度超过可用区域而导致右侧内容被裁切。
         split_layout = QtWidgets.QHBoxLayout()
         split_layout.setSpacing(18)
 
         # === 左栏：Schema 表单滚动区 ===
         form_panel = QtWidgets.QWidget()
+        self.form_panel = form_panel
         form_layout = QtWidgets.QVBoxLayout(form_panel)
         form_layout.setContentsMargins(0, 0, 0, 0)
         form_layout.setSpacing(12)
 
         self.form_scroll = QtWidgets.QScrollArea()
         self.form_scroll.setWidgetResizable(True)
+        self.form_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.form_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
         self.form_container = QtWidgets.QWidget()
@@ -1115,8 +1124,13 @@ class CommandDetailFormView(QtWidgets.QWidget):
 
         # === 右栏：命令元数据与帮助侧栏 ===
         info_panel = QtWidgets.QWidget()
+        self.info_panel = info_panel
         info_panel.setObjectName("cardPanel")
-        info_panel.setFixedWidth(320)
+        info_panel.setMinimumWidth(0)
+        info_panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         info_layout = QtWidgets.QVBoxLayout(info_panel)
         info_layout.setContentsMargins(16, 16, 16, 16)
         info_layout.setSpacing(12)
@@ -1173,6 +1187,7 @@ class CommandDetailFormView(QtWidgets.QWidget):
 
         split_layout.addWidget(info_panel, 3)
         main_layout.addLayout(split_layout, 1)
+        self._split_layout = split_layout
 
     def load_command(self, command_name: str, preset_params: dict | None = None):
         self.current_command = command_name
@@ -1799,6 +1814,7 @@ class TaskHistoryView(QtWidgets.QWidget):
         self.table = QtWidgets.QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["任务 ID", "命令", "插件 / 版本", "状态", "开始时间", "操作"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
@@ -2009,6 +2025,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         self.plugins_table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.plugins_table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.plugins_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.plugins_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.plugins_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.plugins_table.itemSelectionChanged.connect(self._on_plugin_selection_changed)
         layout.addWidget(self.plugins_table, 1)
@@ -2204,8 +2221,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interactive_task = False
         self._interactive_restore_geometry = None
         self.setWindowTitle("TestBox - 测试效能工具箱")
-        self.resize(1120, 760)
-        self.setMinimumSize(960, 640)
+        # 初始尺寸根据屏幕可用区域裁剪；最小尺寸也不能大于常见小屏幕，
+        # 让用户缩放窗口时由页面滚动区承接内容，而不是把右侧直接裁掉。
+        self.setMinimumSize(760, 520)
+        screen = QtGui.QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(1120, max(760, available.width() - 40))
+            height = min(760, max(520, available.height() - 80))
+        else:
+            width, height = 1120, 760
+        self.resize(width, height)
 
         self._init_ui()
 
@@ -2219,8 +2245,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 1. 侧边导航栏 (Sidebar)
         sidebar = QtWidgets.QWidget()
+        self.sidebar = sidebar
         sidebar.setObjectName("navSidebar")
-        sidebar.setFixedWidth(220)
+        # 窄窗口时允许导航栏从 220px 收缩到 176px，优先为主内容区保留空间。
+        sidebar.setMinimumWidth(176)
+        sidebar.setMaximumWidth(220)
+        sidebar.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         sidebar_layout = QtWidgets.QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 18, 12, 18)
         sidebar_layout.setSpacing(8)

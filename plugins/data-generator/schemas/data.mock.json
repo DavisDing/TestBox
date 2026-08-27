@@ -1,37 +1,181 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["count", "format"],
+  "required": [
+    "count",
+    "format"
+  ],
   "properties": {
-    "count": {"type": "integer", "minimum": 1, "maximum": 100000},
-    "format": {"type": "string", "enum": ["json", "csv", "xlsx", "txt", "sql", "zip"]},
-    "seed": {"type": "integer"},
-    "template": {"type": "string", "enum": ["retail_customer", "account", "product", "transaction"]},
-    "table": {"type": "string", "description": "自定义表名；SQL 输出时使用"},
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "format": {
+      "type": "string",
+      "enum": [
+        "json",
+        "csv",
+        "xlsx",
+        "txt",
+        "sql",
+        "zip"
+      ]
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "template": {
+      "type": "string",
+      "enum": [
+        "retail_customer",
+        "account",
+        "product",
+        "transaction"
+      ]
+    },
+    "table": {
+      "type": "string",
+      "description": "自定义表名；SQL 输出时使用"
+    },
     "fields": {
       "type": "array",
       "description": "自定义字段定义；与 rules 二选一",
-      "items": {"type": "object", "additionalProperties": true, "required": ["name"], "properties": {
-        "name": {"type": "string", "minLength": 1},
-        "type": {"type": "string"},
-        "comment": {"type": "string"},
-        "generator": {"type": "string", "enum": ["sequence", "string_random", "integer_random", "decimal_random", "boolean_random", "date_random", "datetime_random", "name_cn", "mobile_cn", "email", "china_address", "weighted_enum", "constant", "template", "uuid", "transaction_id"]},
-        "options": {"type": "object", "additionalProperties": true},
-        "unique": {"type": "boolean"},
-        "enabled": {"type": "boolean"},
-        "nullable_rate": {"type": "number", "minimum": 0, "maximum": 1}
-      }}
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "generator": {
+            "type": "string",
+            "enum": [
+              "sequence",
+              "string_random",
+              "integer_random",
+              "decimal_random",
+              "boolean_random",
+              "date_random",
+              "datetime_random",
+              "name_cn",
+              "mobile_cn",
+              "email",
+              "china_address",
+              "weighted_enum",
+              "constant",
+              "template",
+              "uuid",
+              "transaction_id"
+            ]
+          },
+          "options": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "unique": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "nullable_rate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "primary_key": {
+            "type": "boolean"
+          },
+          "nullable": {
+            "type": "boolean"
+          },
+          "default": {}
+        }
+      }
     },
-    "rules": {"type": "array", "description": "兼容旧版字段规则写法", "items": {"type": "object", "additionalProperties": true}},
-    "rule_set": {"type": "string", "format": "file-path"},
-    "source_file": {"type": "string", "format": "file-path"},
-    "source_format": {"type": "string", "enum": ["sql", "excel"]},
-    "txt_delimiter": {"type": "string", "default": "|"},
-    "txt_header": {"type": "boolean", "default": true},
-    "sql_dialect": {"type": "string", "enum": ["mysql", "postgresql", "sqlserver", "oracle", "sqlite"], "default": "mysql"},
-    "sql_table": {"type": "string"},
-    "sql_batch_size": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 500},
-    "sql_transaction": {"type": "boolean", "default": true},
-    "zip_formats": {"type": "array", "items": {"type": "string", "enum": ["json", "csv", "xlsx", "txt", "sql"]}}
+    "rules": {
+      "type": "array",
+      "description": "兼容旧版字段规则写法",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "rule_set": {
+      "type": "string",
+      "format": "file-path"
+    },
+    "source_file": {
+      "type": "string",
+      "format": "file-path"
+    },
+    "source_format": {
+      "type": "string",
+      "enum": [
+        "sql",
+        "excel"
+      ]
+    },
+    "txt_delimiter": {
+      "type": "string",
+      "default": "|"
+    },
+    "txt_header": {
+      "type": "boolean",
+      "default": true
+    },
+    "sql_dialect": {
+      "type": "string",
+      "enum": [
+        "mysql",
+        "postgresql",
+        "sqlserver",
+        "oracle",
+        "sqlite"
+      ],
+      "default": "mysql"
+    },
+    "sql_table": {
+      "type": "string"
+    },
+    "sql_batch_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 500
+    },
+    "sql_transaction": {
+      "type": "boolean",
+      "default": true
+    },
+    "zip_formats": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "json",
+          "csv",
+          "xlsx",
+          "txt",
+          "sql"
+        ]
+      }
+    },
+    "sql_create_table": {
+      "type": "boolean",
+      "default": false,
+      "description": "SQL 输出时是否先生成 CREATE TABLE"
+    }
   }
 }
