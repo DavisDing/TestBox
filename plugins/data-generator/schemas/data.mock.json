@@ -172,6 +172,15 @@
         ]
       }
     },
+    "preview": {
+      "type": "boolean",
+      "default": false,
+      "description": "仅解析并返回 SQL/Excel 表结构，不生成数据"
+    },
+    "source_table": {
+      "type": "string",
+      "description": "多表导入时选择的源表名"
+    },
     "sql_create_table": {
       "type": "boolean",
       "default": false,

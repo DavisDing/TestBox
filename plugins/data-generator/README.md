@@ -29,7 +29,7 @@ testbox run data.mock --set count=100 --set format=csv --set seed=10001 --set 'f
 
 可用生成器包括：`sequence`、`string_random`、`integer_random`、`decimal_random`、`boolean_random`、`date_random`、`datetime_random`、`name_cn`、`mobile_cn`、`email`、`china_address`、`weighted_enum`、`constant`、`template`、`uuid`、`transaction_id`。`rules` 仍保留兼容；`fields` 与 `rules` 不能同时使用。
 
-SQL DDL 会读取字段类型、长度/精度、主键、唯一、自增和注释，并据此自动选择生成器；Excel 字段清单支持 `field/name`、`type`、`comment`、`generator`、`options`、`unique`、`nullable_rate` 列。
+SQL DDL 会读取字段类型、长度/精度、主键、唯一、自增、可空、默认值、外键和注释，并据此自动选择生成器；一个 SQL 文件可以包含多张表，使用 `source_table` 选择要生成的表。GUI 的“解析并展示表结构”会展示表名、字段名、数据库类型和字段属性，并允许逐字段修改生成器与 `options`。Excel 字段清单支持 `field/name`、`type`、`comment`、`generator`、`options`、`unique`、`primary_key`、`auto_increment`、`nullable`、`nullable_rate` 列；增加 `table/table_name/表名` 列即可在同一个文件中分组多张表，没有表名列时使用文件名作为表名。`preview: true` 只解析并返回表结构，不生成数据。
 
 `txt` 支持 `txt_delimiter`（默认 `|`）和 `txt_header`；`sql` 支持 MySQL、PostgreSQL、SQL Server、Oracle、SQLite 的批量 `INSERT`，并通过 `sql_table`、`sql_dialect`、`sql_batch_size`、`sql_transaction` 配置。设置 `sql_create_table: true` 时，还会根据字段的 `type`、`primary_key`、`unique`、`nullable`、`auto_increment` 元数据先生成 `CREATE TABLE`，只输出 SQL 文本，不会执行 SQL。`zip` 使用 `zip_formats` 将 JSON、CSV、XLSX、TXT、SQL 组合为数据包，内含生成摘要。
 

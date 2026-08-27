@@ -776,6 +776,43 @@ capabilities:
         self.assertEqual(rows[0]["customer_id"], "TEST-CUST-00000001")
         self.assertIn("risk_level", rows[0])
         self.assertIn("registered_address", rows[0])
+    def test_data_generator_previews_and_selects_multiple_sql_tables(self):
+        ddl = self.temp / "multi-table.sql"
+        ddl.write_text(
+            "CREATE TABLE user_info (id BIGINT PRIMARY KEY, name VARCHAR(30) COMMENT '姓名');\n"
+            "CREATE TABLE orders (order_id BIGINT PRIMARY KEY, amount DECIMAL(10,2));",
+            encoding="utf-8",
+        )
+        _, preview = self.runtime.run("data.mock", {"count": 1, "format": "json", "source_file": str(ddl), "source_format": "sql", "preview": True})
+        self.assertEqual(preview.status, "success")
+        self.assertEqual([table["name"] for table in preview.data["tables"]], ["user_info", "orders"])
+        self.assertEqual([field["name"] for field in preview.data["tables"][1]["fields"]], ["order_id", "amount"])
+        task_id, result = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7, "source_file": str(ddl), "source_format": "sql", "source_table": "orders"})
+        rows = json.loads((self.temp / "workspace" / task_id / "output" / result.files[0]).read_text(encoding="utf-8"))
+        self.assertEqual(list(rows[0]), ["order_id", "amount"])
+        self.assertEqual(result.data["source_table"], "orders")
+
+    def test_data_generator_rejects_unselected_multiple_sql_tables(self):
+        ddl = self.temp / "multi-table.sql"
+        ddl.write_text("CREATE TABLE a (id INT); CREATE TABLE b (id INT);", encoding="utf-8")
+        _, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "source_file": str(ddl), "source_format": "sql"})
+        self.assertEqual(result.status, "failed")
+        self.assertIn("source_table", result.message)
+
+    def test_data_generator_groups_excel_structure_by_table(self):
+        source = ROOT / "plugins" / "data-generator" / "src" / "main.py"
+        spec = importlib.util.spec_from_file_location("data_generator_test_excel_tables", source)
+        module = importlib.util.module_from_spec(spec); self.assertIsNotNone(spec.loader); spec.loader.exec_module(module)
+        field_list = self.temp / "multi-fields.xlsx"
+        field_list.write_bytes(module.xlsx([
+            {"table": "users", "field": "id", "type": "INT"},
+            {"table": "users", "field": "name", "type": "VARCHAR(20)"},
+            {"table": "orders", "field": "order_id", "type": "BIGINT"},
+        ]))
+        tables = module.excel_tables(field_list)
+        self.assertEqual([item["table"] for item in tables], ["users", "orders"])
+        self.assertEqual([field["name"] for field in tables[0]["fields"]], ["id", "name"])
+
     def test_data_generator_infers_rules_from_sql_ddl(self):
         ddl = self.temp / "customer.sql"
         ddl.write_text("CREATE TABLE customer (customer_id VARCHAR(20) COMMENT '客户ID', mobile VARCHAR(11) COMMENT '手机号', amount DECIMAL(18,2) COMMENT '金额');", encoding="utf-8")

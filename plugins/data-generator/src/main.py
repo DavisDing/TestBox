@@ -18,8 +18,32 @@ from testbox.sdk import PluginError, Result
 SURNAMES = "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨"
 GIVEN = "伟芳娜敏静丽强磊军洋勇艳杰娟涛明超秀霞平刚桂英"
 MOBILE_PREFIXES = tuple(str(item) for section in (range(130, 140), range(145, 150), range(150, 160), (162, 165, 166, 167), range(170, 179), range(180, 190), range(191, 200)) for item in section)
-CREATE_START_RE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"\[]?([\w.]+)[`\"\]]?\s*\(", re.I)
-FIELD_RE = re.compile(r"^\s*[`\"\[]?([\w]+)[`\"\]]?\s+([A-Z]+(?:\s*\([^)]*\))?)(.*)$", re.I | re.S)
+IDENTIFIER = r'(?:`(?:``|[^`])+`|"(?:""|[^"])+"|\[(?:\]\]|[^\]])+\]|[A-Za-z_#$][\w$#]*)'
+CREATE_START_RE = re.compile(
+    rf'CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMPORARY\s+|UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+    rf'(?P<table>{IDENTIFIER}(?:\s*\.\s*{IDENTIFIER})*)\s*\(',
+    re.I,
+)
+TYPE_RE = re.compile(
+    r'^(?P<type>(?:DOUBLE\s+PRECISION|CHARACTER\s+VARYING|'
+    r'TIMESTAMP(?:\s+WITH(?:OUT)?\s+TIME\s+ZONE)?|'
+    r'TIME(?:\s+WITH(?:OUT)?\s+TIME\s+ZONE)?|'
+    r'NATIONAL\s+CHARACTER(?:\s+VARYING)?|'
+    r'[A-Za-z][A-Za-z0-9_]*)(?:\s*\([^)]*\))?(?:\s*\[\])?)'
+    r'(?P<tail>.*)$',
+    re.I | re.S,
+)
+TABLE_CONSTRAINT_RE = re.compile(
+    rf'^\s*(?:CONSTRAINT\s+(?P<name>{IDENTIFIER})\s+)?'
+    r'(?P<kind>PRIMARY\s+KEY|UNIQUE(?:\s+(?:KEY|INDEX))?|FOREIGN\s+KEY)\b'
+    r'(?P<rest>.*)$',
+    re.I | re.S,
+)
+FIELD_RE = re.compile(
+    rf'^\s*(?P<field>{IDENTIFIER}(?:\s*\.\s*{IDENTIFIER})*)\s+'
+    r'(?P<rest>.+)$',
+    re.I | re.S,
+)
 
 
 def column_name(index: int) -> str:
@@ -52,37 +76,186 @@ def xlsx(rows: list[dict[str, object]]) -> bytes:
     return output.getvalue()
 
 
-def split_fields(body: str) -> list[str]:
-    result, current, depth, quote = [], [], 0, None
-    for character in body:
-        if character in "'\"" and (not current or current[-1] != "\\"):
-            quote = None if quote == character else character if quote is None else quote
-        elif not quote:
-            depth += character == "("
-            depth -= character == ")"
-        if character == "," and depth == 0 and not quote:
-            result.append("".join(current)); current = []
+def _quote_pairs() -> dict[str, str]:
+    return {"'": "'", '"': '"', "`": "`", "[": "]"}
+
+
+def _unquote_identifier(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and ((value[0], value[-1]) in {("`", "`"), ('"', '"'), ("[", "]")}):
+        closing = value[-1]
+        inner = value[1:-1]
+        if closing == "]":
+            return inner.replace("]]", "]")
+        return inner.replace(closing * 2, closing)
+    return value
+
+
+def _split_quoted(value: str, delimiter: str = ".") -> list[str]:
+    parts, current, quote, index = [], [], None, 0
+    pairs = _quote_pairs()
+    while index < len(value):
+        character = value[index]
+        if quote:
+            current.append(character)
+            if character == quote:
+                if quote != "]" and index + 1 < len(value) and value[index + 1] == quote:
+                    current.append(value[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        elif character in pairs:
+            quote = pairs[character]
+            current.append(character)
+        elif character == delimiter:
+            parts.append("".join(current).strip())
+            current = []
         else:
             current.append(character)
-    if current:
-        result.append("".join(current))
-    return result
+        index += 1
+    if current or value.endswith(delimiter):
+        parts.append("".join(current).strip())
+    return parts
+
+
+def _normalize_table_name(value: str) -> str:
+    return ".".join(_unquote_identifier(part) for part in _split_quoted(value))
+
+
+def _strip_sql_comments(content: str) -> str:
+    result, quote, index = [], None, 0
+    pairs = _quote_pairs()
+    while index < len(content):
+        character = content[index]
+        if quote:
+            result.append(character)
+            if character == quote:
+                if quote != "]" and index + 1 < len(content) and content[index + 1] == quote:
+                    result.append(content[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        elif character in pairs:
+            quote = pairs[character]
+            result.append(character)
+        elif content.startswith("--", index):
+            end = content.find("\n", index + 2)
+            result.append(" ")
+            index = len(content) if end < 0 else end
+            continue
+        elif content.startswith("/*", index):
+            end = content.find("*/", index + 2)
+            result.append(" ")
+            index = len(content) if end < 0 else end + 2
+            continue
+        elif character == "#":
+            line_start = not content[:index].strip() or content[:index].rstrip().endswith("\n")
+            if line_start:
+                end = content.find("\n", index + 1)
+                result.append(" ")
+                index = len(content) if end < 0 else end
+                continue
+            result.append(character)
+        else:
+            result.append(character)
+        index += 1
+    return "".join(result)
+
+
+def _mask_sql_literals(content: str) -> str:
+    """Mask single-quoted literals so CREATE TABLE text inside a literal is ignored."""
+    result, index = list(content), 0
+    while index < len(content):
+        if content[index] != "'":
+            index += 1
+            continue
+        result[index] = " "
+        index += 1
+        while index < len(content):
+            result[index] = " "
+            if content[index] == "'":
+                if index + 1 < len(content) and content[index + 1] == "'":
+                    result[index + 1] = " "
+                    index += 2
+                    continue
+                index += 1
+                break
+            if content[index] == "\\" and index + 1 < len(content):
+                result[index + 1] = " "
+                index += 2
+                continue
+            index += 1
+    return "".join(result)
+
+
+def all_create_table_bodies(content: str) -> list[tuple[str, str]]:
+    """Extract every CREATE TABLE body, including nested types and quoted identifiers."""
+    cleaned = _strip_sql_comments(content)
+    searchable = _mask_sql_literals(cleaned)
+    tables: list[tuple[str, str]] = []
+    for match in CREATE_START_RE.finditer(searchable):
+        depth, quote, index = 1, None, match.end()
+        while index < len(cleaned):
+            character = cleaned[index]
+            if quote:
+                if character == quote:
+                    if quote != "]" and index + 1 < len(cleaned) and cleaned[index + 1] == quote:
+                        index += 2
+                        continue
+                    quote = None
+            elif character in _quote_pairs():
+                quote = _quote_pairs()[character]
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    tables.append((_normalize_table_name(match.group("table")), cleaned[match.end():index]))
+                    break
+            index += 1
+    return tables
 
 
 def first_create_table_body(content: str) -> str | None:
-    """Extract a CREATE TABLE body while preserving nested type parentheses."""
-    match = CREATE_START_RE.search(content)
-    if not match:
-        return None
-    depth, quote = 1, None
-    for index, character in enumerate(content[match.end():], match.end()):
-        if character in "'\"" and (index == 0 or content[index - 1] != "\\"):
-            quote = None if quote == character else character if quote is None else quote
-        elif not quote:
-            if character == "(": depth += 1
-            elif character == ")": depth -= 1
-            if depth == 0: return content[match.end():index]
-    return None
+    tables = all_create_table_bodies(content)
+    return tables[0][1] if tables else None
+
+
+def split_fields(body: str) -> list[str]:
+    result, current, depth, angle_depth, quote, index = [], [], 0, 0, None, 0
+    pairs = _quote_pairs()
+    while index < len(body):
+        character = body[index]
+        if quote:
+            current.append(character)
+            if character == quote:
+                if quote != "]" and index + 1 < len(body) and body[index + 1] == quote:
+                    current.append(body[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        elif character in pairs:
+            quote = pairs[character]
+            current.append(character)
+        else:
+            depth += character == "("
+            depth -= character == ")"
+            if character == "<" and (angle_depth or re.search(r"(?:ARRAY|MAP|STRUCT)\s*$", "".join(current), re.I)):
+                angle_depth += 1
+            elif character == ">" and angle_depth:
+                angle_depth -= 1
+            current.append(character)
+        if character == "," and depth == 0 and angle_depth == 0 and not quote:
+            result.append("".join(current[:-1]).strip())
+            current = []
+        index += 1
+    if current and "".join(current).strip():
+        result.append("".join(current).strip())
+    return result
+
+
+def _identifier_list(value: str) -> list[str]:
+    return [_normalize_table_name(item) for item in split_fields(value) if item.strip()]
 
 
 def rule(name: str, generator: str, *, unique: bool = False, options: dict | None = None) -> dict:
@@ -185,37 +358,175 @@ def infer_rule(name: str, data_type: str, comment: str = "", **metadata) -> dict
     return _field_rule(name, data_type, comment, **metadata)
 
 
-def sql_rules(path: Path) -> list[dict]:
-    content = path.read_text(encoding="utf-8")
-    body = first_create_table_body(content)
-    if body is None:
-        raise PluginError("INPUT_INVALID", "未找到支持的 CREATE TABLE 语句")
-    rules = []
+def _unquote_sql_text(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
+        return value[1:-1].replace(value[0] * 2, value[0])
+    return value
+
+
+def _parse_type_and_tail(rest: str) -> tuple[str, str]:
+    """Read a SQL type without mistaking nested type punctuation for constraints."""
+    text = rest.strip()
+    match = re.match(r"(?P<name>(?:DOUBLE\s+PRECISION|CHARACTER\s+VARYING|NATIONAL\s+CHARACTER(?:\s+VARYING)?|TIMESTAMP(?:\s+WITH(?:OUT)?\s+TIME\s+ZONE)?|TIME(?:\s+WITH(?:OUT)?\s+TIME\s+ZONE)?|[A-Za-z][A-Za-z0-9_]*))", text, re.I)
+    if not match:
+        raise PluginError("INPUT_INVALID", f"无法识别字段类型: {rest.strip()}")
+    type_name = re.sub(r"\s+", " ", match.group("name")).upper()
+    index = match.end()
+    while index < len(text) and text[index].isspace():
+        index += 1
+    if text[index:index + 1] == "(":
+        depth, quote, close = 1, None, index + 1
+        while close < len(text):
+            character = text[close]
+            if quote:
+                if character == quote:
+                    if close + 1 < len(text) and text[close + 1] == quote:
+                        close += 1
+                    else:
+                        quote = None
+            elif character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    close += 1
+                    break
+            close += 1
+        if depth != 0:
+            raise PluginError("INPUT_INVALID", f"字段类型括号不完整: {rest.strip()}")
+        type_name += text[index:close].strip()
+        index = close
+    while index < len(text) and text[index].isspace():
+        index += 1
+    if text[index:index + 1] == "<":
+        depth, quote, close = 1, None, index + 1
+        while close < len(text):
+            character = text[close]
+            if quote:
+                if character == quote:
+                    quote = None
+            elif character in {"'", '"'}:
+                quote = character
+            elif character == "<":
+                depth += 1
+            elif character == ">":
+                depth -= 1
+                if depth == 0:
+                    close += 1
+                    break
+            close += 1
+        if depth != 0:
+            raise PluginError("INPUT_INVALID", f"字段类型尖括号不完整: {rest.strip()}")
+        type_name += re.sub(r"\s+", " ", text[index:close]).upper()
+        index = close
+    if text[index:index + 2] == "[]":
+        type_name += "[]"
+        index += 2
+    if re.match(r"\s+UNSIGNED\b", text[index:], re.I):
+        unsigned = re.match(r"\s+UNSIGNED\b", text[index:], re.I)
+        type_name += " UNSIGNED"
+        index += unsigned.end()
+    return type_name, text[index:].strip()
+
+
+def _constraint_fields(rest: str) -> list[str]:
+    match = re.search(r"\((?P<fields>.*)\)", rest, re.S)
+    return _identifier_list(match.group("fields")) if match else []
+
+
+def _parse_sql_table(table_name: str, body: str) -> list[dict]:
     definitions = split_fields(body)
-    table_constraints = " ".join(item for item in definitions if re.match(r"^\s*(PRIMARY|UNIQUE|CONSTRAINT|INDEX|KEY)\b", item, re.I))
+    field_definitions: list[tuple[str, str, str]] = []
+    constraints: list[dict] = []
     for definition in definitions:
-        match = FIELD_RE.match(definition)
-        if not match or match.group(1).upper() in {"PRIMARY", "KEY", "UNIQUE", "CONSTRAINT", "INDEX"}:
+        constraint = TABLE_CONSTRAINT_RE.match(definition)
+        if constraint:
+            kind = re.sub(r"\s+", " ", constraint.group("kind").upper())
+            rest = constraint.group("rest").strip()
+            fields = _constraint_fields(rest)
+            reference = re.search(r"\bREFERENCES\s+(?P<table>.+?)\s*\((?P<fields>[^)]*)\)", rest, re.I | re.S)
+            constraints.append({
+                "name": _unquote_identifier(constraint.group("name") or ""),
+                "type": kind,
+                "fields": fields,
+                "foreign_table": _normalize_table_name(reference.group("table")) if reference else "",
+                "foreign_fields": _identifier_list(reference.group("fields")) if reference else [],
+            })
             continue
-        name, data_type, tail = match.group(1), match.group(2), match.group(3)
-        comment_match = re.search(r"COMMENT\s+['\"]([^'\"]+)", tail, re.I)
-        primary = bool(re.search(r"\bPRIMARY\s+KEY\b", tail, re.I)) or bool(re.search(rf"PRIMARY\s+KEY\s*\([^)]*\b{re.escape(name)}\b", table_constraints, re.I))
-        unique = bool(re.search(r"\bUNIQUE\b", tail, re.I)) or bool(re.search(rf"\bUNIQUE(?:\s+KEY)?\s*\([^)]*\b{re.escape(name)}\b", table_constraints, re.I))
-        auto_increment = bool(re.search(r"\b(AUTO_INCREMENT|IDENTITY|SERIAL|BIGSERIAL)\b", f"{data_type} {tail}", re.I))
-        rules.append(infer_rule(name, data_type, comment_match.group(1) if comment_match else "", primary_key=primary, unique=unique, auto_increment=auto_increment))
-    if not rules:
-        raise PluginError("INPUT_INVALID", "DDL 中未解析到字段")
+        match = FIELD_RE.match(definition)
+        if match:
+            type_name, tail = _parse_type_and_tail(match.group("rest"))
+            field_definitions.append((_normalize_table_name(match.group("field")), type_name, tail))
+    if not field_definitions:
+        raise PluginError("INPUT_INVALID", f"DDL 表 {table_name} 中未解析到字段")
+
+    by_name = {name: index for index, (name, _, _) in enumerate(field_definitions)}
+    primary_fields = {field for item in constraints if item["type"] == "PRIMARY KEY" for field in item["fields"]}
+    unique_fields = {field for item in constraints if item["type"].startswith("UNIQUE") for field in item["fields"]}
+    foreign_by_field: dict[str, tuple[str, str]] = {}
+    for item in constraints:
+        if item["type"] != "FOREIGN KEY":
+            continue
+        for index, field in enumerate(item["fields"]):
+            references = item["foreign_fields"]
+            foreign_by_field[field] = (item["foreign_table"], references[index] if index < len(references) else "")
+
+    rules = []
+    for name, data_type, tail in field_definitions:
+        comment_match = re.search(r"\bCOMMENT\s+(['\"])((?:\\.|(?!\1).)*)\1", tail, re.I | re.S)
+        primary = bool(re.search(r"\bPRIMARY\s+KEY\b", tail, re.I)) or name in primary_fields
+        unique = bool(re.search(r"\bUNIQUE(?:\s+KEY|\s+INDEX)?\b", tail, re.I)) or name in unique_fields
+        auto_increment = bool(re.search(r"\b(AUTO_INCREMENT|AUTOINCREMENT|IDENTITY(?:\s*\(|\b)|SERIAL|BIGSERIAL|SMALLSERIAL|GENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY)\b", f"{data_type} {tail}", re.I))
+        nullable = not bool(re.search(r"\bNOT\s+NULL\b", tail, re.I))
+        default_match = re.search(r"\bDEFAULT\s+(?P<value>.+?)(?=\s+(?:NOT\s+NULL|NULL|PRIMARY\s+KEY|UNIQUE|REFERENCES|COMMENT|CHECK|CONSTRAINT|COLLATE|ON\s+UPDATE)\b|$)", tail, re.I | re.S)
+        foreign_table, foreign_field = foreign_by_field.get(name, ("", ""))
+        item = infer_rule(
+            name,
+            data_type,
+            _unquote_sql_text(comment_match.group(2)) if comment_match else "",
+            primary_key=primary,
+            unique=unique,
+            auto_increment=auto_increment,
+        )
+        item["nullable"] = nullable
+        if default_match:
+            default = default_match.group("value").strip()
+            if default.upper() not in {"NULL", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"}:
+                item["default"] = _unquote_sql_text(default)
+        if foreign_table:
+            item["foreign_table"] = foreign_table
+            item["foreign_field"] = foreign_field
+        rules.append(item)
     return rules
 
 
-def excel_rules(path: Path) -> list[dict]:
+def sql_tables(path: Path) -> list[dict]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise PluginError("INPUT_INVALID", "无法读取 SQL 文件") from error
+    tables = [{"table": name, "fields": _parse_sql_table(name, body)} for name, body in all_create_table_bodies(content)]
+    if not tables:
+        raise PluginError("INPUT_INVALID", "未找到支持的 CREATE TABLE 语句")
+    return tables
+
+
+def sql_rules(path: Path) -> list[dict]:
+    """Backward-compatible single-table view of SQL rules."""
+    return sql_tables(path)[0]["fields"]
+
+
+def _read_excel_rows(path: Path) -> list[list[str]]:
     try:
         with zipfile.ZipFile(path) as archive:
             shared = []
             if "xl/sharedStrings.xml" in archive.namelist():
                 shared = ["".join(item.itertext()) for item in ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))]
             sheet = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
-    except (KeyError, zipfile.BadZipFile, ElementTree.ParseError) as error:
+    except (OSError, KeyError, zipfile.BadZipFile, ElementTree.ParseError) as error:
         raise PluginError("INPUT_INVALID", "Excel 字段清单格式不支持") from error
     namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     rows = []
@@ -226,10 +537,16 @@ def excel_rules(path: Path) -> list[dict]:
             inline = cell.find(f".//{namespace}t")
             values.append(inline.text if inline is not None else shared[int(value.text)] if value is not None and cell.get("t") == "s" else value.text if value is not None else "")
         rows.append(values)
+    return rows
+
+
+def excel_tables(path: Path) -> list[dict]:
+    rows = _read_excel_rows(path)
     if len(rows) < 2:
         raise PluginError("INPUT_INVALID", "Excel 字段清单至少需要表头和一行字段")
     headers = [item.strip().lower() for item in rows[0]]
     aliases = {
+        "table": {"table", "table_name", "表", "表名"},
         "field": {"field", "name", "字段", "字段名"},
         "type": {"type", "类型", "字段类型", "数据类型"},
         "comment": {"comment", "注释", "说明", "备注"},
@@ -237,17 +554,22 @@ def excel_rules(path: Path) -> list[dict]:
         "options": {"options", "选项", "参数"},
         "unique": {"unique", "唯一"},
         "nullable_rate": {"nullable_rate", "可空比例", "空值比例"},
+        "primary_key": {"primary_key", "主键"},
+        "nullable": {"nullable", "可空"},
+        "auto_increment": {"auto_increment", "自增"},
     }
     positions = {key: next((index for index, header in enumerate(headers) if header in names), None) for key, names in aliases.items()}
     if positions["field"] is None:
         raise PluginError("INPUT_INVALID", "Excel 字段清单缺少字段名列")
-    result = []
+    grouped: dict[str, list[dict]] = {}
+    default_table = path.stem or "导入表"
     for row in rows[1:]:
         get = lambda key, default="": row[positions[key]] if positions[key] is not None and positions[key] < len(row) else default
         name = get("field").strip()
         if not name:
             continue
-        item = infer_rule(name, get("type", "VARCHAR") or "VARCHAR", get("comment").strip(), unique=str(get("unique")).lower() in {"true", "1", "yes", "是"})
+        table_name = get("table").strip() or default_table
+        item = infer_rule(name, get("type", "VARCHAR") or "VARCHAR", get("comment").strip(), unique=str(get("unique")).lower() in {"true", "1", "yes", "是"}, primary_key=str(get("primary_key")).lower() in {"true", "1", "yes", "是"}, auto_increment=str(get("auto_increment")).lower() in {"true", "1", "yes", "是"})
         if get("generator").strip():
             item["generator"] = get("generator").strip()
         if get("options").strip():
@@ -260,10 +582,17 @@ def excel_rules(path: Path) -> list[dict]:
                 item["nullable_rate"] = float(get("nullable_rate"))
             except ValueError as error:
                 raise PluginError("INPUT_INVALID", f"字段 {name} 的 nullable_rate 无效") from error
-        result.append(item)
-    if not result:
+        if get("nullable").strip():
+            item["nullable"] = str(get("nullable")).lower() not in {"false", "0", "no", "否"}
+        grouped.setdefault(table_name, []).append(item)
+    tables = [{"table": table, "fields": fields} for table, fields in grouped.items() if fields]
+    if not tables:
         raise PluginError("INPUT_INVALID", "Excel 字段清单未解析到字段")
-    return result
+    return tables
+
+
+def excel_rules(path: Path) -> list[dict]:
+    return excel_tables(path)[0]["fields"]
 
 def delimited_text(rows: list[dict[str, object]], delimiter: str, include_header: bool) -> str:
     if len(delimiter) != 1:
@@ -408,6 +737,15 @@ class Plugin:
         result["options"] = options
         return result
 
+    def _source_schema(self, params: dict) -> list[dict]:
+        source = Path(params["source_file"])
+        source_format = params.get("source_format")
+        if source_format == "sql":
+            return sql_tables(source)
+        if source_format == "excel":
+            return excel_tables(source)
+        raise PluginError("INVALID_PARAMS", "source_file 需要 source_format=sql 或 excel")
+
     def _rules(self, params: dict) -> list[dict]:
         self._source_table = params.get("table") or params.get("sql_table")
         modes = [key for key in ("fields", "rules", "rule_set", "source_file", "template") if key in params and params.get(key) is not None]
@@ -429,7 +767,7 @@ class Plugin:
             except (OSError, json.JSONDecodeError) as error:
                 raise PluginError("INPUT_INVALID", "无法读取规则集 JSON") from error
             if isinstance(loaded, dict):
-                self._source_table = loaded.get("table") or loaded.get("table_name")
+                self._source_table = loaded.get("table") or loaded.get("table_name") or self._source_table
                 raw = loaded.get("fields") or loaded.get("rules")
             else:
                 raw = loaded
@@ -437,16 +775,21 @@ class Plugin:
                 raise PluginError("INPUT_INVALID", "规则集必须是字段数组，或包含 fields 的对象")
             return [self._normalize_rule(item) for item in raw]
         if params.get("source_file"):
-            source = Path(params["source_file"])
-            if params.get("source_format") == "sql":
-                match = CREATE_START_RE.search(source.read_text(encoding="utf-8"))
-                self._source_table = match.group(1) if match else None
-                raw = sql_rules(source)
-            elif params.get("source_format") == "excel":
-                raw = excel_rules(source)
+            tables = self._source_schema(params)
+            requested = str(params.get("source_table") or "").strip()
+            if requested:
+                selected = next((item for item in tables if item["table"] == requested), None)
+                if selected is None:
+                    available = ", ".join(item["table"] for item in tables)
+                    raise PluginError("INPUT_INVALID", f"未找到导入表 {requested}，可选表：{available}")
+            elif len(tables) == 1:
+                selected = tables[0]
             else:
-                raise PluginError("INVALID_PARAMS", "source_file 需要 source_format=sql 或 excel")
-            return [self._normalize_rule(item) for item in raw]
+                names = ", ".join(item["table"] for item in tables)
+                raise PluginError("INVALID_PARAMS", f"导入文件包含多张表，请选择 source_table（可选：{names}）")
+            if not self._source_table:
+                self._source_table = selected["table"]
+            return [self._normalize_rule(item) for item in selected["fields"]]
         if params.get("template"):
             return [self._normalize_rule(item) for item in template_rules(params["template"])]
         raise PluginError("INVALID_PARAMS", "请至少添加一个字段，或选择表结构导入、规则集或快捷模板")
@@ -575,6 +918,11 @@ class Plugin:
     def execute(self, command, params):
         if command != "data.mock":
             raise PluginError("INVALID_PARAMS", "不支持的命令")
+        if params.get("preview"):
+            if not params.get("source_file"):
+                raise PluginError("INVALID_PARAMS", "预览表结构必须提供 source_file")
+            tables = self._source_schema(params)
+            return Result("success", f"已解析 {len(tables)} 张表", {"tables": [{"name": item["table"], "fields": item["fields"]} for item in tables]}, [])
         rules = self._rules(params)
         rules = [item for item in rules if item.get("enabled", True)]
         if not rules:
@@ -625,7 +973,7 @@ class Plugin:
             self.context.files.write_bytes(name, content)
             output_details = {"format": output_format}
         self.context.logger.info(f"生成 {len(rows)} 条测试数据，启用 {len(rules)} 个字段规则")
-        return Result("success", f"已生成 {len(rows)} 条模拟测试数据", {"count": len(rows), "seed": params.get("seed"), "table": output_params.get("sql_table") or self._source_table, "fields": [item["name"] for item in rules], "unique_fields": sorted(unique_values), "administrative_divisions_version": self.data_metadata["administrative_divisions"]["version"], **output_details}, [name])
+        return Result("success", f"已生成 {len(rows)} 条模拟测试数据", {"count": len(rows), "seed": params.get("seed"), "table": output_params.get("sql_table") or self._source_table, "source_table": params.get("source_table") or self._source_table, "fields": [item["name"] for item in rules], "unique_fields": sorted(unique_values), "administrative_divisions_version": self.data_metadata["administrative_divisions"]["version"], **output_details}, [name])
 
     def destroy(self):
         pass

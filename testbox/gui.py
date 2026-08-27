@@ -528,12 +528,14 @@ class DataMockFieldRow(QtWidgets.QWidget):
         self.generator_combo.setCurrentIndex(index if index >= 0 else 0)
         self.options_edit = QtWidgets.QLineEdit(); self.options_edit.setPlaceholderText('{"min":18,"max":60} / {"values":["正常","禁用"]}')
         options = value.get("options") or {}; self.options_edit.setText(json.dumps(options, ensure_ascii=False) if options else "")
+        self.comment_edit = QtWidgets.QLineEdit(str(value.get("comment", ""))); self.comment_edit.setPlaceholderText("字段注释")
         self.unique_check = QtWidgets.QCheckBox("唯一"); self.unique_check.setChecked(bool(value.get("unique", False)))
         self.primary_check = QtWidgets.QCheckBox("主键"); self.primary_check.setChecked(bool(value.get("primary_key", False)))
+        self.auto_increment_check = QtWidgets.QCheckBox("自增"); self.auto_increment_check.setChecked(bool(value.get("auto_increment", False)))
         self.nullable_spin = QtWidgets.QDoubleSpinBox(); self.nullable_spin.setRange(0, 1); self.nullable_spin.setSingleStep(0.05); self.nullable_spin.setDecimals(2); self.nullable_spin.setValue(float(value.get("nullable_rate", 0) or 0))
         self.remove_btn = QtWidgets.QPushButton("删除"); self.remove_btn.setObjectName("smallButton"); self.remove_btn.clicked.connect(lambda: self.removed.emit(self))
-        for col, widget in enumerate((self.name_edit, self.type_edit, self.generator_combo, self.options_edit, self.unique_check, self.primary_check, QtWidgets.QLabel("空值率"), self.nullable_spin, self.remove_btn)): layout.addWidget(widget, 0, col)
-        layout.setColumnStretch(0, 2); layout.setColumnStretch(2, 2); layout.setColumnStretch(3, 3)
+        for col, widget in enumerate((self.name_edit, self.type_edit, self.generator_combo, self.options_edit, self.comment_edit, self.unique_check, self.primary_check, self.auto_increment_check, QtWidgets.QLabel("空值率"), self.nullable_spin, self.remove_btn)): layout.addWidget(widget, 0, col)
+        layout.setColumnStretch(0, 2); layout.setColumnStretch(2, 2); layout.setColumnStretch(3, 3); layout.setColumnStretch(4, 2)
 
     def get_value(self) -> dict:
         text = self.options_edit.text().strip()
@@ -542,7 +544,8 @@ class DataMockFieldRow(QtWidgets.QWidget):
             except json.JSONDecodeError as error: raise ValueError(f"字段 {self.name_edit.text().strip() or '未命名'} 的生成参数必须是 JSON 对象") from error
             if not isinstance(options, dict): raise ValueError(f"字段 {self.name_edit.text().strip() or '未命名'} 的生成参数必须是 JSON 对象")
         else: options = {}
-        value = {"name": self.name_edit.text().strip(), "type": self.type_edit.currentText().strip() or "VARCHAR", "options": options, "unique": self.unique_check.isChecked(), "primary_key": self.primary_check.isChecked(), "nullable_rate": self.nullable_spin.value()}
+        value = {"name": self.name_edit.text().strip(), "type": self.type_edit.currentText().strip() or "VARCHAR", "options": options, "unique": self.unique_check.isChecked(), "primary_key": self.primary_check.isChecked(), "auto_increment": self.auto_increment_check.isChecked(), "nullable_rate": self.nullable_spin.value()}
+        if self.comment_edit.text().strip(): value["comment"] = self.comment_edit.text().strip()
         if self.generator_combo.currentData(): value["generator"] = self.generator_combo.currentData()
         return value
 
@@ -557,7 +560,7 @@ class DataMockFieldsEditor(QtWidgets.QWidget):
         self.add_btn = QtWidgets.QPushButton("＋ 添加字段"); self.add_btn.setObjectName("secondaryButton"); self.add_btn.clicked.connect(self.add_row); heading.addWidget(self.add_btn); layout.addLayout(heading)
         hint = QtWidgets.QLabel('每行定义一个字段；生成参数填写 JSON，例如随机整数使用 {"min":18,"max":60}，枚举使用 {"values":["正常","禁用"]}。'); hint.setObjectName("mutedText"); hint.setWordWrap(True); layout.addWidget(hint)
         header = QtWidgets.QGridLayout(); header.setContentsMargins(8, 0, 8, 0)
-        for col, text in enumerate(["字段名", "数据库类型", "生成方式", "生成参数", "属性", "", "", "", ""]): header.addWidget(QtWidgets.QLabel(text), 0, col)
+        for col, text in enumerate(["字段名", "数据库类型", "生成方式", "生成参数", "注释", "属性", "", "", "", "", ""]): header.addWidget(QtWidgets.QLabel(text), 0, col)
         layout.addLayout(header); self.rows_layout = QtWidgets.QVBoxLayout(); self.rows_layout.setSpacing(5); layout.addLayout(self.rows_layout)
         self.empty_label = QtWidgets.QLabel("还没有字段，请点击“添加字段”开始设计表结构。"); self.empty_label.setObjectName("mutedText"); self.empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter); layout.addWidget(self.empty_label); layout.addStretch()
         for value in values or []: self.add_row(value)
@@ -586,51 +589,270 @@ class DataMockFieldsEditor(QtWidgets.QWidget):
 
 
 class DataMockForm(QtWidgets.QWidget):
-    """data.mock 的业务表单：默认自定义表结构，也支持模板和表结构导入。"""
-    def __init__(self, schema: dict[str, Any], parent=None):
-        super().__init__(parent); self.schema = schema or {}; self._init_ui()
+    """data.mock 表单：自定义字段、模板，或导入并编辑 SQL/Excel 表结构。"""
+    previewFinished = QtCore.Signal(object)
+
+    def __init__(self, schema: dict[str, Any], runtime: Runtime | None = None, parent=None):
+        super().__init__(parent)
+        self.schema = schema or {}
+        self.runtime = runtime
+        self.imported_tables: list[dict[str, Any]] = []
+        self.imported_table_fields: dict[str, list[dict[str, Any]]] = {}
+        self.selected_import_table = ""
+        self._preview_running = False
+        self._init_ui()
+
     def _label(self, text: str) -> QtWidgets.QLabel:
-        label = QtWidgets.QLabel(text); label.setObjectName("fieldLabel"); return label
+        label = QtWidgets.QLabel(text)
+        label.setObjectName("fieldLabel")
+        return label
+
     def _init_ui(self):
-        layout = QtWidgets.QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(12)
-        basic = QtWidgets.QGroupBox("生成设置"); form = QtWidgets.QFormLayout(basic); form.setSpacing(10)
-        self.count_spin = QtWidgets.QSpinBox(); self.count_spin.setRange(1, 100000); self.count_spin.setValue(10)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        basic = QtWidgets.QGroupBox("生成设置")
+        form = QtWidgets.QFormLayout(basic)
+        form.setSpacing(10)
+        self.count_spin = QtWidgets.QSpinBox()
+        self.count_spin.setRange(1, 100000)
+        self.count_spin.setValue(10)
         self.format_combo = QtWidgets.QComboBox()
-        for label, key in [("JSON", "json"), ("CSV", "csv"), ("Excel", "xlsx"), ("TXT", "txt"), ("SQL", "sql"), ("ZIP 数据包", "zip")]: self.format_combo.addItem(label, key)
-        self.seed_edit = QtWidgets.QLineEdit(); self.seed_edit.setPlaceholderText("留空则每次随机"); self.table_edit = QtWidgets.QLineEdit(); self.table_edit.setPlaceholderText("可选，例如 user_info")
-        form.addRow(self._label("生成条数"), self.count_spin); form.addRow(self._label("输出格式"), self.format_combo); form.addRow(self._label("随机种子"), self.seed_edit); form.addRow(self._label("表名"), self.table_edit); layout.addWidget(basic)
-        mode_box = QtWidgets.QGroupBox("表结构来源"); mode_form = QtWidgets.QFormLayout(mode_box); self.mode_combo = QtWidgets.QComboBox(); self.mode_combo.addItem("自定义字段（默认）", "fields"); self.mode_combo.addItem("快捷模板", "template"); self.mode_combo.addItem("导入 SQL / Excel 表结构", "source"); self.mode_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i)); mode_form.addRow(self._label("配置模式"), self.mode_combo); layout.addWidget(mode_box)
+        for label, key in [("JSON", "json"), ("CSV", "csv"), ("Excel", "xlsx"), ("TXT", "txt"), ("SQL", "sql"), ("ZIP 数据包", "zip")]:
+            self.format_combo.addItem(label, key)
+        self.seed_edit = QtWidgets.QLineEdit()
+        self.seed_edit.setPlaceholderText("留空则每次随机")
+        self.table_edit = QtWidgets.QLineEdit()
+        self.table_edit.setPlaceholderText("可选，例如 user_info")
+        form.addRow(self._label("生成条数"), self.count_spin)
+        form.addRow(self._label("输出格式"), self.format_combo)
+        form.addRow(self._label("随机种子"), self.seed_edit)
+        form.addRow(self._label("输出表名"), self.table_edit)
+        layout.addWidget(basic)
+
+        mode_box = QtWidgets.QGroupBox("表结构来源")
+        mode_form = QtWidgets.QFormLayout(mode_box)
+        self.mode_combo = QtWidgets.QComboBox()
+        self.mode_combo.addItem("自定义字段（默认）", "fields")
+        self.mode_combo.addItem("快捷模板", "template")
+        self.mode_combo.addItem("导入 SQL / Excel 表结构", "source")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_form.addRow(self._label("配置模式"), self.mode_combo)
+        layout.addWidget(mode_box)
+
         self.stack = QtWidgets.QStackedWidget()
-        custom_page = QtWidgets.QWidget(); custom_layout = QtWidgets.QVBoxLayout(custom_page); custom_layout.setContentsMargins(0, 0, 0, 0); self.fields_editor = DataMockFieldsEditor(); custom_layout.addWidget(self.fields_editor); self.stack.addWidget(custom_page)
-        template_page = QtWidgets.QWidget(); template_form = QtWidgets.QFormLayout(template_page); self.template_combo = QtWidgets.QComboBox();
-        for label, key in [("客户数据", "retail_customer"), ("账户数据", "account"), ("商品数据", "product"), ("交易数据", "transaction")]: self.template_combo.addItem(label, key)
-        template_form.addRow(self._label("选择模板"), self.template_combo); self.stack.addWidget(template_page)
-        source_page = QtWidgets.QWidget(); source_form = QtWidgets.QFormLayout(source_page); self.source_format_combo = QtWidgets.QComboBox(); self.source_format_combo.addItem("SQL DDL", "sql"); self.source_format_combo.addItem("Excel 字段清单", "excel"); self.source_picker = SingleFilePicker("选择 SQL 或 Excel 字段清单…", "SQL / Excel 文件 (*.sql *.ddl *.xlsx);;所有文件 (*.*)"); source_form.addRow(self._label("导入类型"), self.source_format_combo); source_form.addRow(self._label("结构文件"), self.source_picker); self.stack.addWidget(source_page); layout.addWidget(self.stack)
-        output_box = QtWidgets.QGroupBox("输出高级设置"); output_form = QtWidgets.QFormLayout(output_box); self.sql_dialect_combo = QtWidgets.QComboBox();
-        for label, key in [("MySQL", "mysql"), ("PostgreSQL", "postgresql"), ("SQL Server", "sqlserver"), ("Oracle", "oracle"), ("SQLite", "sqlite")]: self.sql_dialect_combo.addItem(label, key)
-        self.sql_table_edit = QtWidgets.QLineEdit(); self.sql_table_edit.setPlaceholderText("留空使用上面的表名"); self.sql_create_check = QtWidgets.QCheckBox("生成 CREATE TABLE"); self.sql_transaction_check = QtWidgets.QCheckBox("使用事务"); self.sql_transaction_check.setChecked(True); self.sql_batch_spin = QtWidgets.QSpinBox(); self.sql_batch_spin.setRange(1, 1000); self.sql_batch_spin.setValue(500); self.txt_delimiter_edit = QtWidgets.QLineEdit("|"); self.txt_delimiter_edit.setMaxLength(1); self.txt_header_check = QtWidgets.QCheckBox("TXT 包含表头"); self.txt_header_check.setChecked(True)
-        output_form.addRow(self._label("SQL 方言"), self.sql_dialect_combo); output_form.addRow(self._label("SQL 表名"), self.sql_table_edit); output_form.addRow(self._label("SQL 批量大小"), self.sql_batch_spin); output_form.addRow(self._label("SQL 选项"), self.sql_create_check); output_form.addRow("", self.sql_transaction_check); output_form.addRow(self._label("TXT 分隔符"), self.txt_delimiter_edit); output_form.addRow("", self.txt_header_check); layout.addWidget(output_box); layout.addStretch(); self.stack.setCurrentIndex(0)
+        custom_page = QtWidgets.QWidget()
+        custom_layout = QtWidgets.QVBoxLayout(custom_page)
+        custom_layout.setContentsMargins(0, 0, 0, 0)
+        self.fields_editor = DataMockFieldsEditor()
+        custom_layout.addWidget(self.fields_editor)
+        self.stack.addWidget(custom_page)
+
+        template_page = QtWidgets.QWidget()
+        template_form = QtWidgets.QFormLayout(template_page)
+        self.template_combo = QtWidgets.QComboBox()
+        for label, key in [("客户数据", "retail_customer"), ("账户数据", "account"), ("商品数据", "product"), ("交易数据", "transaction")]:
+            self.template_combo.addItem(label, key)
+        template_form.addRow(self._label("选择模板"), self.template_combo)
+        self.stack.addWidget(template_page)
+
+        source_page = QtWidgets.QWidget()
+        source_layout = QtWidgets.QVBoxLayout(source_page)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_form = QtWidgets.QFormLayout()
+        self.source_format_combo = QtWidgets.QComboBox()
+        self.source_format_combo.addItem("SQL DDL（支持多表）", "sql")
+        self.source_format_combo.addItem("Excel 字段清单", "excel")
+        self.source_picker = SingleFilePicker("选择 SQL 或 Excel 字段清单…", "SQL / Excel 文件 (*.sql *.ddl *.xlsx);;所有文件 (*.*)")
+        self.source_picker.valueChanged.connect(self._on_source_path_changed)
+        self.source_format_combo.currentIndexChanged.connect(self._on_source_format_changed)
+        source_form.addRow(self._label("导入类型"), self.source_format_combo)
+        source_form.addRow(self._label("结构文件"), self.source_picker)
+        source_layout.addLayout(source_form)
+        action_row = QtWidgets.QHBoxLayout()
+        self.preview_btn = QtWidgets.QPushButton("解析并展示表结构")
+        self.preview_btn.setObjectName("secondaryButton")
+        self.preview_btn.clicked.connect(self._preview_source)
+        action_row.addWidget(self.preview_btn)
+        self.preview_status = QtWidgets.QLabel("导入后可查看表名、字段名、类型，并逐字段调整生成规则")
+        self.preview_status.setObjectName("mutedText")
+        action_row.addWidget(self.preview_status, 1)
+        source_layout.addLayout(action_row)
+        table_row = QtWidgets.QHBoxLayout()
+        table_row.addWidget(self._label("选择导入表"))
+        self.import_table_combo = QtWidgets.QComboBox()
+        self.import_table_combo.setEnabled(False)
+        self.import_table_combo.currentIndexChanged.connect(self._on_import_table_changed)
+        table_row.addWidget(self.import_table_combo, 1)
+        source_layout.addLayout(table_row)
+        self.import_fields_editor = DataMockFieldsEditor()
+        self.import_fields_editor.setEnabled(False)
+        source_layout.addWidget(self.import_fields_editor)
+        self.stack.addWidget(source_page)
+        layout.addWidget(self.stack)
+
+        output_box = QtWidgets.QGroupBox("输出高级设置")
+        output_form = QtWidgets.QFormLayout(output_box)
+        self.sql_dialect_combo = QtWidgets.QComboBox()
+        for label, key in [("MySQL", "mysql"), ("PostgreSQL", "postgresql"), ("SQL Server", "sqlserver"), ("Oracle", "oracle"), ("SQLite", "sqlite")]:
+            self.sql_dialect_combo.addItem(label, key)
+        self.sql_table_edit = QtWidgets.QLineEdit()
+        self.sql_table_edit.setPlaceholderText("留空使用输出表名")
+        self.sql_create_check = QtWidgets.QCheckBox("生成 CREATE TABLE")
+        self.sql_transaction_check = QtWidgets.QCheckBox("使用事务")
+        self.sql_transaction_check.setChecked(True)
+        self.sql_batch_spin = QtWidgets.QSpinBox()
+        self.sql_batch_spin.setRange(1, 1000)
+        self.sql_batch_spin.setValue(500)
+        self.txt_delimiter_edit = QtWidgets.QLineEdit("|")
+        self.txt_delimiter_edit.setMaxLength(1)
+        self.txt_header_check = QtWidgets.QCheckBox("TXT 包含表头")
+        self.txt_header_check.setChecked(True)
+        output_form.addRow(self._label("SQL 方言"), self.sql_dialect_combo)
+        output_form.addRow(self._label("SQL 表名"), self.sql_table_edit)
+        output_form.addRow(self._label("SQL 批量大小"), self.sql_batch_spin)
+        output_form.addRow(self._label("SQL 选项"), self.sql_create_check)
+        output_form.addRow("", self.sql_transaction_check)
+        output_form.addRow(self._label("TXT 分隔符"), self.txt_delimiter_edit)
+        output_form.addRow("", self.txt_header_check)
+        layout.addWidget(output_box)
+        layout.addStretch()
+        self.stack.setCurrentIndex(0)
+
+    def _on_mode_changed(self, index: int):
+        self.stack.setCurrentIndex(index)
+        if self.mode_combo.currentData() == "source" and self.imported_tables:
+            self._sync_import_editor()
+
+    def _on_source_path_changed(self, path: str):
+        self._clear_imported_tables()
+        if path and self.mode_combo.currentData() == "source":
+            QtCore.QTimer.singleShot(0, self._preview_source)
+
+    def _on_source_format_changed(self, _index: int):
+        self._clear_imported_tables()
+        path = self.source_picker.get_path() if hasattr(self, "source_picker") else ""
+        if path and self.mode_combo.currentData() == "source":
+            QtCore.QTimer.singleShot(0, self._preview_source)
+
+    def _clear_imported_tables(self):
+        if not hasattr(self, "imported_table_fields") or not self.imported_table_fields:
+            return
+        self.imported_tables = []
+        self.imported_table_fields = {}
+        self.selected_import_table = ""
+        self.import_table_combo.clear()
+        self.import_table_combo.setEnabled(False)
+        self.import_fields_editor.set_values([])
+        self.import_fields_editor.setEnabled(False)
+        self.preview_status.setText("文件或格式已变化，请重新解析表结构")
+
+    def _preview_source(self):
+        path = self.source_picker.get_path()
+        if not path:
+            QtWidgets.QMessageBox.warning(self, "无法解析", "请先选择 SQL 或 Excel 表结构文件")
+            return
+        if self.runtime is None:
+            QtWidgets.QMessageBox.critical(self, "无法解析", "当前界面未连接 Runtime")
+            return
+        self.preview_btn.setEnabled(False)
+        self.preview_status.setText("正在解析表结构…")
+        params = {"count": 1, "format": "json", "source_file": path, "source_format": self.source_format_combo.currentData(), "preview": True}
+        try:
+            _task_id, result = self.runtime.run("data.mock", params)
+        except Exception as error:
+            self.preview_btn.setEnabled(True)
+            self.preview_status.setText("解析失败")
+            QtWidgets.QMessageBox.critical(self, "表结构解析失败", str(error))
+            return
+        self.preview_btn.setEnabled(True)
+        if result.status != "success":
+            self.preview_status.setText("解析失败")
+            QtWidgets.QMessageBox.critical(self, "表结构解析失败", result.message)
+            return
+        self._set_imported_tables(result.data.get("tables") or [])
+
+    def _set_imported_tables(self, tables: list[dict[str, Any]]):
+        valid = [item for item in tables if item.get("name") and isinstance(item.get("fields"), list)]
+        if not valid:
+            self.preview_status.setText("未解析到表结构")
+            QtWidgets.QMessageBox.warning(self, "表结构为空", "文件中没有可编辑的表或字段")
+            return
+        self.imported_tables = valid
+        self.imported_table_fields = {str(item["name"]): list(item["fields"]) for item in valid}
+        self.import_table_combo.blockSignals(True)
+        self.import_table_combo.clear()
+        for item in valid:
+            self.import_table_combo.addItem(f"{item['name']}（{len(item['fields'])} 个字段）", item["name"])
+        self.import_table_combo.blockSignals(False)
+        self.import_table_combo.setEnabled(True)
+        self.import_fields_editor.setEnabled(True)
+        self.selected_import_table = str(valid[0]["name"])
+        self._sync_import_editor()
+        self.preview_status.setText(f"已解析 {len(valid)} 张表，可选择表并修改字段规则")
+
+    def _save_import_editor(self):
+        if not self.selected_import_table or not self.import_fields_editor.isEnabled():
+            return
+        try:
+            self.imported_table_fields[self.selected_import_table] = self.import_fields_editor.get_values()
+        except ValueError:
+            pass
+
+    def _on_import_table_changed(self, index: int):
+        self._save_import_editor()
+        if index < 0:
+            return
+        self.selected_import_table = str(self.import_table_combo.itemData(index))
+        self._sync_import_editor()
+
+    def _sync_import_editor(self):
+        fields = self.imported_table_fields.get(self.selected_import_table, [])
+        self.import_fields_editor.set_values(fields)
+        self.table_edit.setText(self.selected_import_table)
+        self.sql_table_edit.setPlaceholderText(f"留空使用 {self.selected_import_table}")
+
     def get_values(self) -> dict[str, Any]:
         params = {"count": self.count_spin.value(), "format": self.format_combo.currentData()}
         if self.seed_edit.text().strip():
-            try: params["seed"] = int(self.seed_edit.text().strip())
-            except ValueError as error: raise ValueError("随机种子必须是整数") from error
-        if self.table_edit.text().strip(): params["table"] = self.table_edit.text().strip()
+            try:
+                params["seed"] = int(self.seed_edit.text().strip())
+            except ValueError as error:
+                raise ValueError("随机种子必须是整数") from error
+        if self.table_edit.text().strip():
+            params["table"] = self.table_edit.text().strip()
         mode = self.mode_combo.currentData()
-        if mode == "fields": params["fields"] = self.fields_editor.get_values()
-        elif mode == "template": params["template"] = self.template_combo.currentData()
-        else: params["source_file"] = self.source_picker.get_path(); params["source_format"] = self.source_format_combo.currentData()
+        if mode == "fields":
+            params["fields"] = self.fields_editor.get_values()
+        elif mode == "template":
+            params["template"] = self.template_combo.currentData()
+        else:
+            self._save_import_editor()
+            imported_fields = self.imported_table_fields.get(self.selected_import_table) or []
+            if imported_fields:
+                # 解析后提交当前表的编辑结果，避免 source_file 与 fields 同时触发模式互斥校验。
+                params["fields"] = imported_fields
+                params["source_table"] = self.selected_import_table
+            else:
+                params["source_file"] = self.source_picker.get_path()
+                params["source_format"] = self.source_format_combo.currentData()
         params.update({"sql_dialect": self.sql_dialect_combo.currentData(), "sql_batch_size": self.sql_batch_spin.value(), "sql_transaction": self.sql_transaction_check.isChecked(), "sql_create_table": self.sql_create_check.isChecked(), "txt_delimiter": self.txt_delimiter_edit.text() or "|", "txt_header": self.txt_header_check.isChecked()})
-        if self.sql_table_edit.text().strip(): params["sql_table"] = self.sql_table_edit.text().strip()
+        if self.sql_table_edit.text().strip():
+            params["sql_table"] = self.sql_table_edit.text().strip()
         return params
+
     def set_values(self, values: dict[str, Any]):
         if "count" in values: self.count_spin.setValue(int(values["count"]))
         if "format" in values: self.format_combo.setCurrentIndex(max(0, self.format_combo.findData(values["format"])))
         if "seed" in values: self.seed_edit.setText(str(values["seed"]))
         if "table" in values: self.table_edit.setText(str(values["table"]))
-        if values.get("fields") is not None: self.mode_combo.setCurrentIndex(0); self.fields_editor.set_values(values.get("fields") or [])
-        elif values.get("template"): self.mode_combo.setCurrentIndex(1); self.template_combo.setCurrentIndex(max(0, self.template_combo.findData(values["template"])))
-        elif values.get("source_file"): self.mode_combo.setCurrentIndex(2); self.source_picker.set_path(str(values["source_file"])); self.source_format_combo.setCurrentIndex(max(0, self.source_format_combo.findData(values.get("source_format", "sql"))))
+        if values.get("fields") is not None:
+            self.mode_combo.setCurrentIndex(0); self.fields_editor.set_values(values.get("fields") or [])
+        elif values.get("template"):
+            self.mode_combo.setCurrentIndex(1); self.template_combo.setCurrentIndex(max(0, self.template_combo.findData(values["template"])))
+        elif values.get("source_file"):
+            self.mode_combo.setCurrentIndex(2); self.source_picker.set_path(str(values["source_file"])); self.source_format_combo.setCurrentIndex(max(0, self.source_format_combo.findData(values.get("source_format", "sql"))))
         if "sql_dialect" in values: self.sql_dialect_combo.setCurrentIndex(max(0, self.sql_dialect_combo.findData(values["sql_dialect"])))
         if "sql_table" in values: self.sql_table_edit.setText(str(values["sql_table"]))
         if "sql_batch_size" in values: self.sql_batch_spin.setValue(int(values["sql_batch_size"]))
@@ -638,13 +860,23 @@ class DataMockForm(QtWidgets.QWidget):
         if "sql_create_table" in values: self.sql_create_check.setChecked(bool(values["sql_create_table"]))
         if "txt_delimiter" in values: self.txt_delimiter_edit.setText(str(values["txt_delimiter"]))
         if "txt_header" in values: self.txt_header_check.setChecked(bool(values["txt_header"]))
+
     def validate_locally(self) -> tuple[bool, str]:
-        try: values = self.get_values()
-        except ValueError as error: return False, str(error)
-        if values["format"] == "txt" and len(values.get("txt_delimiter", "")) != 1: return False, "TXT 分隔符必须是一个字符"
+        try:
+            values = self.get_values()
+        except ValueError as error:
+            return False, str(error)
+        if values["format"] == "txt" and len(values.get("txt_delimiter", "")) != 1:
+            return False, "TXT 分隔符必须是一个字符"
         mode = self.mode_combo.currentData()
-        if mode == "fields": return self.fields_editor.validate()
-        if mode == "source" and not values.get("source_file"): return False, "请选择要导入的 SQL 或 Excel 表结构文件"
+        if mode == "fields":
+            return self.fields_editor.validate()
+        if mode == "source":
+            if not values.get("source_file"):
+                return False, "请选择要导入的 SQL 或 Excel 表结构文件"
+            if not self.imported_table_fields.get(self.selected_import_table):
+                return False, "请先点击“解析并展示表结构”，并确认导入表包含字段"
+            return self.import_fields_editor.validate()
         return True, ""
 
 # ==============================================================================
@@ -1370,7 +1602,7 @@ class CommandDetailFormView(QtWidgets.QWidget):
             self.form_widget.deleteLater()
             self.form_widget = None
 
-        self.form_widget = DataMockForm(self.current_schema) if command_name == "data.mock" else DynamicSchemaForm(self.current_schema, command_name=command_name)
+        self.form_widget = DataMockForm(self.current_schema, runtime=self.runtime) if command_name == "data.mock" else DynamicSchemaForm(self.current_schema, command_name=command_name)
         if preset_params:
             self.form_widget.set_values(preset_params)
         self.form_container_layout.addWidget(self.form_widget)
