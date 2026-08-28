@@ -1,6 +1,6 @@
 #define AppName "TestBox"
 #ifndef AppVersion
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #endif
 #define AppPublisher "TestBox"
 #define AppExeName "TestBox-GUI.exe"

@@ -1,8 +1,8 @@
 #define AppName "TestBox Incremental Update"
 #ifndef AppVersion
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #endif
-#define UpdatePackage "TestBox-update-v1.0.2.zip"
+#define UpdatePackage "TestBox-update-v1.0.3.zip"
 
 [Setup]
 AppId={{0CB20564-C9B7-466E-881C-CA6BF1FA56B9}
