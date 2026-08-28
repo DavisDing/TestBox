@@ -2,11 +2,10 @@
 #ifndef AppVersion
 #define AppVersion "1.0.2"
 #endif
-#define AppId "{0CB20564-C9B7-466E-881C-CA6BF1FA56B9}"
 #define UpdatePackage "TestBox-update-v1.0.2.zip"
 
 [Setup]
-AppId={#AppId}
+AppId={{0CB20564-C9B7-466E-881C-CA6BF1FA56B9}
 AppName={#AppName}
 AppVersion={#AppVersion}
 DefaultDirName={tmp}\TestBoxUpdate
@@ -21,7 +20,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
 Source: "..\dist\windows\TestBox-Updater.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion
