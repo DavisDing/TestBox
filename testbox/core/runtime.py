@@ -300,3 +300,14 @@ class Runtime:
         if not result or result.get("status") != "success" or relative_path not in result.get("files", []):
             raise ValueError("只能提交成功任务声明的输出文件")
         return self.workspace.export(Path(record["workspace_path"]), relative_path, destination)
+    def commit_outputs_archive(self, task_id: str, destination: Path) -> Path:
+        record = self.get_task(task_id)
+        if not record:
+            raise LookupError("未找到任务")
+        result = self.get_task_result(task_id)
+        if not result or result.get("status") != "success":
+            raise ValueError("只能提交成功任务声明的输出文件")
+        files = result.get("files", [])
+        if not files:
+            raise ValueError("该任务没有可导出的产物文件")
+        return self.workspace.export_archive(Path(record["workspace_path"]), files, destination)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import csv, importlib.util, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest
+import csv, importlib.util, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest, zipfile
 from unittest.mock import patch
 from datetime import date, timedelta
 from pathlib import Path
@@ -92,6 +92,33 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertIn("data.mock", process.stdout)
 
+    def test_multi_artifact_export_zip_preserves_directory_structure(self):
+        from testbox.core.workspace import WorkspaceManager
+        import tempfile
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            ws = WorkspaceManager(root, max_input_bytes=100*1024*1024, max_output_bytes=500*1024*1024)
+            task_ws = root / "sample-task"
+            out_dir = task_ws / "output"
+            (out_dir / "reports").mkdir(parents=True)
+            (out_dir / "reports" / "summary.json").write_text("{}", encoding="utf-8")
+            (out_dir / "screenshots" / "step1").mkdir(parents=True)
+            (out_dir / "screenshots" / "step1" / "shot.png").write_bytes(b"PNG_FAKE")
+            (out_dir / "data.csv").write_text("a,b,c", encoding="utf-8")
+
+            dest_zip = root / "bundle.zip"
+            files = ["reports/summary.json", "screenshots/step1/shot.png", "data.csv"]
+            ws.export_archive(task_ws, files, dest_zip)
+            self.assertTrue(dest_zip.is_file())
+
+            with zipfile.ZipFile(dest_zip, "r") as archive:
+                namelist = set(archive.namelist())
+                self.assertEqual(namelist, {"reports/summary.json", "screenshots/step1/shot.png", "data.csv"})
+                self.assertEqual(archive.read("reports/summary.json").decode("utf-8"), "{}")
+                self.assertEqual(archive.read("screenshots/step1/shot.png"), b"PNG_FAKE")
+                self.assertEqual(archive.read("data.csv").decode("utf-8"), "a,b,c")
+
     def test_cli_json_task_commands_and_export(self):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
@@ -116,6 +143,13 @@ class RuntimeIntegrationTests(unittest.TestCase):
         exported = cli("--json", "task", "export", task_id, f"{task_id}.json", "--output", str(destination))
         self.assertEqual(exported.returncode, 0, exported.stderr)
         self.assertTrue(destination.is_file())
+
+        archive_destination = self.temp / "all_exported.zip"
+        archive_exported = cli("--json", "task", "export", task_id, "--archive", "--output", str(archive_destination))
+        self.assertEqual(archive_exported.returncode, 0, archive_exported.stderr)
+        self.assertTrue(archive_destination.is_file())
+        with zipfile.ZipFile(archive_destination, "r") as archive:
+            self.assertIn(f"{task_id}.json", archive.namelist())
 
     def test_cli_uses_stable_exit_code_and_json_error(self):
         environment = os.environ.copy()

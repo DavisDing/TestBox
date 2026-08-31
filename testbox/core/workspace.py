@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -79,5 +80,29 @@ class WorkspaceManager:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.testbox.tmp")
         shutil.copy2(source, temporary)
+        temporary.replace(destination)
+        return destination
+
+    def export_archive(self, task_workspace: Path, relative_paths: list[str], destination: Path) -> Path:
+        output_root = (task_workspace / "output").resolve()
+        if not relative_paths:
+            raise ValueError("没有可导出的产物文件")
+        for rel in relative_paths:
+            source = (output_root / rel).resolve()
+            try:
+                source.relative_to(output_root)
+            except ValueError as error:
+                raise ValueError(f"输出路径不合法: {rel}") from error
+            if not source.is_file():
+                raise ValueError(f"输出文件不存在: {rel}")
+        destination = destination.expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.testbox.tmp")
+        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+            for rel in relative_paths:
+                source = (output_root / rel).resolve()
+                # 统一为正斜杠相对路径写入压缩包，保持目录层级结构一致
+                archive_name = rel.replace(chr(92), "/")
+                archive.write(source, arcname=archive_name)
         temporary.replace(destination)
         return destination

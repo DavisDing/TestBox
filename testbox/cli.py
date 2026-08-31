@@ -130,8 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     _json_flag(result)
     export = task_sub.add_parser("export")
     export.add_argument("task_id")
-    export.add_argument("relative_path")
+    export.add_argument("relative_path", nargs="?", default=None, help="相对路径（如导出全部为zip压缩包可省略并搭配 --archive）")
     export.add_argument("--output", required=True)
+    export.add_argument("--archive", "--zip", action="store_true", help="将任务的所有产物文件打包为 ZIP 格式导出，保持目录层级结构一致")
     _json_flag(export)
 
     workspace = sub.add_parser("workspace")
@@ -268,10 +269,14 @@ def main() -> None:
                 return
             if arguments.task_action == "export":
                 try:
-                    destination = runtime.commit_output(arguments.task_id, arguments.relative_path, Path(arguments.output))
+                    if arguments.archive or arguments.relative_path is None:
+                        destination = runtime.commit_outputs_archive(arguments.task_id, Path(arguments.output))
+                        emit_value({"task_id": arguments.task_id, "archive": True, "destination": str(destination)}, as_json=as_json, text=f"已打包导出: {destination}")
+                    else:
+                        destination = runtime.commit_output(arguments.task_id, arguments.relative_path, Path(arguments.output))
+                        emit_value({"task_id": arguments.task_id, "relative_path": arguments.relative_path, "destination": str(destination)}, as_json=as_json, text=f"已导出: {destination}")
                 except (ValueError, LookupError, OSError) as error:
                     raise CliFailure(ErrorCode.INVALID_PARAMS, str(error), int(ExitCode.USAGE)) from error
-                emit_value({"task_id": arguments.task_id, "relative_path": arguments.relative_path, "destination": str(destination)}, as_json=as_json, text=f"已导出: {destination}")
                 return
 
         if arguments.action == "workspace":

@@ -1830,7 +1830,23 @@ class TaskResultDetailView(QtWidgets.QWidget):
         files_box_layout.setContentsMargins(14, 14, 14, 14)
         files_box_layout.setSpacing(10)
 
+        # 产物操作工具条（多产物时提供一键 ZIP 打包下载）
+        self.files_toolbar = QtWidgets.QHBoxLayout()
+        self.files_count_lbl = QtWidgets.QLabel("共 0 个产物文件")
+        self.files_count_lbl.setObjectName("mutedText")
+        self.files_toolbar.addWidget(self.files_count_lbl)
+        self.files_toolbar.addStretch()
+
+        self.btn_export_zip = QtWidgets.QPushButton("📦 一键下载全部 (ZIP)")
+        self.btn_export_zip.setObjectName("smallButton")
+        self.btn_export_zip.setToolTip("将任务所有产物打包为 ZIP 格式导出，保持目录层级结构一致")
+        self.btn_export_zip.clicked.connect(self._export_all_as_zip)
+        self.btn_export_zip.setVisible(False)
+        self.files_toolbar.addWidget(self.btn_export_zip)
+        files_box_layout.addLayout(self.files_toolbar)
+
         self.files_table = QtWidgets.QTableWidget(0, 4)
+        self.files_table.verticalHeader().setVisible(False)
         self.files_table.setHorizontalHeaderLabels(["文件名", "相对路径", "文件大小", "操作"])
         self.files_table.horizontalHeader().setStretchLastSection(False)
         self.files_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
@@ -2056,13 +2072,19 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
     def _render_files_table(self, task_id: str, files: list[str]):
         self.files_table.setRowCount(0)
+        self.current_files = list(files)
         if not files:
             self.files_table.setVisible(False)
             self.files_empty_lbl.setVisible(True)
+            self.files_count_lbl.setText("共 0 个产物文件")
+            self.btn_export_zip.setVisible(False)
             return
 
         self.files_table.setVisible(True)
         self.files_empty_lbl.setVisible(False)
+        self.files_count_lbl.setText(f"共 {len(files)} 个产物文件")
+        # 始终提供或在有产物时提供一键 ZIP 打包下载入口
+        self.btn_export_zip.setVisible(True)
         self.files_table.setRowCount(len(files))
 
         workspace_path = self.current_task_info.get("workspace_path")
@@ -2118,6 +2140,27 @@ class TaskResultDetailView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, "导出成功", f"文件已成功导出至:\n{dest_path}")
         except Exception as error:
             QtWidgets.QMessageBox.critical(self, "导出失败", f"导出文件时发生异常:\n{error}")
+
+    def _export_all_as_zip(self):
+        """一键将当前任务所有产物打包导出为 ZIP 格式，内部目录结构与工作区保持完全一致"""
+        task_id = self.current_task_id
+        if not task_id:
+            return
+        default_name = f"{task_id}-outputs.zip"
+        dest_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "一键打包导出全部产物",
+            default_name,
+            "ZIP 压缩包 (*.zip);;所有文件 (*.*)",
+            options=_file_dialog_options(),
+        )
+        if not dest_path:
+            return
+        try:
+            self.runtime.commit_outputs_archive(task_id, Path(dest_path))
+            QtWidgets.QMessageBox.information(self, "导出成功", f"所有产物已成功打包导出至:\n{dest_path}")
+        except Exception as error:
+            QtWidgets.QMessageBox.critical(self, "导出失败", f"打包导出产物时发生异常:\n{error}")
 
     def _on_re_execute(self):
         cmd = self.current_task_info.get("command")
@@ -2197,6 +2240,7 @@ class TaskHistoryView(QtWidgets.QWidget):
 
         # 历史表格
         self.table = QtWidgets.QTableWidget(0, 6)
+        self.table.verticalHeader().setVisible(False)
         self.table.setHorizontalHeaderLabels(["任务 ID", "命令", "插件 / 版本", "状态", "开始时间", "操作"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -2402,6 +2446,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 
         # 插件诊断表格
         self.plugins_table = QtWidgets.QTableWidget(0, 6)
+        self.plugins_table.verticalHeader().setVisible(False)
         self.plugins_table.setHorizontalHeaderLabels(["插件名称", "版本", "分类", "命令列表", "并发支持", "隔离能力"])
         self.plugins_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.plugins_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
@@ -3152,7 +3197,7 @@ QProgressBar::chunk {
 }
 
 /* 表格控件 */
-QTableWidget {
+QTableWidget, QTableView {
     background-color: #0D0D10;
     border: 1px solid #222226;
     border-radius: 6px;
@@ -3162,11 +3207,22 @@ QTableWidget {
     color: #EDEDED;
 }
 
+QHeaderView {
+    background-color: #121215;
+    border: none;
+}
+
 QHeaderView::section {
     background-color: #121215;
     color: #A1A1AA;
     font-weight: 600;
     padding: 8px;
+    border: none;
+    border-bottom: 1px solid #27272A;
+}
+
+QTableCornerButton::section {
+    background-color: #121215;
     border: none;
     border-bottom: 1px solid #27272A;
 }
