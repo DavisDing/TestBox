@@ -144,6 +144,74 @@ def _enum_label(key: str, value: Any) -> str:
     return ENUM_LABELS.get(key, {}).get(str(value), str(value))
 
 
+APP_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="tbBgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0B0F17"/>
+    </linearGradient>
+    <linearGradient id="tbBorderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#064E3B" stop-opacity="0.2"/>
+    </linearGradient>
+    <linearGradient id="gradCubeTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+    <linearGradient id="gradCubeLeft" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="gradCubeRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#047857"/>
+      <stop offset="100%" stop-color="#064E3B"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#tbBgGrad)" stroke="url(#tbBorderGrad)" stroke-width="2.5"/>
+
+  <circle cx="24" cy="24" r="1.8" fill="#10B981" opacity="0.4"/>
+  <circle cx="104" cy="24" r="1.8" fill="#10B981" opacity="0.4"/>
+  <circle cx="24" cy="104" r="1.8" fill="#10B981" opacity="0.4"/>
+  <circle cx="104" cy="104" r="1.8" fill="#10B981" opacity="0.4"/>
+
+  <polygon points="64,28 98,46 64,64 30,46" fill="url(#gradCubeTop)"/>
+  <polygon points="64,34 90,48 64,61 38,48" fill="#6EE7B7" opacity="0.2"/>
+
+  <polygon points="30,46 64,64 64,100 30,82" fill="url(#gradCubeLeft)"/>
+  <polygon points="64,64 98,46 98,82 64,100" fill="url(#gradCubeRight)"/>
+
+  <line x1="64" y1="28" x2="98" y2="46" stroke="#A7F3D0" stroke-width="1.5" stroke-opacity="0.7"/>
+  <line x1="64" y1="28" x2="30" y2="46" stroke="#A7F3D0" stroke-width="1.5" stroke-opacity="0.7"/>
+  <line x1="64" y1="64" x2="64" y2="100" stroke="#34D399" stroke-width="2" stroke-opacity="0.6"/>
+
+  <path d="M41,68 L48,75 L56,62" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <line x1="74" y1="66" x2="88" y2="58" stroke="#34D399" stroke-width="2.5" stroke-linecap="round" stroke-opacity="0.9"/>
+  <line x1="74" y1="76" x2="88" y2="68" stroke="#34D399" stroke-width="2.5" stroke-linecap="round" stroke-opacity="0.9"/>
+  <line x1="74" y1="86" x2="82" y2="82" stroke="#34D399" stroke-width="2.5" stroke-linecap="round" stroke-opacity="0.6"/>
+</svg>"""
+
+
+def get_app_logo_pixmap(size: int = 32) -> QtGui.QPixmap:
+    from PySide6 import QtSvg
+    renderer = QtSvg.QSvgRenderer(QtCore.QByteArray(APP_LOGO_SVG.encode("utf-8")))
+    pixmap = QtGui.QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    renderer.render(painter)
+    painter.end()
+    return pixmap
+
+
+def get_app_logo_icon() -> QtGui.QIcon:
+    icon = QtGui.QIcon()
+    for s in (16, 20, 24, 32, 48, 64, 128, 256):
+        icon.addPixmap(get_app_logo_pixmap(s))
+    return icon
+
+
 def _file_dialog_options():
     # 使用 Qt 自绘文件选择器，避免 macOS/Windows 原生白底对话框绕过深色主题。
     return QtWidgets.QFileDialog.Option.DontUseNativeDialog
@@ -347,10 +415,10 @@ class AnnotationDialog(QtWidgets.QDialog):
 # ==============================================================================
 
 class SingleFilePicker(QtWidgets.QWidget):
-    """单个文件选择组件"""
+    """单个文件选择组件，支持手动输入或粘贴文件路径，并严格校验阻止输入目录地址"""
     valueChanged = QtCore.Signal(str)
 
-    def __init__(self, placeholder: str = "点击选择或拖入文件...", filter_str: str = "所有文件 (*.*)", parent=None):
+    def __init__(self, placeholder: str = "点击选择或输入文件路径...", filter_str: str = "所有文件 (*.*)", parent=None):
         super().__init__(parent)
         self.filter_str = filter_str
         self._path = ""
@@ -361,7 +429,9 @@ class SingleFilePicker(QtWidgets.QWidget):
 
         self.line_edit = QtWidgets.QLineEdit()
         self.line_edit.setPlaceholderText(placeholder)
-        self.line_edit.setReadOnly(True)
+        self.line_edit.setReadOnly(False)
+        self.line_edit.textEdited.connect(self._on_text_edited)
+        self.line_edit.editingFinished.connect(self._on_editing_finished)
 
         self.btn_browse = QtWidgets.QPushButton("选择文件…")
         self.btn_browse.setObjectName("secondaryButton")
@@ -384,19 +454,50 @@ class SingleFilePicker(QtWidgets.QWidget):
         if file_path:
             self.set_path(file_path)
 
-    def set_path(self, path: str):
-        self._path = path
-        self.line_edit.setText(path)
-        p = Path(path)
-        if p.exists():
+    def _on_text_edited(self, raw_text: str):
+        self._validate_and_apply(raw_text.strip(), from_user_input=True)
+
+    def _on_editing_finished(self):
+        self._validate_and_apply(self.line_edit.text().strip(), from_user_input=True)
+
+    def _validate_and_apply(self, raw_text: str, from_user_input: bool = False):
+        clean_text = raw_text.strip().strip("'\"")
+        if not clean_text:
+            self._path = ""
+            self.line_edit.setStyleSheet("")
+            self.line_edit.setToolTip("")
+            self.btn_clear.setVisible(False)
+            self.valueChanged.emit("")
+            return
+
+        p = Path(clean_text)
+        if p.is_dir():
+            # 目录地址非法：重置有效路径并显示醒目警示
+            self._path = ""
+            self.line_edit.setStyleSheet("border: 1.5px solid #EF4444; background-color: #2b1418; color: #FCA5A5;")
+            self.line_edit.setToolTip("❌ 不能输入目录地址，必须选择具体文件！")
+            self.btn_clear.setVisible(True)
+            self.valueChanged.emit("")
+            return
+
+        # 是文件或有效路径输入
+        self._path = clean_text
+        self.line_edit.setStyleSheet("")
+        if p.exists() and p.is_file():
             size_kb = p.stat().st_size / 1024.0
             size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{(size_kb/1024):.2f} MB"
-            self.line_edit.setToolTip(f"完整路径: {path}\n大小: {size_str}")
-            self.btn_clear.setVisible(True)
+            self.line_edit.setToolTip(f"完整路径: {clean_text}\n大小: {size_str}")
         else:
-            self.line_edit.setToolTip(path)
-            self.btn_clear.setVisible(bool(path))
+            self.line_edit.setToolTip(f"文件路径: {clean_text}")
+        self.btn_clear.setVisible(True)
         self.valueChanged.emit(self._path)
+
+    def set_path(self, path: str):
+        clean_path = path.strip().strip("'\"") if path else ""
+        self.line_edit.blockSignals(True)
+        self.line_edit.setText(clean_path)
+        self.line_edit.blockSignals(False)
+        self._validate_and_apply(clean_path, from_user_input=False)
 
     def get_path(self) -> str:
         return self._path
@@ -2207,6 +2308,12 @@ class TaskHistoryView(QtWidgets.QWidget):
         header.addLayout(title_box)
         header.addStretch()
 
+        clean_history_btn = QtWidgets.QPushButton("🧹 清理工作区")
+        clean_history_btn.setObjectName("secondaryButton")
+        clean_history_btn.setToolTip("清理历史任务工作区文件，释放磁盘空间")
+        clean_history_btn.clicked.connect(self._on_clean_workspace)
+        header.addWidget(clean_history_btn)
+
         refresh_btn = QtWidgets.QPushButton("🔄 刷新")
         refresh_btn.setObjectName("secondaryButton")
         refresh_btn.clicked.connect(self.refresh_data)
@@ -2392,6 +2499,64 @@ class TaskHistoryView(QtWidgets.QWidget):
         id_item = self.table.item(row, 0)
         if id_item:
             self.taskSelected.emit(id_item.text())
+
+    def _on_clean_workspace(self):
+        """弹出工作区清理对话框，支持按日期清理指定日期之前的过期任务工作区"""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("清理历史工作区")
+        dialog.setMinimumWidth(380)
+
+        d_layout = QtWidgets.QVBoxLayout(dialog)
+        d_layout.setContentsMargins(20, 20, 20, 20)
+        d_layout.setSpacing(14)
+
+        desc_lbl = QtWidgets.QLabel("选择清理截止日期：\n将永久删除该日期之前所有任务生成的临时工作区目录与文件。")
+        desc_lbl.setWordWrap(True)
+        d_layout.addWidget(desc_lbl)
+
+        date_row = QtWidgets.QHBoxLayout()
+        date_lbl = QtWidgets.QLabel("清理此日期之前:")
+        date_lbl.setStyleSheet("font-weight: 600;")
+        date_row.addWidget(date_lbl)
+
+        date_edit = QtWidgets.QDateEdit()
+        date_edit.setCalendarPopup(True)
+        date_edit.setDate(QtCore.QDate.currentDate())
+        date_row.addWidget(date_edit)
+        date_row.addStretch()
+        d_layout.addLayout(date_row)
+
+        btn_box = QtWidgets.QHBoxLayout()
+        btn_box.addStretch()
+
+        btn_cancel = QtWidgets.QPushButton("取消")
+        btn_cancel.setObjectName("secondaryButton")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_box.addWidget(btn_cancel)
+
+        btn_confirm = QtWidgets.QPushButton("🧹 确认清理")
+        btn_confirm.setObjectName("primaryButton")
+
+        def _do_clean():
+            qdate = date_edit.date()
+            target_date = date(qdate.year(), qdate.month(), qdate.day())
+            dialog.accept()
+            try:
+                cleaned_count = self.runtime.clean_workspace(target_date)
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "清理完成",
+                    f"已成功清理 {cleaned_count} 个 {target_date.isoformat()} 之前的工作区。"
+                )
+                self.refresh_data()
+            except Exception as error:
+                QtWidgets.QMessageBox.critical(self, "清理失败", f"清理过程中发生异常:\n{error}")
+
+        btn_confirm.clicked.connect(_do_clean)
+        btn_box.addWidget(btn_confirm)
+        d_layout.addLayout(btn_box)
+
+        dialog.exec()
 
 
 # ==============================================================================
@@ -2651,6 +2816,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interactive_task = False
         self._interactive_restore_geometry = None
         self.setWindowTitle("TestBox - 测试效能工具箱")
+        self.setWindowIcon(get_app_logo_icon())
         # 初始尺寸根据屏幕可用区域裁剪；最小尺寸也不能大于常见小屏幕，
         # 让用户缩放窗口时由页面滚动区承接内容，而不是把右侧直接裁掉。
         self.setMinimumSize(760, 520)
@@ -2691,8 +2857,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Logo / Brand
         brand_bar = QtWidgets.QHBoxLayout()
         brand_bar.setSpacing(10)
-        brand_icon = QtWidgets.QLabel("🧪")
-        brand_icon.setStyleSheet("font-size: 22px;")
+        brand_icon = QtWidgets.QLabel()
+        brand_icon.setFixedSize(28, 28)
+        brand_icon.setPixmap(get_app_logo_pixmap(28))
         brand_title = QtWidgets.QLabel("TestBox")
         brand_title.setStyleSheet("color: #ffffff; font-size: 18px; font-weight: 800; letter-spacing: 0.5px;")
         brand_bar.addWidget(brand_icon)
@@ -3269,6 +3436,7 @@ def main() -> None:
         os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     app.setApplicationName("TestBox")
+    app.setWindowIcon(get_app_logo_icon())
     app_font = QtGui.QFont("Segoe UI" if sys.platform == "win32" else "Helvetica Neue")
     app_font.setPointSize(10)
     app_font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferQuality)
