@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape
 from testbox.sdk import PluginError, Result
 
 IDENTIFIER = r"(?:`[^`]+`|\"[^\"]+\"|\[[^\]]+\]|[A-Za-z_][\w$]*)"
-CREATE_RE = re.compile(rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<table>{IDENTIFIER}(?:\s*\.\s*{IDENTIFIER})?)\s*\(", re.I)
+CREATE_TABLE_HEADER = re.compile(rf"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<table>{IDENTIFIER}(?:\s*\.\s*{IDENTIFIER})?)", re.I)
 COMMENT_TABLE_RE = re.compile(rf"COMMENT\s+ON\s+TABLE\s+(?P<table>{IDENTIFIER}(?:\s*\.\s*{IDENTIFIER})?)\s+IS\s+'(?P<comment>(?:''|[^'])*)'", re.I)
 COMMENT_COLUMN_RE = re.compile(rf"COMMENT\s+ON\s+COLUMN\s+(?P<table>{IDENTIFIER}(?:\s*\.\s*{IDENTIFIER})?)\s*\.\s*(?P<field>{IDENTIFIER})\s+IS\s+'(?P<comment>(?:''|[^'])*)'", re.I)
 TYPE_RE = re.compile(r"^(?P<type>(?:DOUBLE\s+PRECISION|CHARACTER\s+VARYING|TIMESTAMP(?:\s+WITH(?:OUT)?\s+TIME\s+ZONE)?|TIME(?:\s+WITH(?:OUT)?\s+TIME\s+ZONE)?|NATIONAL\s+CHARACTER(?:\s+VARYING)?|[A-Za-z][A-Za-z0-9_]*)(?:\s*\([^)]*\))?(?:\s*\[\])?)(?P<tail>.*)$", re.I | re.S)
@@ -105,41 +105,85 @@ def strip_comments(sql: str) -> str:
     return "".join(result)
 
 
-def extract_tables(sql: str) -> list[tuple[str, str, str]]:
+def extract_tables(sql: str) -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
     result = []
+    unparsed_tables = []
     quote_pairs = {"'": "'", '"': '"', "`": "`", "[": "]"}
-    for match in CREATE_RE.finditer(sql):
-        depth, quote, close_index, index = 1, None, None, match.end()
-        while index < len(sql):
-            character = sql[index]
-            if quote and character == quote:
-                if quote != "]" and index + 1 < len(sql) and sql[index + 1] == quote:
-                    index += 2; continue
-                quote = None
-            elif not quote and character in quote_pairs:
+    matches = list(CREATE_TABLE_HEADER.finditer(sql))
+    for idx, match in enumerate(matches):
+        table_name = clean_qualified_identifier(match.group("table"))
+        start_index = match.end()
+        next_boundary = matches[idx + 1].start() if idx + 1 < len(matches) else len(sql)
+        sub = sql[start_index:next_boundary]
+
+        open_paren_offset = -1
+        quote = None
+        for i, character in enumerate(sub):
+            if quote:
+                if character == quote:
+                    if quote != "]" and i + 1 < len(sub) and sub[i + 1] == quote:
+                        continue
+                    quote = None
+            elif character in quote_pairs:
                 quote = quote_pairs[character]
-            elif not quote:
-                if character == "(": depth += 1
-                elif character == ")": depth -= 1
+            elif character == "(":
+                open_paren_offset = i
+                break
+            elif character == ";":
+                break
+
+        if open_paren_offset == -1:
+            unparsed_tables.append((table_name, "缺少表体左括号 `(`"))
+            continue
+
+        pos = start_index + open_paren_offset + 1
+        depth = 1
+        quote = None
+        close_index = None
+        while pos < next_boundary:
+            character = sql[pos]
+            if quote:
+                if character == quote:
+                    if quote != "]" and pos + 1 < next_boundary and sql[pos + 1] == quote:
+                        pos += 2
+                        continue
+                    quote = None
+            elif character in quote_pairs:
+                quote = quote_pairs[character]
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
                 if depth == 0:
-                    close_index = index
+                    close_index = pos
                     break
-            index += 1
-        if close_index is not None:
-            statement_end = close_index + 1
-            quote = None
-            while statement_end < len(sql):
-                character = sql[statement_end]
-                if quote and character == quote:
-                    if quote != "]" and statement_end + 1 < len(sql) and sql[statement_end + 1] == quote:
+            pos += 1
+
+        if close_index is None:
+            unparsed_tables.append((table_name, "表体括号未正确闭合"))
+            continue
+
+        statement_end = close_index + 1
+        quote = None
+        while statement_end < next_boundary:
+            character = sql[statement_end]
+            if quote:
+                if character == quote:
+                    if quote != "]" and statement_end + 1 < next_boundary and sql[statement_end + 1] == quote:
                         statement_end += 1
-                    else: quote = None
-                elif not quote and character in quote_pairs: quote = quote_pairs[character]
-                elif character == ";" and not quote: break
-                statement_end += 1
-            tail = sql[close_index + 1:statement_end]
-            result.append((clean_qualified_identifier(match.group("table")), sql[match.end():close_index], tail))
-    return result
+                    else:
+                        quote = None
+            elif character in quote_pairs:
+                quote = quote_pairs[character]
+            elif character == ";":
+                break
+            statement_end += 1
+
+        tail = sql[close_index + 1:statement_end]
+        body = sql[start_index + open_paren_offset + 1:close_index]
+        result.append((table_name, body, tail))
+
+    return result, unparsed_tables
 
 
 def split_fields(body: str) -> list[str]:
@@ -238,12 +282,20 @@ def parse_inline(field: str, rest: str, table: str, table_comment: str, dialect:
     }
 
 
-def parse_sql(sql: str, dialect: str) -> tuple[list[dict[str, object]], list[str]]:
+def parse_sql(sql: str, dialect: str) -> tuple[list[dict[str, object]], list[str], list[str], list[str]]:
     sql = strip_comments(sql)
-    tables = extract_tables(sql)
+    tables, unparsed_tables = extract_tables(sql)
     table_comments = {clean_qualified_identifier(item.group("table")): unquote(item.group("comment")) for item in COMMENT_TABLE_RE.finditer(sql)}
     column_comments = {(clean_qualified_identifier(item.group("table")), clean_identifier(item.group("field"))): unquote(item.group("comment")) for item in COMMENT_COLUMN_RE.finditer(sql)}
     rows, warnings = [], []
+    success_tables: list[str] = []
+    failed_tables: list[str] = []
+
+    for failed_name, reason in unparsed_tables:
+        if failed_name not in failed_tables:
+            failed_tables.append(failed_name)
+        warnings.append(f"{failed_name}: {reason}")
+
     for table, body, tail in tables:
         table_comment = table_comments.get(table, "")
         inline_comment = re.search(r"\bCOMMENT\s*(?:=|\s)\s*['\"]([^'\"]*)['\"]", tail, re.I)
@@ -252,6 +304,7 @@ def parse_sql(sql: str, dialect: str) -> tuple[list[dict[str, object]], list[str
         partition = re.sub(r"\s+", " ", partition_match.group("partition")).strip() if partition_match else ""
         definitions = split_fields(body)
         table_constraints = []
+        table_rows = []
         for definition in definitions:
             constraint = TABLE_CONSTRAINT_RE.match(definition.strip())
             if constraint:
@@ -268,8 +321,15 @@ def parse_sql(sql: str, dialect: str) -> tuple[list[dict[str, object]], list[str
             row = parse_inline(field, rest, table, table_comment, dialect)
             row["partition"] = partition
             row["comment"] = column_comments.get((table, field), row["comment"])
-            rows.append(row)
-        by_field = {row["field"]: row for row in rows if row["table"] == table}
+            table_rows.append(row)
+
+        if not table_rows:
+            if table not in failed_tables:
+                failed_tables.append(table)
+            warnings.append(f"{table}: 未解析到有效字段定义")
+            continue
+
+        by_field = {row["field"]: row for row in table_rows}
         for constraint in table_constraints:
             fields = [clean_identifier(item) for item in split_quoted(constraint["fields"])]
             kind = re.sub(r"\s+", " ", constraint["kind"].upper())
@@ -282,7 +342,12 @@ def parse_sql(sql: str, dialect: str) -> tuple[list[dict[str, object]], list[str
                     ref_fields = [clean_identifier(item) for item in split_quoted(constraint.get("ref_fields") or "")]
                     field_index = fields.index(field)
                     by_field[field]["foreign_field"] = ref_fields[field_index] if field_index < len(ref_fields) else ""
-    return rows, warnings
+
+        rows.extend(table_rows)
+        if table not in success_tables:
+            success_tables.append(table)
+
+    return rows, warnings, success_tables, failed_tables
 
 
 def column_name(index: int) -> str:
@@ -319,7 +384,7 @@ class Plugin:
         except (LookupError, UnicodeDecodeError) as error: raise PluginError("INPUT_INVALID", f"无法按 {encoding} 读取 SQL 输入文件") from error
         requested_dialect = params.get("dialect", "auto")
         dialect = detect_dialect(sql) if requested_dialect == "auto" else "maxcompute" if requested_dialect == "mc" else requested_dialect
-        rows, warnings = parse_sql(sql, dialect)
+        rows, warnings, success_tables, failed_tables = parse_sql(sql, dialect)
         if not rows: raise PluginError("INPUT_INVALID", "未解析到字段定义")
         if warnings and params.get("fail_on_unsupported"): raise PluginError("INPUT_INVALID", warnings[0], details={"warnings": warnings})
         if not params.get("include_constraints", True):
@@ -330,7 +395,21 @@ class Plugin:
         elif params["format"] == "csv":
             buffer = io.StringIO(); writer = csv.DictWriter(buffer, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows); self.context.files.write_text(name, buffer.getvalue())
         else: self.context.files.write_bytes(name, xlsx(rows))
-        self.context.logger.info(f"解析 {len(rows)} 个字段，产生 {len(warnings)} 条警告")
-        return Result("success", f"已解析 {len(rows)} 个字段", {"field_count": len(rows), "requested_dialect": requested_dialect, "dialect": dialect, "format": params["format"], "output_file": name, "warnings": warnings, "tables": sorted({row["table"] for row in rows})}, [name], warnings)
+        self.context.logger.info(f"解析 {len(rows)} 个字段，成功 {len(success_tables)} 张表，失败 {len(failed_tables)} 张表，产生 {len(warnings)} 条警告")
+        message = f"解析完成：成功 {len(success_tables)} 张表，失败 {len(failed_tables)} 张表，涉及 {len(rows)} 个字段"
+        result_data = {
+            "field_count": len(rows),
+            "success_tables_count": len(success_tables),
+            "failed_tables_count": len(failed_tables),
+            "success_tables": success_tables,
+            "failed_tables": failed_tables,
+            "requested_dialect": requested_dialect,
+            "dialect": dialect,
+            "format": params["format"],
+            "output_file": name,
+            "warnings": warnings,
+            "tables": sorted({row["table"] for row in rows}),
+        }
+        return Result("success", message, result_data, [name], warnings)
 
     def destroy(self): pass

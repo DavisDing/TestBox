@@ -1894,6 +1894,28 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.status_sub_text.setObjectName("mutedText")
         status_text_layout.addWidget(self.status_main_text)
         status_text_layout.addWidget(self.status_sub_text)
+
+        self.stats_row = QtWidgets.QWidget()
+        stats_row_layout = QtWidgets.QHBoxLayout(self.stats_row)
+        stats_row_layout.setContentsMargins(0, 4, 0, 0)
+        stats_row_layout.setSpacing(8)
+
+        self.stat_success_badge = QtWidgets.QLabel("")
+        self.stat_success_badge.setObjectName("tagLabel")
+        stats_row_layout.addWidget(self.stat_success_badge)
+
+        self.stat_failed_badge = QtWidgets.QLabel("")
+        self.stat_failed_badge.setObjectName("tagLabelMuted")
+        stats_row_layout.addWidget(self.stat_failed_badge)
+
+        self.stat_fields_badge = QtWidgets.QLabel("")
+        self.stat_fields_badge.setObjectName("tagLabelInfo")
+        stats_row_layout.addWidget(self.stat_fields_badge)
+
+        stats_row_layout.addStretch()
+        status_text_layout.addWidget(self.stats_row)
+        self.stats_row.setVisible(False)
+
         banner_layout.addLayout(status_text_layout, 1)
 
         self.duration_lbl = QtWidgets.QLabel("耗时: -")
@@ -2119,6 +2141,26 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
     def _render_status_banner(self, status: str, result_dict: dict, task_record: dict):
         self.diagnostic_box.setVisible(False)
+
+        data = result_dict.get("data") or {}
+        if "success_tables_count" in data or "failed_tables_count" in data or "field_count" in data:
+            s_cnt = data.get("success_tables_count", 0)
+            f_cnt = data.get("failed_tables_count", 0)
+            flds = data.get("field_count", 0)
+            self.stat_success_badge.setText(f"✓ 成功表数: {s_cnt}")
+            self._apply_style_id(self.stat_success_badge, "tagLabel")
+
+            self.stat_failed_badge.setText(f"✗ 失败表数: {f_cnt}")
+            if f_cnt > 0:
+                self._apply_style_id(self.stat_failed_badge, "tagLabelDanger")
+            else:
+                self._apply_style_id(self.stat_failed_badge, "tagLabelMuted")
+
+            self.stat_fields_badge.setText(f"📊 涉及字段: {flds}")
+            self._apply_style_id(self.stat_fields_badge, "tagLabelInfo")
+            self.stats_row.setVisible(True)
+        else:
+            self.stats_row.setVisible(False)
 
         if status == "SUCCEEDED":
             self.status_icon_lbl.setText("✅")
@@ -3191,6 +3233,26 @@ QMainWindow, QStackedWidget#mainStack, QScrollArea, QScrollArea > QWidget > QWid
     padding: 2px 8px;
     font-size: 11px;
     font-weight: 500;
+}
+
+#tagLabelDanger {
+    background-color: rgba(239, 68, 68, 0.15);
+    color: #F87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+#tagLabelInfo {
+    background-color: rgba(59, 130, 246, 0.15);
+    color: #60A5FA;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
 }
 
 /* 工具卡片 */

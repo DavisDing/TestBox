@@ -187,7 +187,15 @@ class RuntimeIntegrationTests(unittest.TestCase):
     def test_sql_parser(self):
         sql = self.temp / "schema.sql"; sql.write_text("CREATE TABLE users (id INT NOT NULL COMMENT 'ID', name VARCHAR(50) COMMENT '姓名');", encoding="utf-8")
         task_id, result = self.runtime.run("sql.parse", {"input": str(sql), "format": "json"})
-        self.assertEqual(result.status, "success"); self.assertEqual(result.data["field_count"], 2)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.data["field_count"], 2)
+        self.assertEqual(result.data["success_tables_count"], 1)
+        self.assertEqual(result.data["failed_tables_count"], 0)
+        self.assertEqual(result.data["success_tables"], ["users"])
+        self.assertEqual(result.data["failed_tables"], [])
+        self.assertIn("成功 1 张表", result.message)
+        self.assertIn("失败 0 张表", result.message)
+        self.assertIn("涉及 2 个字段", result.message)
         self.assertEqual(result.files, [f"{task_id}.json"])
         self.assertEqual(result.data["output_file"], f"{task_id}.json")
         manifest = json.loads((self.temp / "workspace" / task_id / "manifest.json").read_text(encoding="utf-8"))
@@ -302,6 +310,36 @@ class RuntimeIntegrationTests(unittest.TestCase):
         _, result = self.runtime.run("evidence.build", {"input": str(cases), "interactive": False, "screenshots": [str(shot1), str(shot2)], "row_indexes": [3, 4], "update_excel": False})
         self.assertEqual([item["row_index"] for item in result.data["items"]], [3, 4])
         self.assertTrue(all(item["case_name"] == "合并用例" and item["checkpoint"] == "合并验证点" for item in result.data["items"]))
+    def test_sql_parser_statistics_with_mixed_tables(self):
+        sql = self.temp / "mixed_stats.sql"
+        sql.write_text("""
+CREATE TABLE t_valid_1 (
+    id INT PRIMARY KEY,
+    name VARCHAR(50)
+);
+
+CREATE TABLE t_broken_syntax;
+
+CREATE TABLE t_valid_2 (
+    code VARCHAR(20),
+    amount DECIMAL(10, 2),
+    created_at TIMESTAMP
+);
+
+CREATE TABLE t_empty (
+);
+""", encoding="utf-8")
+        task_id, result = self.runtime.run("sql.parse", {"input": str(sql), "format": "json"})
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.data["field_count"], 5)
+        self.assertEqual(result.data["success_tables_count"], 2)
+        self.assertEqual(result.data["failed_tables_count"], 2)
+        self.assertEqual(result.data["success_tables"], ["t_valid_1", "t_valid_2"])
+        self.assertEqual(result.data["failed_tables"], ["t_broken_syntax", "t_empty"])
+        self.assertIn("成功 2 张表", result.message)
+        self.assertIn("失败 2 张表", result.message)
+        self.assertIn("涉及 5 个字段", result.message)
+
     def test_sql_parser_exports_xlsx(self):
         sql = self.temp / "schema.sql"; sql.write_text("CREATE TABLE users (id INT NOT NULL);", encoding="utf-8")
         task_id, result = self.runtime.run("sql.parse", {"input": str(sql), "format": "xlsx"})
