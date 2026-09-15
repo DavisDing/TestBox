@@ -19,6 +19,7 @@ OutputBaseFilename=TestBox-Setup-v{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\testbox\assets\logo.ico
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 

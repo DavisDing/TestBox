@@ -292,6 +292,11 @@ class Runtime:
                 removed += 1
         return removed
 
+
+    def clean_history(self, before: date) -> int:
+        """清理指定日期之前的任务历史记录。"""
+        return self.history.clean_before(before.isoformat())
+
     def commit_output(self, task_id: str, relative_path: str, destination: Path) -> Path:
         record = self.get_task(task_id)
         if not record:

@@ -18,6 +18,7 @@ OutputBaseFilename=TestBox-Install-v{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\testbox\assets\logo.ico
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
@@ -35,9 +36,9 @@ Root: HKCU; Subkey: "Software\TestBox"; ValueType: string; ValueName: "InstallDi
 Source: "..\dist\windows\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{autoprograms}\TestBox"; Filename: "{app}\TestBox-GUI\{#AppExeName}"
+Name: "{autoprograms}\TestBox"; Filename: "{app}\TestBox-GUI\{#AppExeName}"; IconFilename: "{app}\TestBox-GUI\{#AppExeName}"
 Name: "{autoprograms}\TestBox 增量更新"; Filename: "{app}\TestBox-Updater.exe"
-Name: "{autodesktop}\TestBox"; Filename: "{app}\TestBox-GUI\{#AppExeName}"
+Name: "{autodesktop}\TestBox"; Filename: "{app}\TestBox-GUI\{#AppExeName}"; IconFilename: "{app}\TestBox-GUI\{#AppExeName}"
 
 [Run]
 Filename: "{app}\TestBox-GUI\{#AppExeName}"; Description: "启动 TestBox"; Flags: nowait postinstall skipifsilent

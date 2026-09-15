@@ -189,6 +189,16 @@ class TaskHistory:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return int(self.connection.execute(f"SELECT COUNT(*) FROM task_history {where}", values).fetchone()[0])
 
+
+    def clean_before(self, before_date: str) -> int:
+        """删除指定 ISO 日期（YYYY-MM-DD）之前的全部任务历史记录。"""
+        cursor = self.connection.execute(
+            "DELETE FROM task_history WHERE started_at < ?",
+            (before_date,),
+        )
+        self.connection.commit()
+        return cursor.rowcount
+
     @staticmethod
     def _to_dict(row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)

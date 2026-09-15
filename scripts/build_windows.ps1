@@ -7,6 +7,7 @@ Set-Location $repoRoot
 
 python -m pip install --upgrade ".[desktop,windows-build]"
 
+$appIcon = Join-Path $repoRoot "testbox\assets\logo.ico"
 $windowsDist = Join-Path $repoRoot "dist\windows"
 $pluginsSource = Join-Path $repoRoot "plugins"
 if (-not (Test-Path -LiteralPath $pluginsSource -PathType Container)) {
@@ -39,7 +40,7 @@ foreach ($module in $pluginHiddenImports) {
 # onedir avoids extracting the complete Python/Qt runtime on every launch.
 # Keep these as direct PowerShell invocations instead of nesting arrays. This
 # preserves PyInstaller's expected option/value pairs on Windows PowerShell.
-& python -m PyInstaller --noconfirm --clean --onedir --name TestBox `
+& python -m PyInstaller --noconfirm --clean --onedir --name TestBox --icon $appIcon `
     --distpath $windowsDist --workpath (Join-Path $repoRoot "build\pyinstaller-cli") --specpath (Join-Path $repoRoot "build\specs\cli") `
     --collect-submodules testbox --collect-all openpyxl --collect-all docx --collect-all PIL `
     @pluginHiddenImportArgs --add-data "$pluginsSource;plugins" (Join-Path $repoRoot "testbox\cli.py")
@@ -48,7 +49,7 @@ if ($exitCode -ne 0) {
     throw "PyInstaller CLI build failed with exit code $exitCode"
 }
 
-& python -m PyInstaller --noconfirm --clean --onedir --windowed --name TestBox-GUI `
+& python -m PyInstaller --noconfirm --clean --onedir --windowed --name TestBox-GUI --icon $appIcon `
     --distpath $windowsDist --workpath (Join-Path $repoRoot "build\pyinstaller-gui") --specpath (Join-Path $repoRoot "build\specs\gui") `
     --collect-submodules testbox --collect-all PySide6 --collect-all openpyxl --collect-all docx --collect-all PIL `
     @pluginHiddenImportArgs --add-data "$pluginsSource;plugins" (Join-Path $repoRoot "testbox\gui.py")
@@ -59,7 +60,7 @@ if ($exitCode -ne 0) {
 
 # The updater is intentionally onefile: it runs only during an update and must
 # be available as a small bootstrap outside the files it replaces.
-& python -m PyInstaller --noconfirm --clean --onefile --name TestBox-Updater `
+& python -m PyInstaller --noconfirm --clean --onefile --name TestBox-Updater --icon $appIcon `
     --distpath (Join-Path $repoRoot "dist\updater") --workpath (Join-Path $repoRoot "build\pyinstaller-updater") --specpath (Join-Path $repoRoot "build\specs\updater") `
     (Join-Path $repoRoot "scripts\testbox_updater.py")
 $exitCode = $LASTEXITCODE
