@@ -8,8 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from testbox.core.errors import ErrorCode, ExitCode
-from testbox.core.manifest import Manifest
-from testbox.core.plugin_packages import PluginPackageError, install_plugin, package_plugin, uninstall_plugin
+from testbox.core.plugin_packages import PluginPackageError
 from testbox.core.models import TaskStatus
 from testbox.core.runtime import Runtime
 
@@ -221,7 +220,7 @@ def main() -> None:
 
         if arguments.action == "plugin" and arguments.plugin_action == "validate":
             try:
-                manifest = Manifest.load(Path(arguments.path) / "manifest.yaml")
+                manifest = runtime.validate_plugin(Path(arguments.path))
             except Exception as error:
                 raise CliFailure(ErrorCode.PLUGIN_INVALID, str(error), int(ExitCode.PLUGIN)) from error
             emit_value({"valid": True, "name": manifest.name, "version": manifest.version}, as_json=as_json, text=f"有效: {manifest.name} {manifest.version}")
@@ -230,13 +229,13 @@ def main() -> None:
         if arguments.action == "plugin":
             try:
                 if arguments.plugin_action == "package":
-                    output = package_plugin(Path(arguments.path), Path(arguments.output))
+                    output = runtime.package_plugin(Path(arguments.path), Path(arguments.output))
                     emit_value({"operation": "package", "path": str(output)}, as_json=as_json, text=f"已打包: {output}")
                 elif arguments.plugin_action == "install":
-                    manifest = install_plugin(Path(arguments.path), runtime.plugins_dir, force=arguments.force)
+                    manifest = runtime.install_plugin(Path(arguments.path), force=arguments.force)
                     emit_value({"operation": "install", "name": manifest.name, "version": manifest.version}, as_json=as_json, text=f"已安装: {manifest.name} {manifest.version}")
                 elif arguments.plugin_action == "uninstall":
-                    uninstall_plugin(arguments.name, runtime.plugins_dir)
+                    runtime.uninstall_plugin(arguments.name)
                     emit_value({"operation": "uninstall", "name": arguments.name}, as_json=as_json, text=f"已卸载: {arguments.name}")
             except (PluginPackageError, ValueError, OSError) as error:
                 code = {

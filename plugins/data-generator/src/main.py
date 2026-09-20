@@ -540,55 +540,128 @@ def _read_excel_rows(path: Path) -> list[list[str]]:
     return rows
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"true", "1", "yes", "y", "是"}
+
+
+def _field_list_tables(rows: list[dict[str, object]], source_name: str) -> list[dict]:
+    """Convert sql.parse/CSV/XLSX rows into the data generator rule contract.
+
+    This intentionally accepts the field-list contract instead of importing the
+    sql-parser plugin, so an upstream task artifact remains the only integration
+    boundary between plugins.
+    """
+    if not rows or not all(isinstance(row, dict) for row in rows):
+        raise PluginError("INPUT_INVALID", "字段清单必须包含至少一行对象记录")
+    aliases = {
+        "table": ("table", "table_name", "表", "表名"),
+        "field": ("field", "name", "字段", "字段名"),
+        "type": ("type", "data_type", "类型", "字段类型", "数据类型"),
+        "comment": ("comment", "注释", "说明", "备注"),
+        "generator": ("generator", "生成器", "规则"),
+        "options": ("options", "选项", "参数"),
+        "unique": ("unique", "唯一"),
+        "nullable_rate": ("nullable_rate", "可空比例", "空值比例"),
+        "primary_key": ("primary_key", "主键"),
+        "nullable": ("nullable", "可空"),
+        "auto_increment": ("auto_increment", "自增"),
+        "default": ("default", "默认值", "默认"),
+    }
+
+    def get(row: dict[str, object], key: str, default: object = "") -> object:
+        for name in aliases[key]:
+            if name in row and row[name] not in (None, ""):
+                return row[name]
+        return default
+
+    grouped: dict[str, list[dict]] = {}
+    default_table = Path(source_name).stem or "导入表"
+    for row in rows:
+        name = str(get(row, "field", "")).strip()
+        if not name:
+            continue
+        data_type = str(get(row, "type", "VARCHAR") or "VARCHAR").strip()
+        comment = str(get(row, "comment", "") or "").strip()
+        item = infer_rule(
+            name,
+            data_type,
+            comment,
+            unique=_truthy(get(row, "unique")),
+            primary_key=_truthy(get(row, "primary_key")),
+            auto_increment=_truthy(get(row, "auto_increment")),
+        )
+        generator = str(get(row, "generator", "") or "").strip()
+        if generator:
+            item["generator"] = generator
+        options = get(row, "options", "")
+        if options not in (None, ""):
+            if isinstance(options, str):
+                try:
+                    options = json.loads(options)
+                except json.JSONDecodeError as error:
+                    raise PluginError("INPUT_INVALID", f"字段 {name} 的 options 必须是 JSON 对象") from error
+            if not isinstance(options, dict):
+                raise PluginError("INPUT_INVALID", f"字段 {name} 的 options 必须是 JSON 对象")
+            item["options"] = options
+        nullable_rate = get(row, "nullable_rate", "")
+        if nullable_rate not in (None, ""):
+            try:
+                item["nullable_rate"] = float(nullable_rate)
+            except (TypeError, ValueError) as error:
+                raise PluginError("INPUT_INVALID", f"字段 {name} 的 nullable_rate 无效") from error
+        nullable = get(row, "nullable", "")
+        if nullable not in (None, ""):
+            item["nullable"] = _truthy(nullable)
+        default = get(row, "default", "")
+        if default not in (None, ""):
+            item["default"] = default
+        table_name = str(get(row, "table", "") or default_table).strip() or default_table
+        grouped.setdefault(table_name, []).append(item)
+    tables = [{"table": table, "fields": fields} for table, fields in grouped.items() if fields]
+    if not tables:
+        raise PluginError("INPUT_INVALID", "字段清单未解析到字段")
+    return tables
+
+
+def _read_json_rows(path: Path) -> list[dict[str, object]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PluginError("INPUT_INVALID", "无法读取 JSON 字段清单") from error
+    if isinstance(value, dict):
+        value = value.get("fields") or value.get("rules")
+    if not isinstance(value, list):
+        raise PluginError("INPUT_INVALID", "JSON 字段清单根节点必须是字段数组")
+    return value
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, object]]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            return list(csv.DictReader(stream))
+    except (OSError, UnicodeDecodeError, csv.Error) as error:
+        raise PluginError("INPUT_INVALID", "无法读取 CSV 字段清单") from error
+
+
 def excel_tables(path: Path) -> list[dict]:
     rows = _read_excel_rows(path)
     if len(rows) < 2:
         raise PluginError("INPUT_INVALID", "Excel 字段清单至少需要表头和一行字段")
     headers = [item.strip().lower() for item in rows[0]]
-    aliases = {
-        "table": {"table", "table_name", "表", "表名"},
-        "field": {"field", "name", "字段", "字段名"},
-        "type": {"type", "类型", "字段类型", "数据类型"},
-        "comment": {"comment", "注释", "说明", "备注"},
-        "generator": {"generator", "生成器", "规则"},
-        "options": {"options", "选项", "参数"},
-        "unique": {"unique", "唯一"},
-        "nullable_rate": {"nullable_rate", "可空比例", "空值比例"},
-        "primary_key": {"primary_key", "主键"},
-        "nullable": {"nullable", "可空"},
-        "auto_increment": {"auto_increment", "自增"},
-    }
-    positions = {key: next((index for index, header in enumerate(headers) if header in names), None) for key, names in aliases.items()}
-    if positions["field"] is None:
-        raise PluginError("INPUT_INVALID", "Excel 字段清单缺少字段名列")
-    grouped: dict[str, list[dict]] = {}
-    default_table = path.stem or "导入表"
-    for row in rows[1:]:
-        get = lambda key, default="": row[positions[key]] if positions[key] is not None and positions[key] < len(row) else default
-        name = get("field").strip()
-        if not name:
-            continue
-        table_name = get("table").strip() or default_table
-        item = infer_rule(name, get("type", "VARCHAR") or "VARCHAR", get("comment").strip(), unique=str(get("unique")).lower() in {"true", "1", "yes", "是"}, primary_key=str(get("primary_key")).lower() in {"true", "1", "yes", "是"}, auto_increment=str(get("auto_increment")).lower() in {"true", "1", "yes", "是"})
-        if get("generator").strip():
-            item["generator"] = get("generator").strip()
-        if get("options").strip():
-            try:
-                item["options"] = json.loads(get("options"))
-            except json.JSONDecodeError as error:
-                raise PluginError("INPUT_INVALID", f"字段 {name} 的 options 必须是 JSON 对象") from error
-        if get("nullable_rate").strip():
-            try:
-                item["nullable_rate"] = float(get("nullable_rate"))
-            except ValueError as error:
-                raise PluginError("INPUT_INVALID", f"字段 {name} 的 nullable_rate 无效") from error
-        if get("nullable").strip():
-            item["nullable"] = str(get("nullable")).lower() not in {"false", "0", "no", "否"}
-        grouped.setdefault(table_name, []).append(item)
-    tables = [{"table": table, "fields": fields} for table, fields in grouped.items() if fields]
-    if not tables:
-        raise PluginError("INPUT_INVALID", "Excel 字段清单未解析到字段")
-    return tables
+    return _field_list_tables(
+        [{headers[index]: value for index, value in enumerate(row) if index < len(headers) and headers[index]} for row in rows[1:]],
+        str(path),
+    )
+
+
+def json_tables(path: Path) -> list[dict]:
+    return _field_list_tables(_read_json_rows(path), str(path))
+
+
+def csv_tables(path: Path) -> list[dict]:
+    return _field_list_tables(_read_csv_rows(path), str(path))
 
 
 def excel_rules(path: Path) -> list[dict]:
@@ -742,9 +815,13 @@ class Plugin:
         source_format = params.get("source_format")
         if source_format == "sql":
             return sql_tables(source)
-        if source_format == "excel":
+        if source_format in {"excel", "xlsx"}:
             return excel_tables(source)
-        raise PluginError("INVALID_PARAMS", "source_file 需要 source_format=sql 或 excel")
+        if source_format == "json":
+            return json_tables(source)
+        if source_format == "csv":
+            return csv_tables(source)
+        raise PluginError("INVALID_PARAMS", "source_file 需要 source_format=sql、json、csv 或 xlsx")
 
     def _rules(self, params: dict) -> list[dict]:
         self._source_table = params.get("table") or params.get("sql_table")

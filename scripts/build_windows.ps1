@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 
-python -m pip install --upgrade ".[desktop,windows-build]"
+python -m pip install --upgrade ".[desktop,evidence,windows-build]"
 
 $appIcon = Join-Path $repoRoot "testbox\assets\logo.ico"
 $windowsDist = Join-Path $repoRoot "dist\windows"
@@ -42,7 +42,7 @@ foreach ($module in $pluginHiddenImports) {
 # preserves PyInstaller's expected option/value pairs on Windows PowerShell.
 & python -m PyInstaller --noconfirm --clean --onedir --name TestBox --icon $appIcon `
     --distpath $windowsDist --workpath (Join-Path $repoRoot "build\pyinstaller-cli") --specpath (Join-Path $repoRoot "build\specs\cli") `
-    --collect-submodules testbox --collect-all openpyxl --collect-all docx --collect-all PIL `
+    --collect-submodules testbox --collect-all PySide6 --collect-all openpyxl --collect-all docx --collect-all PIL `
     @pluginHiddenImportArgs --add-data "$pluginsSource;plugins" (Join-Path $repoRoot "testbox\cli.py")
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {

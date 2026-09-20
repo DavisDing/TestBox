@@ -124,8 +124,12 @@
       "type": "string",
       "enum": [
         "sql",
+        "json",
+        "csv",
+        "xlsx",
         "excel"
-      ]
+      ],
+      "description": "输入来源：SQL DDL，或 sql.parse 产出的 JSON/CSV/XLSX 字段清单（excel 为兼容别名）"
     },
     "txt_delimiter": {
       "type": "string",

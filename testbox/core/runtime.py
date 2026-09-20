@@ -16,7 +16,7 @@ from testbox.core.history import TaskHistory
 from testbox.core.locks import PluginExecutionLock
 from testbox.core.manifest import Manifest
 from testbox.core.models import TaskPaths, TaskStatus
-from testbox.core.plugin_packages import PluginPackageError, install_plugin as install_plugin_package, uninstall_plugin as uninstall_plugin_package
+from testbox.core.plugin_packages import PluginPackageError, install_plugin as install_plugin_package, package_plugin as package_plugin_archive, uninstall_plugin as uninstall_plugin_package
 from testbox.core.plugin_registry import PluginManager
 from testbox.core.process_runner import ProcessRunner
 from testbox.core.report import write_json, write_report
@@ -102,6 +102,14 @@ class Runtime:
     def reload_plugins(self) -> None:
         """重新扫描插件目录，使 GUI 安装/卸载后立即更新命令索引。"""
         self.manager.discover()
+
+    def validate_plugin(self, source: Path) -> Manifest:
+        """Validate a plugin directory through the Runtime facade."""
+        return Manifest.load(source / "manifest.yaml")
+
+    def package_plugin(self, source: Path, destination: Path) -> Path:
+        """Package a plugin through the Runtime facade."""
+        return package_plugin_archive(source, destination)
 
     def install_plugin(self, source: Path, *, force: bool = False) -> Manifest:
         """安装用户插件并刷新当前 Runtime 的插件索引。"""
