@@ -457,14 +457,28 @@ class Runtime:
         cutoff = self._local_midnight_utc(before)
         return self.history.clean_before(cutoff.isoformat())
 
-    def commit_output(self, task_id: str, relative_path: str, destination: Path) -> Path:
+    def get_task_output_path(self, task_id: str, relative_path: str) -> Path:
+        """Resolve one declared successful output for a downstream Runtime task.
+
+        The facade deliberately validates task status and the declared output list
+        before returning a path.  GUI callers can therefore prefill a downstream
+        form without reading task workspaces or constructing workspace paths.
+        """
         record = self.get_task(task_id)
         if not record:
             raise LookupError("未找到任务")
         result = self.get_task_result(task_id)
         if not result or result.get("status") != "success" or relative_path not in result.get("files", []):
-            raise ValueError("只能提交成功任务声明的输出文件")
+            raise ValueError("只能使用成功任务声明的输出文件")
+        return self.workspace.resolve_output(Path(record["workspace_path"]), relative_path)
+
+    def commit_output(self, task_id: str, relative_path: str, destination: Path) -> Path:
+        self.get_task_output_path(task_id, relative_path)
+        record = self.get_task(task_id)
+        if not record:
+            raise LookupError("未找到任务")
         return self.workspace.export(Path(record["workspace_path"]), relative_path, destination)
+
     def commit_outputs_archive(self, task_id: str, destination: Path) -> Path:
         record = self.get_task(task_id)
         if not record:

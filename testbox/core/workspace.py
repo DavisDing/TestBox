@@ -67,7 +67,8 @@ class WorkspaceManager:
                 return "OUTPUT_TOO_LARGE"
         return None
 
-    def export(self, task_workspace: Path, relative_path: str, destination: Path) -> Path:
+    def resolve_output(self, task_workspace: Path, relative_path: str) -> Path:
+        """Return one existing output after enforcing the task-output boundary."""
         output_root = (task_workspace / "output").resolve()
         source = (output_root / relative_path).resolve()
         try:
@@ -76,6 +77,10 @@ class WorkspaceManager:
             raise ValueError("输出路径不合法") from error
         if not source.is_file():
             raise ValueError("输出文件不存在")
+        return source
+
+    def export(self, task_workspace: Path, relative_path: str, destination: Path) -> Path:
+        source = self.resolve_output(task_workspace, relative_path)
         destination = destination.expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.testbox.tmp")

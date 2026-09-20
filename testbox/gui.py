@@ -2110,6 +2110,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
     不扩展 Runtime 状态机。
     """
     reExecuteRequested = QtCore.Signal(str, dict)  # command_name, params
+    sqlSelectRequested = QtCore.Signal(str, dict)  # command_name, prefilled params
     backToHistory = QtCore.Signal()
     openAnnotation = QtCore.Signal(str)           # image_path
 
@@ -2143,6 +2144,14 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.btn_re_execute.setObjectName("secondaryButton")
         self.btn_re_execute.clicked.connect(self._on_re_execute)
         top_bar.addWidget(self.btn_re_execute)
+
+        # SQL 字段清单的下游衔接只回填 sql.select 表单，不会创建或执行新任务。
+        self.btn_open_sql_select = QtWidgets.QPushButton("→ 用字段清单生成 SELECT")
+        self.btn_open_sql_select.setObjectName("secondaryButton")
+        self.btn_open_sql_select.setToolTip("将 sql.parse 生成的字段清单预填到 sql.select；仍需由用户确认执行。")
+        self.btn_open_sql_select.clicked.connect(self._on_open_sql_select)
+        self.btn_open_sql_select.setVisible(False)
+        top_bar.addWidget(self.btn_open_sql_select)
 
         main_layout.addLayout(top_bar)
 
@@ -2372,6 +2381,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
     def display_task(self, task_id: str, direct_result: Any = None, elapsed: float | None = None):
         self.current_task_id = task_id
         self.current_result_obj = direct_result
+        self.btn_open_sql_select.setVisible(False)
         self.title_task_id_lbl.setText(f"任务详情: {task_id}")
 
         try:
@@ -2443,6 +2453,9 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.duration_lbl.setText(duration_text)
 
         files = result_dict.get("files") or []
+        self.btn_open_sql_select.setVisible(
+            self._can_open_sql_select(task_record, status, result_dict, files)
+        )
         missing_outputs = self._render_files_table(task_id, files)
         if status in {"PENDING", "RUNNING"}:
             self.files_empty_lbl.setText("任务尚未完成，Runtime 返回后才会显示产物。")
@@ -2856,6 +2869,43 @@ class TaskResultDetailView(QtWidgets.QWidget):
             )
         except Exception as error:
             QtWidgets.QMessageBox.critical(self, "导出失败", f"打包导出产物时发生异常:\n{error}")
+
+    @staticmethod
+    def _can_open_sql_select(
+        task_record: dict[str, Any],
+        status: str,
+        result_dict: dict[str, Any],
+        files: list[str],
+    ) -> bool:
+        if task_record.get("command") != "sql.parse" or status != "SUCCEEDED":
+            return False
+        if result_dict.get("status") != "success":
+            return False
+        output_file = result_dict.get("data", {}).get("output_file")
+        if not isinstance(output_file, str) or output_file not in files:
+            return False
+        return Path(output_file).suffix.lower() in {".json", ".csv", ".xlsx"}
+
+    def _on_open_sql_select(self):
+        """Open sql.select with a Runtime-validated parse artifact, never execute it."""
+        result = self.runtime.get_task_result(self.current_task_id) or {}
+        output_file = result.get("data", {}).get("output_file")
+        if not isinstance(output_file, str):
+            QtWidgets.QMessageBox.warning(self, "无法继续", "未找到 sql.parse 声明的字段清单产物。")
+            return
+        try:
+            artifact_path = self.runtime.get_task_output_path(self.current_task_id, output_file)
+        except (LookupError, ValueError, OSError) as error:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "无法继续",
+                f"字段清单产物不可用，请检查任务工作区后重试。\n{error}",
+            )
+            return
+        self.sqlSelectRequested.emit(
+            "sql.select",
+            {"input": str(artifact_path), "input_format": artifact_path.suffix.lower().lstrip(".")},
+        )
 
     def _on_re_execute(self):
         cmd = self.current_task_info.get("command")
@@ -3800,6 +3850,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.page_result.backToHistory.connect(lambda: self.switch_page(4))
         self.page_result.reExecuteRequested.connect(self.navigate_to_command)
+        self.page_result.sqlSelectRequested.connect(self.navigate_to_command)
         self.page_result.openAnnotation.connect(self.open_annotation_dialog)
 
         self.page_history.taskSelected.connect(self.navigate_to_task_result)

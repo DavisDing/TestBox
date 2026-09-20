@@ -177,7 +177,7 @@ sql.parse → 任务详情字段清单产物
 → 选择 dialect/注释 → 创建新 Runtime 任务
 ```
 
-插件仍只通过任务工作区产物衔接。是否提供“继续到下游”快捷动作，建议第一版只预填、不自动执行，具体标记 `NEEDS_CONFIRMATION`。
+插件仍只通过任务工作区产物衔接。第一版已提供“用字段清单生成 SELECT”快捷动作：仅将成功 `sql.parse` 任务中已声明的 JSON、CSV 或 XLSX 产物预填到 `sql.select` 表单，不会创建或自动执行下游任务。产物路径须由 Runtime 校验和解析；更多下游编排能力仍为 `NEEDS_CONFIRMATION`。
 
 ### 4.4 Data Generator
 

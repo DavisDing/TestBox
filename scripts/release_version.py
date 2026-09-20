@@ -45,14 +45,26 @@ def sync_version_files(version: str, root: Path = Path(".")) -> list[Path]:
     """Synchronize all user-visible Windows release version declarations."""
     parse_version(version)
     root = root.resolve()
-    changed: list[Path] = []
+    updates: dict[Path, tuple[str, str]] = {}
     for relative, pattern, replacement_template in _VERSION_FILES:
         path = root / relative
-        text = path.read_text(encoding="utf-8")
-        updated, count = pattern.subn(replacement_template.format(version=version), text, count=1)
-        if count != 1:
-            raise ValueError(f"Could not update version in {path}")
-        if updated != text:
+        if path in updates:
+            original, current = updates[path]
+        else:
+            original = path.read_text(encoding="utf-8")
+            current = original
+        matches = tuple(pattern.finditer(current))
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected exactly one release version declaration in {path}; "
+                f"found {len(matches)}"
+            )
+        updated = pattern.sub(replacement_template.format(version=version), current, count=1)
+        updates[path] = (original, updated)
+
+    changed: list[Path] = []
+    for path, (original, updated) in updates.items():
+        if updated != original:
             path.write_text(updated, encoding="utf-8")
             changed.append(path)
     return changed

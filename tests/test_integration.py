@@ -369,8 +369,11 @@ CREATE TABLE t_empty (
         sql.write_text("CREATE TABLE users (id INT NOT NULL COMMENT '用户ID', name VARCHAR(50) COMMENT '姓名'); CREATE TABLE audit_log (event_id BIGINT);", encoding="utf-8")
         parse_task, parsed = self.runtime.run("sql.parse", {"input": str(sql), "format": "json"})
         self.assertEqual(parsed.status, "success")
-        parse_output = self.temp / "workspace" / parse_task / "output" / parsed.files[0]
+        parse_output = self.runtime.get_task_output_path(parse_task, parsed.files[0])
         self.assertEqual(parsed.files, [f"{parse_task}.json"])
+        self.assertTrue(parse_output.is_file())
+        with self.assertRaises(ValueError):
+            self.runtime.get_task_output_path(parse_task, "not-a-declared-output.json")
 
         select_task, selected = self.runtime.run("sql.select", {"input": str(parse_output), "dialect": "mysql", "include_comments": True})
         self.assertEqual(selected.status, "success")
