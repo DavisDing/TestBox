@@ -82,18 +82,34 @@ Runtime 对外稳定入口包括：
 
 ```text
 list_plugins()
+list_unavailable_plugins()
 list_commands()
 get_command(command)
 get_command_schema(command)
+inspect_plugin(identifier)
+validate_plugin(source)
+preview_plugin_install(source)
+package_plugin(source, destination)
+install_plugin(source, force)
+uninstall_plugin(name)
+get_runtime_diagnostics()
+validate_params(command, params)
 run(command, params)
 get_task(task_id)
 get_task_result(task_id)
-list_tasks(status, command, limit, offset)
+get_task_report(task_id)
+get_task_log(task_id, max_chars)
+list_tasks(status, command, task_id_query, started_from, started_before, limit, offset)
+count_tasks(status, command, task_id_query, started_from, started_before)
 clean_workspace(before)
+clean_history(before)
 commit_output(task_id, relative_path, destination)
+commit_outputs_archive(task_id, destination)
 ```
 
 `execute(command, params)` 仅作为旧 GUI 调用的兼容别名；新代码优先使用 `run`。任务状态统一使用 `PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`、`ABANDONED`。
+
+`clean_workspace(before)` 与 `clean_history(before)` 将用户选择的日期解释为系统本地时区的当天零点，再转换为 UTC 边界执行清理，避免本地日期与 UTC 任务 ID/时间戳混用。
 
 CLI 已形成稳定的第二阶段命令面：`plugin inspect`、`task list`、`task result`、`task export`，并支持顶层 `--json`。CLI 只能调用 Runtime，不得自行读取 SQLite、插件目录或任务结果文件。稳定退出码为：参数/用法 `2`、插件管理 `3`、任务失败 `4`、取消 `130`。
 
@@ -132,6 +148,8 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - 复杂参数由 Schema 驱动；高级参数和原始日志按需展开。
 - GUI 必须展示任务 ID、插件版本、脱敏参数、输出文件和错误建议。
 - UI Agent 不应在 GUI 中重新实现文件写入、任务状态机或插件业务。
+- GUI 的任务历史筛选、插件可用性与 Schema 问题、Runtime 路径和版本诊断均通过 Runtime 只读接口获取，不直连 SQLite 或自行扫描插件目录。
+- GUI 安装插件前必须通过 `preview_plugin_install(source)` 使用与正式安装一致的包校验逻辑展示预览；预览不能改变用户插件目录，覆盖和卸载仍需明确确认。
 
 ## 9.1 Windows 发布与自动版本
 

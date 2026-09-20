@@ -4,6 +4,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 from testbox.core.manifest import Manifest
@@ -35,17 +36,37 @@ def _unpack_archive(archive: Path, destination: Path) -> None:
         raise PluginPackageError("插件包不是有效 ZIP 文件") from error
 
 
-def install_plugin(source: Path, plugins_dir: Path, *, force: bool = False) -> Manifest:
+def _stage_plugin_source(source: Path, staging: Path) -> Manifest:
+    if source.is_dir():
+        shutil.copytree(source, staging, dirs_exist_ok=True)
+    elif source.is_file():
+        _unpack_archive(source, staging)
+    else:
+        raise PluginPackageError("插件路径不存在")
+    return Manifest.load(staging / "manifest.yaml")
+
+
+def inspect_plugin(source: Path) -> Manifest:
+    """Validate a plugin directory or ZIP without installing it."""
+    with tempfile.TemporaryDirectory(prefix="testbox-plugin-inspect-") as temporary:
+        staging = Path(temporary) / "package"
+        staging.mkdir()
+        return _stage_plugin_source(source, staging)
+
+
+def install_plugin(
+    source: Path,
+    plugins_dir: Path,
+    *,
+    force: bool = False,
+    validate: Callable[[Manifest], None] | None = None,
+) -> Manifest:
     """Validate in a temporary directory, then atomically enable the plugin."""
     with tempfile.TemporaryDirectory(prefix="testbox-plugin-") as temporary:
         staging = Path(temporary) / "package"; staging.mkdir()
-        if source.is_dir():
-            shutil.copytree(source, staging, dirs_exist_ok=True)
-        elif source.is_file():
-            _unpack_archive(source, staging)
-        else:
-            raise PluginPackageError("插件路径不存在")
-        manifest = Manifest.load(staging / "manifest.yaml")
+        manifest = _stage_plugin_source(source, staging)
+        if validate is not None:
+            validate(manifest)
         target = plugins_dir / manifest.name
         if target.exists() and not force:
             raise PluginPackageError(f"插件已安装: {manifest.name}（使用 --force 覆盖）")

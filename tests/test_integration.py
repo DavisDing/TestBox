@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import csv, importlib.util, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest, zipfile
 from unittest.mock import patch
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
 from testbox.core.errors import ErrorCode
-from testbox.core.plugin_packages import install_plugin, package_plugin, uninstall_plugin
+from testbox.core.plugin_packages import PluginPackageError, install_plugin, package_plugin, uninstall_plugin
 from testbox.core.manifest import Manifest
 from testbox.core.plugin_registry import PluginManager
 from testbox.core.process_runner import HostExecution
@@ -823,6 +823,42 @@ capabilities:
         task_id, result = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7, "rules": rules})
         rows = json.loads((self.temp / "workspace" / task_id / "output" / result.files[0]).read_text(encoding="utf-8"))
         self.assertEqual([row["optional_text"] for row in rows], [None, None])
+    def test_sql_parse_json_artifact_feeds_data_generator(self):
+        schema = self.temp / "schema.sql"
+        schema.write_text(
+            "CREATE TABLE orders (order_id BIGINT PRIMARY KEY, amount DECIMAL(12,2) NOT NULL COMMENT '订单金额');",
+            encoding="utf-8",
+        )
+
+        parse_task_id, parse_result = self.runtime.run(
+            "sql.parse",
+            {"input": str(schema), "format": "json", "dialect": "mysql"},
+        )
+        self.assertEqual(parse_result.status, "success")
+        parsed_artifact = self.temp / "workspace" / parse_task_id / "output" / parse_result.files[0]
+        self.assertTrue(parsed_artifact.is_file())
+
+        data_task_id, data_result = self.runtime.run(
+            "data.mock",
+            {
+                "count": 2,
+                "format": "sql",
+                "seed": 7,
+                "source_file": str(parsed_artifact),
+                "source_format": "json",
+                "source_table": "orders",
+                "sql_dialect": "mysql",
+            },
+        )
+        self.assertEqual(data_result.status, "success")
+        self.assertEqual(data_result.data["table"], "orders")
+        self.assertEqual(data_result.data["fields"], ["order_id", "amount"])
+        generated = self.temp / "workspace" / data_task_id / "output" / data_result.files[0]
+        self.assertTrue(generated.is_file())
+        sql = generated.read_text(encoding="utf-8")
+        self.assertIn("INSERT INTO `orders`", sql)
+        self.assertEqual(sql.count("INSERT INTO"), 1)
+
     def test_data_generator_exports_txt_and_sql(self):
         rules = [{"name": "note", "generator": "template", "options": {"value": "O'Reilly-{index}"}}]
         task_id, result = self.runtime.run("data.mock", {"count": 2, "format": "txt", "seed": 7, "rules": rules, "txt_delimiter": "\t", "txt_header": False})
@@ -912,6 +948,45 @@ capabilities:
         after = {path.name for path in (self.temp / "workspace").iterdir() if path.is_dir()}
         self.assertEqual(after, before)
 
+    def test_cleanup_uses_local_midnight_as_the_utc_cutoff(self):
+        selected_date = date(2026, 9, 20)
+        shanghai = timezone(timedelta(hours=8))
+        cutoff = Runtime._local_midnight_utc(selected_date, shanghai)
+        self.assertEqual(cutoff, datetime(2026, 9, 19, 16, 0, tzinfo=UTC))
+
+        old_started = cutoff - timedelta(seconds=1)
+        retained_started = cutoff + timedelta(seconds=1)
+        old_id = old_started.strftime("%Y%m%dT%H%M%S") + "-old00001"
+        retained_id = retained_started.strftime("%Y%m%dT%H%M%S") + "-new00001"
+        old_workspace = self.temp / "workspace" / old_id
+        retained_workspace = self.temp / "workspace" / retained_id
+        old_workspace.mkdir()
+        retained_workspace.mkdir()
+
+        def create_history(task_id: str, started: datetime, workspace: Path):
+            self.runtime.history.create({
+                "id": task_id,
+                "plugin_name": "data-generator",
+                "plugin_version": "1.0.0",
+                "command": "data.mock",
+                "params": {},
+                "started_at": started.isoformat(),
+                "result_path": str(workspace / "result.json"),
+                "workspace_path": str(workspace),
+                "host_pid": None,
+            })
+
+        create_history(old_id, old_started, old_workspace)
+        create_history(retained_id, retained_started, retained_workspace)
+        with patch.object(self.runtime, "_local_midnight_utc", return_value=cutoff):
+            self.assertEqual(self.runtime.clean_workspace(selected_date), 1)
+            self.assertEqual(self.runtime.clean_history(selected_date), 1)
+
+        self.assertFalse(old_workspace.exists())
+        self.assertTrue(retained_workspace.exists())
+        self.assertIsNone(self.runtime.get_task(old_id))
+        self.assertIsNotNone(self.runtime.get_task(retained_id))
+
     def test_task_history_and_workspace_clean(self):
         task_id, _ = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         record = self.runtime.history.get(task_id)
@@ -930,9 +1005,48 @@ capabilities:
         schema = self.runtime.get_command_schema("data.mock")
         self.assertEqual(schema["type"], "object")
         task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
-        self.assertEqual(self.runtime.get_task(task_id)["status"], "SUCCEEDED")
+        record = self.runtime.get_task(task_id)
+        self.assertEqual(record["status"], "SUCCEEDED")
         self.assertEqual(self.runtime.get_task_result(task_id)["status"], "success")
+        self.assertIn(task_id, self.runtime.get_task_report(task_id))
+        task_log = Path(record["workspace_path"]) / "logs" / "task.log"
+        task_log.write_text("line one\nline two\n", encoding="utf-8")
+        self.assertEqual(self.runtime.get_task_log(task_id, max_chars=9), "line two\n")
         self.assertEqual(self.runtime.list_tasks(command="data.mock", limit=1)[0]["id"], task_id)
+    def test_runtime_task_filters_support_task_id_and_time_ranges(self):
+        task_id, _ = self.runtime.run(
+            "data.mock",
+            {"count": 1, "format": "json", "seed": 11, "fields": MINIMAL_FIELDS},
+        )
+        suffix = task_id.rsplit("-", 1)[-1]
+        self.assertEqual(self.runtime.count_tasks(task_id_query=suffix), 1)
+        self.assertEqual(self.runtime.list_tasks(task_id_query=suffix, limit=10)[0]["id"], task_id)
+        self.assertEqual(self.runtime.count_tasks(started_from="2100-01-01T00:00:00+00:00"), 0)
+        self.assertEqual(self.runtime.count_tasks(started_before="2000-01-01T00:00:00+00:00"), 0)
+        self.assertEqual(self.runtime.count_tasks(command="data.mock", task_id_query=suffix), 1)
+
+    def test_runtime_exposes_read_only_diagnostics(self):
+        info = self.runtime.get_runtime_diagnostics()
+        self.assertEqual(info["runtime_root"], str(self.temp))
+        self.assertEqual(info["workspace_dir"], str(self.temp / "workspace"))
+        self.assertEqual(info["plugins_dir"], str(self.temp / "plugins"))
+        self.assertEqual(info["history_path"], str(self.temp / "workspace" / "task_history.sqlite3"))
+        self.assertEqual(info["host_protocol"], "single-request/single-response")
+        self.assertTrue(info["version"])
+        self.assertIn("not a malicious-code security sandbox", info["plugin_host_boundary"])
+
+    def test_plugin_package_preview_validates_without_installing(self):
+        archive = self.temp / "data-generator-preview.zip"
+        package_plugin(self.temp / "plugins" / "data-generator", archive)
+        before = sorted(path.name for path in (self.temp / "plugins").iterdir())
+        preview = self.runtime.preview_plugin_install(archive)
+        after = sorted(path.name for path in (self.temp / "plugins").iterdir())
+        self.assertEqual(preview["name"], "data-generator")
+        self.assertEqual(preview["version"], self.runtime.manager.available["data.mock"].version)
+        self.assertIn("data.mock", preview["commands"])
+        self.assertEqual(before, after)
+        self.assertEqual(self.runtime.validate_plugin(archive).name, "data-generator")
+
     def test_lock_failure_is_recorded_as_failed_task(self):
         manifest = self.runtime.manager.available["data.mock"]
         manifest.capabilities["concurrency"] = False
@@ -985,12 +1099,36 @@ capabilities:
             try:
                 self.assertEqual(frozen_runtime.plugins_dir, user_data / "plugins")
                 self.assertEqual(frozen_runtime.bundled_plugins_dir, bundle / "plugins")
+                self.assertFalse(frozen_runtime.inspect_plugin("sql-select")["uninstallable"])
                 frozen_runtime.install_plugin(archive)
                 self.assertIn("sql.select", frozen_runtime.manager.available)
+                self.assertTrue(frozen_runtime.inspect_plugin("sql-select")["uninstallable"])
                 frozen_runtime.uninstall_plugin("sql-select")
                 self.assertIn("sql.select", frozen_runtime.manager.available)  # 回退到 EXE 内置插件
+                self.assertFalse(frozen_runtime.inspect_plugin("sql-select")["uninstallable"])
             finally:
                 frozen_runtime.close()
+
+    def test_runtime_rejects_plugin_command_conflicts_before_installing(self):
+        source = self.temp / "conflicting-plugin-source"
+        shutil.copytree(self.temp / "plugins" / "data-generator", source)
+        manifest_path = source / "manifest.yaml"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                "name: data-generator", "name: conflicting-data-generator", 1
+            ),
+            encoding="utf-8",
+        )
+        archive = self.temp / "conflicting-data-generator.zip"
+        package_plugin(source, archive)
+
+        with self.assertRaisesRegex(PluginPackageError, "插件命令冲突"):
+            self.runtime.preview_plugin_install(archive)
+        with self.assertRaisesRegex(PluginPackageError, "插件命令冲突"):
+            self.runtime.install_plugin(archive)
+
+        self.assertFalse((self.temp / "plugins" / "conflicting-data-generator").exists())
+        self.assertEqual(self.runtime.manager.available["data.mock"].name, "data-generator")
 
     def test_runtime_plugin_management_refreshes_existing_registry(self):
         archive = self.temp / "data-generator.zip"

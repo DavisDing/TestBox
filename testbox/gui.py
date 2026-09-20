@@ -4,12 +4,13 @@ import json
 import os
 import sys
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from testbox.core.plugin_packages import PluginPackageError
 from testbox.core.runtime import Runtime
+from testbox.core.schema_validator import SchemaValidationError
 
 
 # The frozen GUI executable is also the plugin Host for GUI-initiated tasks.
@@ -108,6 +109,14 @@ ENUM_LABELS = {
     "input_format": {"auto": "自动检测（auto）", "json": "JSON（json）", "csv": "CSV（csv）", "xlsx": "Excel（xlsx）"},
     "dialect": {"auto": "自动检测（auto）", "mysql": "MySQL", "postgresql": "PostgreSQL", "sqlserver": "SQL Server", "oracle": "Oracle", "sqlite": "SQLite", "hudi": "Apache Hudi（hudi）", "hive": "Apache Hive（hive）", "hbase": "Apache HBase（hbase）", "maxcompute": "MaxCompute（maxcompute）", "mc": "MaxCompute 简写（mc）"},
 }
+
+class FormInputError(ValueError):
+    """GUI input parsing error associated with a single Schema field."""
+
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
+
 
 TYPE_LABELS = {
     "string": "文本",
@@ -1108,6 +1117,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         self.command_name = command_name
         self.fields: dict[str, Any] = {}
         self.error_labels: dict[str, QtWidgets.QLabel] = {}
+        self.advanced_keys: set[str] = set()
         self._init_ui()
 
     def _init_ui(self):
@@ -1143,6 +1153,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
 
         # 2. 高级参数折叠面板
         if advanced_props:
+            self.advanced_keys = set(advanced_props)
             adv_container = QtWidgets.QWidget()
             adv_container.setObjectName("cardPanel")
             adv_layout = QtWidgets.QVBoxLayout(adv_container)
@@ -1336,20 +1347,26 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             elif ftype == "array-text":
                 txt = widget.text().strip()
                 if txt:
-                    if txt.startswith("[") and txt.endswith("]"):
+                    if txt.startswith("["):
                         try:
-                            params[key] = json.loads(txt)
-                        except Exception:
-                            params[key] = [x.strip() for x in txt.strip("[]").split(",") if x.strip()]
+                            parsed = json.loads(txt)
+                        except json.JSONDecodeError as error:
+                            raise FormInputError(key, "请输入有效的 JSON 数组") from error
+                        if not isinstance(parsed, list):
+                            raise FormInputError(key, "参数必须是 JSON 数组")
+                        params[key] = parsed
                     else:
                         params[key] = [x.strip() for x in txt.split(",") if x.strip()]
             elif ftype == "object-text":
                 txt = widget.text().strip()
                 if txt:
                     try:
-                        params[key] = json.loads(txt)
-                    except Exception:
-                        params[key] = txt
+                        parsed = json.loads(txt)
+                    except json.JSONDecodeError as error:
+                        raise FormInputError(key, "请输入有效的 JSON 对象") from error
+                    if not isinstance(parsed, dict):
+                        raise FormInputError(key, "参数必须是 JSON 对象")
+                    params[key] = parsed
             elif ftype == "string":
                 val = widget.text().strip()
                 if val:
@@ -1394,28 +1411,67 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             lbl.setText("")
             lbl.setVisible(False)
 
-    def set_field_error(self, key: str, message: str):
-        if key in self.error_labels:
-            lbl = self.error_labels[key]
-            lbl.setText(f"❌ {message}")
-            lbl.setVisible(True)
+    @staticmethod
+    def _root_field(field: str | None) -> str:
+        if not field:
+            return ""
+        return field.split("[", 1)[0].split(".", 1)[0]
+
+    def set_field_error(self, key: str, message: str) -> bool:
+        root_key = self._root_field(key)
+        if root_key not in self.error_labels:
+            return False
+        lbl = self.error_labels[root_key]
+        lbl.setText(f"❌ {message}")
+        lbl.setVisible(True)
+        if root_key in self.advanced_keys and hasattr(self, "adv_toggle_btn"):
+            self.adv_toggle_btn.setChecked(True)
+        _, widget = self.fields[root_key]
+        focus_target = getattr(widget, "line_edit", widget)
+        if hasattr(focus_target, "setFocus"):
+            focus_target.setFocus()
+        return True
 
     def validate_locally(self) -> tuple[bool, str]:
-        """进行基本必填项和本地 Schema 检查"""
+        """Validate obvious input errors; Runtime remains the Schema authority."""
         self.clear_errors()
-        valid = True
-        first_err = ""
+        try:
+            values = self.get_values()
+        except FormInputError as error:
+            self.set_field_error(error.field, str(error))
+            return False, str(error)
+
         required_keys: list[str] = self.schema.get("required", [])
+        for required in required_keys:
+            if required not in values or values[required] is None or values[required] == "" or values[required] == []:
+                message = "此项为必填字段，请输入或选择有效值"
+                self.set_field_error(required, message)
+                return False, f"必填字段 [{required}] 不能为空"
 
-        values = self.get_values()
-        for req in required_keys:
-            if req not in values or values[req] is None or values[req] == "" or values[req] == []:
-                self.set_field_error(req, f"此项为必填字段，请输入或选择有效值")
-                if not first_err:
-                    first_err = f"必填字段 [{req}] 不能为空"
-                valid = False
+        for key, (field_type, widget) in self.fields.items():
+            paths: list[str] = []
+            if field_type == "file-path":
+                value = widget.get_path().strip()
+                if value:
+                    paths = [value]
+            elif field_type == "array-files":
+                paths = [str(value).strip() for value in widget.get_paths() if str(value).strip()]
+            for value in paths:
+                path = Path(value).expanduser()
+                if not path.exists():
+                    message = f"文件不存在：{value}"
+                    self.set_field_error(key, message)
+                    return False, message
+                if not path.is_file():
+                    message = f"不是有效文件：{value}"
+                    self.set_field_error(key, message)
+                    return False, message
+                if not os.access(path, os.R_OK):
+                    message = f"文件不可读：{value}"
+                    self.set_field_error(key, message)
+                    return False, message
 
-        return valid, first_err
+        return True, ""
 
 
 # ==============================================================================
@@ -1499,7 +1555,8 @@ class ToolCatalogView(QtWidgets.QWidget):
     def __init__(self, runtime: Runtime, parent=None):
         super().__init__(parent)
         self.runtime = runtime
-        self.all_cards: list[tuple[str, str, str, ToolCardWidget]] = []
+        self.all_cards: list[tuple[str, str, str, str, str, ToolCardWidget]] = []
+        self._catalog_state = "loading"
         self._init_ui()
 
     def _init_ui(self):
@@ -1520,10 +1577,10 @@ class ToolCatalogView(QtWidgets.QWidget):
         header_box.addLayout(title_box)
         header_box.addStretch()
 
-        refresh_btn = QtWidgets.QPushButton("🔄 刷新插件目录")
-        refresh_btn.setObjectName("secondaryButton")
-        refresh_btn.clicked.connect(self.reload_tools)
-        header_box.addWidget(refresh_btn)
+        self.refresh_btn = QtWidgets.QPushButton("🔄 刷新插件目录")
+        self.refresh_btn.setObjectName("secondaryButton")
+        self.refresh_btn.clicked.connect(self.reload_tools)
+        header_box.addWidget(self.refresh_btn)
 
         layout.addLayout(header_box)
 
@@ -1532,7 +1589,7 @@ class ToolCatalogView(QtWidgets.QWidget):
         filter_bar.setSpacing(12)
 
         self.search_input = QtWidgets.QLineEdit()
-        self.search_input.setPlaceholderText("🔍 搜索命令、插件名称或描述关键字...")
+        self.search_input.setPlaceholderText("🔍 搜索命令、插件名称、描述或分类关键字...")
         self.search_input.textChanged.connect(self._filter_cards)
         filter_bar.addWidget(self.search_input, 2)
 
@@ -1542,6 +1599,12 @@ class ToolCatalogView(QtWidgets.QWidget):
         filter_bar.addWidget(self.category_combo, 1)
 
         layout.addLayout(filter_bar)
+
+        self.unavailable_label = QtWidgets.QLabel("")
+        self.unavailable_label.setObjectName("mutedText")
+        self.unavailable_label.setWordWrap(True)
+        self.unavailable_label.setVisible(False)
+        layout.addWidget(self.unavailable_label)
 
         # 滚动区域放置卡片
         scroll = QtWidgets.QScrollArea()
@@ -1553,52 +1616,105 @@ class ToolCatalogView(QtWidgets.QWidget):
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         self.cards_layout.setSpacing(12)
 
-        # 空状态提示组件
-        self.empty_widget = QtWidgets.QWidget()
-        empty_layout = QtWidgets.QVBoxLayout(self.empty_widget)
-        empty_layout.setContentsMargins(40, 60, 40, 60)
-        empty_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        empty_icon = QtWidgets.QLabel("📦")
-        empty_icon.setStyleSheet("font-size: 48px;")
-        empty_icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        empty_text = QtWidgets.QLabel("未找到匹配的工具插件或命令")
-        empty_text.setStyleSheet("color: #64748b; font-size: 15px; font-weight: 500;")
-        empty_text.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        empty_layout.addWidget(empty_icon)
-        empty_layout.addWidget(empty_text)
-        self.empty_widget.setVisible(False)
-        self.cards_layout.addWidget(self.empty_widget)
+        # 统一的加载、空和错误状态，不改变现有目录滚动区域和卡片层级。
+        self.state_widget = QtWidgets.QWidget()
+        state_layout = QtWidgets.QVBoxLayout(self.state_widget)
+        state_layout.setContentsMargins(40, 60, 40, 60)
+        state_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.state_icon = QtWidgets.QLabel("")
+        self.state_icon.setStyleSheet("font-size: 48px;")
+        self.state_icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.state_text = QtWidgets.QLabel("")
+        self.state_text.setStyleSheet("color: #64748b; font-size: 15px; font-weight: 500;")
+        self.state_text.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.state_detail = QtWidgets.QLabel("")
+        self.state_detail.setObjectName("mutedText")
+        self.state_detail.setWordWrap(True)
+        self.state_detail.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.state_retry_btn = QtWidgets.QPushButton("重试")
+        self.state_retry_btn.setObjectName("secondaryButton")
+        self.state_retry_btn.clicked.connect(self.reload_tools)
+        state_layout.addWidget(self.state_icon)
+        state_layout.addWidget(self.state_text)
+        state_layout.addWidget(self.state_detail)
+        state_layout.addWidget(self.state_retry_btn, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.cards_layout.addWidget(self.state_widget)
+        # 兼容现有页面/测试对空状态控件的命名；实际由统一状态组件承载。
+        self.empty_widget = self.state_widget
 
         scroll.setWidget(self.cards_container)
         layout.addWidget(scroll, 1)
 
         self.reload_tools()
 
-    def reload_tools(self):
-        # 清除旧卡片
-        for _, _, _, card in self.all_cards:
+    def _set_catalog_state(self, state: str, detail: str = ""):
+        self._catalog_state = state
+        states = {
+            "loading": ("⏳", "正在加载工具目录", "正在从 Runtime 读取插件和命令信息...", False),
+            "empty_plugins": ("📦", "暂无可用工具插件", "请检查插件目录或打开“插件与诊断”查看不可用原因。", False),
+            "empty_search": ("🔎", "未找到匹配的工具命令", "请清除搜索词或切换分类后重试。", False),
+            "error": ("⚠️", "工具目录加载失败", detail or "Runtime 未能读取插件和命令信息。", True),
+        }
+        icon, text, default_detail, can_retry = states.get(state, states["error"])
+        self.state_icon.setText(icon)
+        self.state_text.setText(text)
+        self.state_detail.setText(detail or default_detail)
+        self.state_retry_btn.setVisible(can_retry)
+        self.state_widget.setVisible(True)
+        for _, _, _, _, _, card in self.all_cards:
+            card.setVisible(False)
+
+    def _clear_cards(self):
+        for _, _, _, _, _, card in self.all_cards:
             self.cards_layout.removeWidget(card)
             card.deleteLater()
         self.all_cards.clear()
 
-        commands_map = self.runtime.list_commands()
+    def _unavailable_plugins(self) -> list[dict[str, str]]:
+        getter = getattr(self.runtime, "list_unavailable_plugins", None)
+        if callable(getter):
+            return getter()
+        manager = getattr(self.runtime, "manager", None)
+        unavailable = getattr(manager, "unavailable", {})
+        return [{"path": path, "reason": reason, "status": "unavailable"} for path, reason in sorted(unavailable.items())]
+
+    def _show_unavailable(self, items: list[dict[str, str]]):
+        if not items:
+            self.unavailable_label.clear()
+            self.unavailable_label.setVisible(False)
+            return
+        preview = "；".join(f"{item.get('path', '插件')}：{item.get('reason', '未知原因')}" for item in items[:3])
+        suffix = f"（另有 {len(items) - 3} 项未展开）" if len(items) > 3 else ""
+        self.unavailable_label.setText(f"⚠️ {len(items)} 个插件当前不可用：{preview}{suffix}")
+        self.unavailable_label.setVisible(True)
+
+    def reload_tools(self):
+        self._clear_cards()
+        self._set_catalog_state("loading")
+        self.refresh_btn.setEnabled(False)
+        self.search_input.setEnabled(False)
+        self.category_combo.setEnabled(False)
+        try:
+            commands_map = self.runtime.list_commands()
+            unavailable = self._unavailable_plugins()
+        except Exception as error:
+            self._show_unavailable([])
+            self._set_catalog_state("error", f"调用 Runtime.list_commands 失败：{error}")
+            self.refresh_btn.setEnabled(True)
+            self.search_input.setEnabled(True)
+            self.category_combo.setEnabled(True)
+            return
+
         categories = set()
-
         for cmd_name, manifest in sorted(commands_map.items()):
-            # 获取命令描述
-            cmd_desc = ""
-            for cmd_obj in manifest.commands:
-                if cmd_obj.name == cmd_name:
-                    cmd_desc = cmd_obj.description
-                    break
-
+            cmd_desc = next((cmd.description for cmd in manifest.commands if cmd.name == cmd_name), "")
             card = ToolCardWidget(cmd_name, cmd_desc, manifest)
             card.clicked.connect(self.commandSelected.emit)
             self.cards_layout.addWidget(card)
-            self.all_cards.append((cmd_name, manifest.name, manifest.category, card))
+            search_text = " ".join((cmd_name, manifest.name, manifest.description, cmd_desc, manifest.category)).lower()
+            self.all_cards.append((cmd_name, manifest.name, manifest.category, cmd_desc, search_text, card))
             categories.add(manifest.category)
 
-        # 刷新分类下拉
         current_cat = self.category_combo.currentData()
         self.category_combo.blockSignals(True)
         self.category_combo.clear()
@@ -1610,24 +1726,40 @@ class ToolCatalogView(QtWidgets.QWidget):
             if idx >= 0:
                 self.category_combo.setCurrentIndex(idx)
         self.category_combo.blockSignals(False)
-
-        self.cards_layout.addStretch()
+        self._show_unavailable(unavailable)
+        self.refresh_btn.setEnabled(True)
+        self.search_input.setEnabled(True)
+        self.category_combo.setEnabled(True)
         self._filter_cards()
 
     def _filter_cards(self):
+        if self._catalog_state in ("loading", "error"):
+            return
         query = self.search_input.text().strip().lower()
-        selected_cat = self.category_combo.currentData()
+        selected_cat = self.category_combo.currentData() or "all"
 
         visible_count = 0
-        for cmd_name, plugin_name, category, card in self.all_cards:
-            match_query = (not query) or (query in cmd_name.lower()) or (query in plugin_name.lower())
+        for cmd_name, plugin_name, category, description, search_text, card in self.all_cards:
+            match_query = (
+                (not query)
+                or (query in cmd_name.lower())
+                or (query in plugin_name.lower())
+                or (query in description.lower())
+                or (query in category.lower())
+                or (query in search_text)
+            )
             match_cat = (selected_cat == "all") or (category == selected_cat)
             show = match_query and match_cat
             card.setVisible(show)
             if show:
                 visible_count += 1
 
-        self.empty_widget.setVisible(visible_count == 0)
+        if visible_count == 0:
+            self.empty_widget.setVisible(visible_count == 0)
+            self._set_catalog_state("empty_search" if self.all_cards else "empty_plugins")
+        else:
+            self._catalog_state = "ready"
+            self.state_widget.setVisible(False)
 
 
 # ==============================================================================
@@ -1699,6 +1831,12 @@ class CommandDetailFormView(QtWidgets.QWidget):
         self.form_scroll.setWidget(self.form_container)
 
         form_layout.addWidget(self.form_scroll, 1)
+
+        self.form_feedback_label = QtWidgets.QLabel("")
+        self.form_feedback_label.setObjectName("fieldErrorLabel")
+        self.form_feedback_label.setWordWrap(True)
+        self.form_feedback_label.setVisible(False)
+        form_layout.addWidget(self.form_feedback_label)
 
         # 底部执行与操作栏
         action_bar = QtWidgets.QHBoxLayout()
@@ -1788,38 +1926,45 @@ class CommandDetailFormView(QtWidgets.QWidget):
         main_layout.addLayout(split_layout, 1)
         self._split_layout = split_layout
 
+    def _set_form_feedback(self, message: str = ""):
+        self.form_feedback_label.setText(f"❌ {message}" if message else "")
+        self.form_feedback_label.setVisible(bool(message))
+
     def load_command(self, command_name: str, preset_params: dict | None = None):
         self.current_command = command_name
-        self.current_manifest = self.runtime.get_command(command_name)
-        self.current_schema = self.runtime.get_command_schema(command_name)
-
-        self.cmd_title_lbl.setText(f"命令: {command_name}")
-        if self.current_manifest:
-            self.plugin_badge.setText(f"{PLUGIN_LABELS.get(self.current_manifest.name, self.current_manifest.name)}（{self.current_manifest.name}） v{self.current_manifest.version}")
-            self.lbl_manifest_ver.setText(self.current_manifest.version)
-            self.lbl_category.setText(f"{CATEGORY_LABELS.get(self.current_manifest.category, self.current_manifest.category)}（{self.current_manifest.category.upper()}）")
-            caps = self.current_manifest.capabilities or {}
-            self.lbl_concurrency.setText("支持并发" if caps.get("concurrency", True) else "仅串行执行")
-            self.lbl_filesystem.setText({"output-only": "仅输出目录（output-only）", "none": "不写入文件（none）"}.get(caps.get("filesystem", "output-only"), str(caps.get("filesystem", "output-only"))))
-            self.lbl_compat.setText(self.current_manifest.core_compatibility or "*")
-
-            cmd_desc = ""
-            for cmd_obj in self.current_manifest.commands:
-                if cmd_obj.name == command_name:
-                    cmd_desc = cmd_obj.description
-                    break
-            self.info_desc_lbl.setText(cmd_desc or self.current_manifest.description)
-
-        # 动态重建 Schema 表单
+        self._set_form_feedback()
+        self.submit_btn.setEnabled(False)
         if self.form_widget:
             self.form_container_layout.removeWidget(self.form_widget)
             self.form_widget.deleteLater()
             self.form_widget = None
+        try:
+            self.current_manifest = self.runtime.get_command(command_name)
+            self.current_schema = self.runtime.get_command_schema(command_name)
+        except Exception as error:
+            self.current_manifest = None
+            self.current_schema = {}
+            self.cmd_title_lbl.setText(f"命令: {command_name}")
+            self.plugin_badge.setText("不可用")
+            self._set_form_feedback(f"无法从 Runtime 加载命令 Schema：{error}")
+            return
+
+        self.cmd_title_lbl.setText(f"命令: {command_name}")
+        self.plugin_badge.setText(f"{PLUGIN_LABELS.get(self.current_manifest.name, self.current_manifest.name)}（{self.current_manifest.name}） v{self.current_manifest.version}")
+        self.lbl_manifest_ver.setText(self.current_manifest.version)
+        self.lbl_category.setText(f"{CATEGORY_LABELS.get(self.current_manifest.category, self.current_manifest.category)}（{self.current_manifest.category.upper()}）")
+        caps = self.current_manifest.capabilities or {}
+        self.lbl_concurrency.setText("支持并发" if caps.get("concurrency", True) else "仅串行执行")
+        self.lbl_filesystem.setText({"output-only": "仅输出目录（output-only）", "none": "不写入文件（none）"}.get(caps.get("filesystem", "output-only"), str(caps.get("filesystem", "output-only"))))
+        self.lbl_compat.setText(self.current_manifest.core_compatibility or "*")
+        cmd_desc = next((cmd.description for cmd in self.current_manifest.commands if cmd.name == command_name), "")
+        self.info_desc_lbl.setText(cmd_desc or self.current_manifest.description)
 
         self.form_widget = DataMockForm(self.current_schema, runtime=self.runtime, runtime_root=self.runtime_root) if command_name == "data.mock" else DynamicSchemaForm(self.current_schema, command_name=command_name)
         if preset_params:
             self.form_widget.set_values(preset_params)
         self.form_container_layout.addWidget(self.form_widget)
+        self.submit_btn.setEnabled(True)
 
     def _reset_form(self):
         if self.current_command:
@@ -1828,11 +1973,28 @@ class CommandDetailFormView(QtWidgets.QWidget):
     def _on_submit(self):
         if not self.form_widget:
             return
-        valid, err = self.form_widget.validate_locally()
+        self._set_form_feedback()
+        valid, error_message = self.form_widget.validate_locally()
         if not valid:
-            QtWidgets.QMessageBox.warning(self, "参数校验未通过", f"请检查输入参数:\n{err}")
+            self._set_form_feedback(error_message or "请检查标记的输入参数。")
             return
-        params = self.form_widget.get_values()
+        try:
+            params = self.form_widget.get_values()
+            params = self.runtime.validate_params(self.current_command, params)
+        except FormInputError as error:
+            if hasattr(self.form_widget, "set_field_error"):
+                self.form_widget.set_field_error(error.field, str(error))
+            self._set_form_feedback(str(error))
+            return
+        except SchemaValidationError as error:
+            handled = False
+            if hasattr(self.form_widget, "set_field_error"):
+                handled = bool(self.form_widget.set_field_error(error.field or "", str(error)))
+            self._set_form_feedback(str(error) if not handled else "请修正标记的字段后重新提交。")
+            return
+        except Exception as error:
+            self._set_form_feedback(f"Runtime 参数校验失败：{error}")
+            return
         self.executeRequested.emit(self.current_command, params)
 
 
@@ -1880,8 +2042,9 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         status_text_box = QtWidgets.QVBoxLayout()
         self.status_title_lbl = QtWidgets.QLabel("任务正在运行中")
         self.status_title_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #2563eb;")
-        self.status_desc_lbl = QtWidgets.QLabel("插件主进程正在后台处理，请稍候…")
+        self.status_desc_lbl = QtWidgets.QLabel("任务处于等待执行或运行中（PENDING / RUNNING），正在等待插件返回。")
         self.status_desc_lbl.setObjectName("mutedText")
+        self.status_desc_lbl.setWordWrap(True)
         status_text_box.addWidget(self.status_title_lbl)
         status_text_box.addWidget(self.status_desc_lbl)
         status_bar.addLayout(status_text_box)
@@ -1922,6 +2085,10 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         layout.addStretch()
 
     def start_running(self, command: str, params: dict, manifest: Any):
+        self.status_title_lbl.setText("等待 Runtime 与插件返回")
+        self.status_desc_lbl.setText(
+            "任务处于等待执行或运行中（PENDING / RUNNING）。当前 Host 协议不会提供实时百分比或日志流。"
+        )
         self.lbl_cmd.setText(command)
         if manifest:
             self.lbl_plugin.setText(f"{manifest.name} (v{manifest.version})")
@@ -1938,8 +2105,9 @@ class RunningWorkspaceView(QtWidgets.QWidget):
 class TaskResultDetailView(QtWidgets.QWidget):
     """
     任务结果详情页：
-    全面支持六种状态展示：成功 (SUCCEEDED)、失败 (FAILED)、警告 (WARNING)、取消 (CANCELLED)、异常中断 (ABANDONED)、空结果 (EMPTY)。
-    支持输出文件列表、一键导出产物、数据摘要卡片、原始日志折叠、修改参数重新执行。
+    支持 PENDING、RUNNING、SUCCEEDED、FAILED、CANCELLED、ABANDONED 六种 Runtime 状态。
+    Warning、Empty、Missing result/output 和 Permission denied 仅作为展示层 facet，
+    不扩展 Runtime 状态机。
     """
     reExecuteRequested = QtCore.Signal(str, dict)  # command_name, params
     backToHistory = QtCore.Signal()
@@ -2037,7 +2205,37 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
         self.content_layout.addWidget(self.status_banner)
 
-        # 2. 失败/异常诊断区域 (仅失败/中断时显示)
+        # 2. Runtime 任务元数据与工作区入口
+        self.task_meta_box = QtWidgets.QGroupBox("任务与工作区")
+        task_meta_layout = QtWidgets.QFormLayout(self.task_meta_box)
+        task_meta_layout.setSpacing(8)
+        self.meta_task_id_lbl = QtWidgets.QLabel("-")
+        self.meta_command_lbl = QtWidgets.QLabel("-")
+        self.meta_plugin_lbl = QtWidgets.QLabel("-")
+        self.meta_started_lbl = QtWidgets.QLabel("-")
+        self.meta_finished_lbl = QtWidgets.QLabel("-")
+        self.meta_workspace_lbl = QtWidgets.QLabel("-")
+        self.meta_workspace_lbl.setWordWrap(True)
+        self.btn_open_workspace = QtWidgets.QPushButton("📂 打开工作区")
+        self.btn_open_workspace.setObjectName("smallButton")
+        self.btn_open_workspace.clicked.connect(self._open_workspace)
+
+        workspace_row = QtWidgets.QWidget()
+        workspace_row_layout = QtWidgets.QHBoxLayout(workspace_row)
+        workspace_row_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_row_layout.setSpacing(8)
+        workspace_row_layout.addWidget(self.meta_workspace_lbl, 1)
+        workspace_row_layout.addWidget(self.btn_open_workspace)
+
+        task_meta_layout.addRow("任务 ID:", self.meta_task_id_lbl)
+        task_meta_layout.addRow("命令:", self.meta_command_lbl)
+        task_meta_layout.addRow("插件:", self.meta_plugin_lbl)
+        task_meta_layout.addRow("开始时间:", self.meta_started_lbl)
+        task_meta_layout.addRow("完成时间:", self.meta_finished_lbl)
+        task_meta_layout.addRow("工作区:", workspace_row)
+        self.content_layout.addWidget(self.task_meta_box)
+
+        # 3. 失败/异常诊断区域 (仅失败/中断时显示)
         self.diagnostic_box = QtWidgets.QWidget()
         self.diagnostic_box.setObjectName("diagnosticBox")
         diag_layout = QtWidgets.QVBoxLayout(self.diagnostic_box)
@@ -2060,7 +2258,18 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
         self.content_layout.addWidget(self.diagnostic_box)
 
-        # 3. 输出文件列表卡片 (Output Files)
+        # 4. 插件警告与展示层警告，不作为 Runtime 状态。
+        self.warnings_box = QtWidgets.QGroupBox("警告 (Warnings)")
+        warnings_layout = QtWidgets.QVBoxLayout(self.warnings_box)
+        self.warnings_txt = QtWidgets.QPlainTextEdit()
+        self.warnings_txt.setReadOnly(True)
+        self.warnings_txt.setFixedHeight(100)
+        self.warnings_txt.setObjectName("logOutput")
+        warnings_layout.addWidget(self.warnings_txt)
+        self.warnings_box.setVisible(False)
+        self.content_layout.addWidget(self.warnings_box)
+
+        # 5. 输出文件列表卡片 (Output Files)
         self.files_box = QtWidgets.QGroupBox("产物文件列表 (Output Files)")
         files_box_layout = QtWidgets.QVBoxLayout(self.files_box)
         files_box_layout.setContentsMargins(14, 14, 14, 14)
@@ -2099,7 +2308,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
         self.content_layout.addWidget(self.files_box)
 
-        # 4. 任务结果数据摘要 (Data Summary)
+        # 6. 任务结果数据摘要 (Data Summary)
         self.data_summary_box = QtWidgets.QGroupBox("结果数据摘要 (Data Summary)")
         data_layout = QtWidgets.QVBoxLayout(self.data_summary_box)
         self.data_summary_txt = QtWidgets.QPlainTextEdit()
@@ -2109,7 +2318,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
         data_layout.addWidget(self.data_summary_txt)
         self.content_layout.addWidget(self.data_summary_box)
 
-        # 5. 脱敏参数摘要
+        # 7. 脱敏参数摘要
         params_box = QtWidgets.QGroupBox("任务脱敏参数")
         params_layout = QtWidgets.QVBoxLayout(params_box)
         self.params_txt = QtWidgets.QPlainTextEdit()
@@ -2119,7 +2328,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
         params_layout.addWidget(self.params_txt)
         self.content_layout.addWidget(params_box)
 
-        # 6. 任务报告与执行日志折叠 (Report & Logs)
+        # 8. 任务报告与执行日志折叠 (Report & Logs)
         logs_container = QtWidgets.QWidget()
         logs_container.setObjectName("cardPanel")
         logs_layout = QtWidgets.QVBoxLayout(logs_container)
@@ -2138,7 +2347,15 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.report_txt.setReadOnly(True)
         self.report_txt.setFixedHeight(180)
         self.report_txt.setObjectName("logOutput")
+        logs_inner_layout.addWidget(QtWidgets.QLabel("Runtime 报告 (report.md)"))
         logs_inner_layout.addWidget(self.report_txt)
+
+        self.log_txt = QtWidgets.QPlainTextEdit()
+        self.log_txt.setReadOnly(True)
+        self.log_txt.setFixedHeight(180)
+        self.log_txt.setObjectName("logOutput")
+        logs_inner_layout.addWidget(QtWidgets.QLabel("任务执行日志 (logs/task.log)"))
+        logs_inner_layout.addWidget(self.log_txt)
 
         self.logs_content_widget.setVisible(False)
         self.btn_toggle_logs.toggled.connect(lambda c: self.logs_content_widget.setVisible(c))
@@ -2154,94 +2371,186 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
     def display_task(self, task_id: str, direct_result: Any = None, elapsed: float | None = None):
         self.current_task_id = task_id
+        self.current_result_obj = direct_result
         self.title_task_id_lbl.setText(f"任务详情: {task_id}")
 
-        task_record = self.runtime.get_task(task_id) or {}
+        try:
+            task_record = self.runtime.get_task(task_id) or {}
+        except Exception as error:
+            self.current_task_info = {}
+            self.btn_re_execute.setEnabled(False)
+            self._render_task_read_error(task_id, error)
+            return
+
         self.current_task_info = task_record
+        if not task_record:
+            self.btn_re_execute.setEnabled(False)
+            self._render_missing_task(task_id)
+            return
 
-        # 获取 Result
-        result_dict = {}
-        if direct_result is not None:
-            self.current_result_obj = direct_result
-            result_dict = direct_result.to_dict() if hasattr(direct_result, "to_dict") else direct_result
+        status = str(task_record.get("status") or "UNKNOWN").upper()
+        self.btn_re_execute.setEnabled(
+            bool(task_record.get("command")) and status not in {"PENDING", "RUNNING"}
+        )
+        self._render_task_metadata(task_record)
+
+        result_missing = False
+        result_read_error: str | None = None
+        if status in {"PENDING", "RUNNING"}:
+            result_dict: dict[str, Any] = {
+                "status": status.lower(),
+                "message": (
+                    "任务已进入 Runtime 队列，正在等待执行。"
+                    if status == "PENDING"
+                    else "插件 Host 正在执行，等待一次性响应返回。"
+                ),
+                "data": {},
+                "files": [],
+                "warnings": [],
+            }
         else:
-            result_dict = self.runtime.get_task_result(task_id) or {}
+            try:
+                persisted_result = self.runtime.get_task_result(task_id)
+            except Exception as error:
+                persisted_result = None
+                result_read_error = str(error)
+            if persisted_result is None:
+                result_missing = True
+                result_dict = {
+                    "status": "failed",
+                    "message": "任务记录存在，但 result.json 不存在或无法读取。",
+                    "data": {"error_code": "RESULT_NOT_FOUND"},
+                    "files": [],
+                    "warnings": [],
+                }
+            else:
+                result_dict = persisted_result
 
-        status = task_record.get("status", "UNKNOWN").upper()
-        if not status or status == "UNKNOWN":
-            status = result_dict.get("status", "UNKNOWN").upper()
-
-        # 计算耗时
-        duration_text = "-"
+        # Runtime 任务记录是状态和时间的权威来源。
+        duration_text = "耗时: -"
         if elapsed is not None:
             duration_text = f"耗时: {elapsed:.2f}s"
         else:
-            s_at = task_record.get("started_at")
-            f_at = task_record.get("finished_at")
-            if s_at and f_at:
+            started_at = task_record.get("started_at")
+            finished_at = task_record.get("finished_at")
+            if started_at and finished_at:
                 try:
-                    t1 = datetime.fromisoformat(s_at)
-                    t2 = datetime.fromisoformat(f_at)
-                    duration_text = f"耗时: {(t2 - t1).total_seconds():.2f}s"
-                except Exception:
+                    started = datetime.fromisoformat(started_at)
+                    finished = datetime.fromisoformat(finished_at)
+                    duration_text = f"耗时: {(finished - started).total_seconds():.2f}s"
+                except (TypeError, ValueError):
                     pass
         self.duration_lbl.setText(duration_text)
 
-        # 状态横幅渲染
-        self._render_status_banner(status, result_dict, task_record)
-
-        # 产物文件列表渲染
         files = result_dict.get("files") or []
-        self._render_files_table(task_id, files)
+        missing_outputs = self._render_files_table(task_id, files)
+        if status in {"PENDING", "RUNNING"}:
+            self.files_empty_lbl.setText("任务尚未完成，Runtime 返回后才会显示产物。")
+        elif result_missing:
+            self.files_empty_lbl.setText("result.json 不可用，无法读取产物清单。")
 
-        # 数据摘要
-        data_val = result_dict.get("data")
-        if data_val:
-            self.data_summary_txt.setPlainText(json.dumps(data_val, ensure_ascii=False, indent=2))
-            self.data_summary_box.setVisible(True)
+        warnings = result_dict.get("warnings") or []
+        if isinstance(warnings, str):
+            warnings = [warnings]
         else:
-            self.data_summary_txt.setPlainText("无结构化返回数据")
-            self.data_summary_box.setVisible(False)
+            warnings = [str(item) for item in warnings]
+        if missing_outputs:
+            warnings.append("以下已声明产物当前缺失，导出已禁用: " + ", ".join(missing_outputs))
+        self._render_warnings(warnings)
 
-        # 脱敏参数渲染
+        display_result = dict(result_dict)
+        display_result["warnings"] = warnings
+        self._render_status_banner(
+            status,
+            display_result,
+            task_record,
+            result_missing=result_missing,
+            result_read_error=result_read_error,
+        )
+
+        data_value = result_dict.get("data")
+        if status in {"PENDING", "RUNNING"}:
+            self.data_summary_txt.setPlainText("任务尚未完成，暂无结果数据。")
+        elif data_value:
+            self.data_summary_txt.setPlainText(json.dumps(data_value, ensure_ascii=False, indent=2))
+        else:
+            self.data_summary_txt.setPlainText("任务已完成，但未返回结构化数据（Empty result facet）。")
+        self.data_summary_box.setVisible(True)
+
         params = task_record.get("params") or {}
         self.params_txt.setPlainText(json.dumps(params, ensure_ascii=False, indent=2))
+        self._load_report_and_log(task_id, status, result_dict, task_record, result_missing)
 
-        # 报告渲染
-        msg = result_dict.get("message", "")
-        err_code = task_record.get("error_code")
-        warnings = result_dict.get("warnings", [])
-        report_content = f"--- 任务报告 [{task_id}] ---\n状态: {status}\n命令: {task_record.get('command')}\n消息: {msg}\n"
-        if err_code:
-            report_content += f"错误码: {err_code}\n"
-        if warnings:
-            report_content += f"警告: {warnings}\n"
+    @staticmethod
+    def _format_task_timestamp(value: Any) -> str:
+        if not value:
+            return "-"
+        try:
+            return datetime.fromisoformat(str(value)).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        except (TypeError, ValueError):
+            return str(value)
 
-        diagnostics = result_dict.get("data") or {}
-        host_stderr = diagnostics.get("host_stderr")
-        task_log_tail = diagnostics.get("task_log_tail")
-        if host_stderr:
-            report_content += f"\n--- Host 错误输出 ---\n{host_stderr.rstrip()}\n"
-
-        # Read the task log from the workspace as the source of truth. Failed
-        # results also carry a tail in result.data for CLI diagnostics, but a
-        # successful task does not need to duplicate its log into result.json.
-        task_log = ""
+    def _render_task_metadata(self, task_record: dict[str, Any]) -> None:
+        self.meta_task_id_lbl.setText(str(task_record.get("id") or self.current_task_id))
+        self.meta_command_lbl.setText(str(task_record.get("command") or "-"))
+        plugin_name = task_record.get("plugin_name") or "-"
+        plugin_version = task_record.get("plugin_version")
+        self.meta_plugin_lbl.setText(
+            f"{plugin_name} (v{plugin_version})" if plugin_version else str(plugin_name)
+        )
+        self.meta_started_lbl.setText(self._format_task_timestamp(task_record.get("started_at")))
+        self.meta_finished_lbl.setText(self._format_task_timestamp(task_record.get("finished_at")))
         workspace_path = task_record.get("workspace_path")
-        if workspace_path:
-            log_path = Path(workspace_path) / "logs" / "task.log"
-            if log_path.is_file():
-                try:
-                    task_log = log_path.read_text(encoding="utf-8", errors="replace")[-8_000:]
-                except OSError:
-                    task_log = ""
-        if not task_log:
-            task_log = task_log_tail or ""
-        if task_log:
-            report_content += f"\n--- 插件执行日志（末尾） ---\n{task_log.rstrip()}\n"
-        if not host_stderr and not task_log:
-            report_content += "\n--- 插件执行日志 ---\n当前任务没有可显示的插件日志。\n"
+        self.meta_workspace_lbl.setText(str(workspace_path or "-"))
+        self.btn_open_workspace.setEnabled(bool(workspace_path) and Path(workspace_path).is_dir())
+
+    def _render_warnings(self, warnings: list[str]) -> None:
+        clean_warnings = [warning.strip() for warning in warnings if warning and warning.strip()]
+        self.warnings_box.setVisible(bool(clean_warnings))
+        self.warnings_txt.setPlainText("\n".join(f"• {warning}" for warning in clean_warnings))
+
+    def _load_report_and_log(
+        self,
+        task_id: str,
+        status: str,
+        result_dict: dict[str, Any],
+        task_record: dict[str, Any],
+        result_missing: bool,
+    ) -> None:
+        try:
+            report_content = self.runtime.get_task_report(task_id)
+        except Exception as error:
+            report_content = f"报告读取失败: {error}"
+        if not report_content:
+            message = result_dict.get("message") or "-"
+            report_content = (
+                f"--- 任务报告 [{task_id}] ---\n"
+                f"状态: {status}\n"
+                f"命令: {task_record.get('command') or '-'}\n"
+                f"消息: {message}\n"
+            )
+            if result_missing:
+                report_content += "结果: result.json 不存在或无法读取。\n"
         self.report_txt.setPlainText(report_content)
+
+        try:
+            task_log = self.runtime.get_task_log(task_id)
+        except Exception as error:
+            task_log = f"日志读取失败: {error}"
+        if not task_log:
+            diagnostics = result_dict.get("data") or {}
+            task_log = diagnostics.get("task_log_tail") or diagnostics.get("host_stderr") or "当前任务没有可显示的执行日志。"
+        self.log_txt.setPlainText(str(task_log))
+
+    def _open_workspace(self) -> None:
+        workspace_path = self.current_task_info.get("workspace_path")
+        if not workspace_path:
+            return
+        path = Path(workspace_path)
+        if not path.is_dir():
+            QtWidgets.QMessageBox.warning(self, "工作区不可用", "任务工作区不存在或已被清理。")
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     @staticmethod
     def _apply_style_id(widget: QtWidgets.QWidget, style_id: str) -> None:
@@ -2252,56 +2561,146 @@ class TaskResultDetailView(QtWidgets.QWidget):
         style.polish(widget)
         widget.update()
 
-    def _render_status_banner(self, status: str, result_dict: dict, task_record: dict):
+    def _reset_task_sections(self, task_id: str) -> None:
+        self.meta_task_id_lbl.setText(task_id)
+        self.meta_command_lbl.setText("-")
+        self.meta_plugin_lbl.setText("-")
+        self.meta_started_lbl.setText("-")
+        self.meta_finished_lbl.setText("-")
+        self.meta_workspace_lbl.setText("-")
+        self.btn_open_workspace.setEnabled(False)
+        self._render_warnings([])
+        self._render_files_table(task_id, [])
+        self.data_summary_txt.setPlainText("无可用结果数据")
+        self.data_summary_box.setVisible(True)
+        self.params_txt.setPlainText("无可用参数记录")
+        self.log_txt.setPlainText("当前任务没有可显示的执行日志。")
+
+    def _render_task_read_error(self, task_id: str, error: Exception) -> None:
+        """Render a non-destructive Error facet when Runtime task history cannot be read."""
+        self.current_result_obj = None
+        self._reset_task_sections(task_id)
+        self.status_icon_lbl.setText("❌")
+        self.status_main_text.setText("任务记录读取失败")
+        self._apply_style_id(self.status_main_text, "statusFailed")
+        self.status_sub_text.setText("Runtime 无法读取任务记录；历史数据未被修改。")
+        self._apply_style_id(self.status_banner, "statusBannerFailed")
+        self.duration_lbl.setText("耗时: -")
+        self.stats_row.setVisible(False)
+        self.diagnostic_box.setVisible(True)
+        self.diag_reason_lbl.setText(f"【TASK_READ_ERROR】{error}")
+        self.diag_advice_lbl.setText("建议操作: 返回任务历史后重试；如持续失败，请查看插件与诊断页。")
+        self.files_empty_lbl.setText("任务记录读取失败，无法读取产物。")
+        self.report_txt.setPlainText(f"--- 任务报告 [{task_id}] ---\nRuntime 任务记录读取失败。\n")
+
+    def _render_missing_task(self, task_id: str):
+        """Render a stable, actionable state when Runtime no longer has the task."""
+        self.current_result_obj = None
+        self._reset_task_sections(task_id)
+        self.status_icon_lbl.setText("❓")
+        self.status_main_text.setText("找不到任务记录")
+        self._apply_style_id(self.status_main_text, "statusFailed")
+        self.status_sub_text.setText("该任务可能已被清理，或任务 ID 不再属于当前 Runtime。")
+        self._apply_style_id(self.status_banner, "statusBannerFailed")
+        self.duration_lbl.setText("耗时: -")
+        self.stats_row.setVisible(False)
+        self.diagnostic_box.setVisible(True)
+        self.diag_reason_lbl.setText(f"【任务 ID: {task_id}】Runtime 未返回任务记录。")
+        self.diag_advice_lbl.setText("建议操作: 返回任务历史后刷新列表；如果任务已被清理，请重新执行原命令。")
+        self.files_empty_lbl.setText("找不到任务记录，无法读取产物。")
+        self.report_txt.setPlainText(f"--- 任务报告 [{task_id}] ---\nRuntime 未返回任务记录。\n")
+
+    def _render_status_banner(
+        self,
+        status: str,
+        result_dict: dict,
+        task_record: dict,
+        *,
+        result_missing: bool = False,
+        result_read_error: str | None = None,
+    ):
         self.diagnostic_box.setVisible(False)
 
         data = result_dict.get("data") or {}
         if "success_tables_count" in data or "failed_tables_count" in data or "field_count" in data:
-            s_cnt = data.get("success_tables_count", 0)
-            f_cnt = data.get("failed_tables_count", 0)
-            flds = data.get("field_count", 0)
-            self.stat_success_badge.setText(f"✓ 成功表数: {s_cnt}")
+            success_count = data.get("success_tables_count", 0)
+            failed_count = data.get("failed_tables_count", 0)
+            field_count = data.get("field_count", 0)
+            self.stat_success_badge.setText(f"✓ 成功表数: {success_count}")
             self._apply_style_id(self.stat_success_badge, "tagLabel")
-
-            self.stat_failed_badge.setText(f"✗ 失败表数: {f_cnt}")
-            if f_cnt > 0:
-                self._apply_style_id(self.stat_failed_badge, "tagLabelDanger")
-            else:
-                self._apply_style_id(self.stat_failed_badge, "tagLabelMuted")
-
-            self.stat_fields_badge.setText(f"📊 涉及字段: {flds}")
+            self.stat_failed_badge.setText(f"✗ 失败表数: {failed_count}")
+            self._apply_style_id(
+                self.stat_failed_badge,
+                "tagLabelDanger" if failed_count > 0 else "tagLabelMuted",
+            )
+            self.stat_fields_badge.setText(f"📊 涉及字段: {field_count}")
             self._apply_style_id(self.stat_fields_badge, "tagLabelInfo")
             self.stats_row.setVisible(True)
         else:
             self.stats_row.setVisible(False)
 
-        if status == "SUCCEEDED":
-            self.status_icon_lbl.setText("✅")
-            self.status_main_text.setText("任务执行成功 (SUCCEEDED)")
-            self._apply_style_id(self.status_main_text, "statusSuccess")
-            self.status_sub_text.setText(result_dict.get("message") or "所有步骤已顺利完成，产物已落盘。")
-            self._apply_style_id(self.status_banner, "statusBannerSuccess")
+        warnings = result_dict.get("warnings") or []
+        has_warnings = bool(warnings)
+        is_empty_result = not data and not (result_dict.get("files") or [])
 
-        elif status == "WARNING":
-            self.status_icon_lbl.setText("⚠️")
-            self.status_main_text.setText("执行完成但包含警告 (WARNING)")
+        if status == "PENDING":
+            self.status_icon_lbl.setText("⏳")
+            self.status_main_text.setText("任务等待执行 (PENDING)")
             self._apply_style_id(self.status_main_text, "statusWarning")
-            self.status_sub_text.setText(result_dict.get("message") or "任务产物已生成，但存在部分警告提示。")
+            self.status_sub_text.setText("任务已由 Runtime 记录，正在等待进入插件 Host。")
             self._apply_style_id(self.status_banner, "statusBannerWarning")
+
+        elif status == "RUNNING":
+            self.status_icon_lbl.setText("⏳")
+            self.status_main_text.setText("任务正在运行 (RUNNING)")
+            self._apply_style_id(self.status_main_text, "statusWarning")
+            self.status_sub_text.setText("插件 Host 正在执行；当前协议仅在完成时返回一次响应。")
+            self._apply_style_id(self.status_banner, "statusBannerWarning")
+
+        elif status == "SUCCEEDED":
+            if result_missing:
+                self.status_icon_lbl.setText("⚠️")
+                self.status_main_text.setText("任务状态成功，但结果不可用 (SUCCEEDED)")
+                self._apply_style_id(self.status_main_text, "statusWarning")
+                self.status_sub_text.setText("Runtime 记录为成功，但 result.json 不存在或无法读取。")
+                self._apply_style_id(self.status_banner, "statusBannerWarning")
+            elif has_warnings:
+                self.status_icon_lbl.setText("⚠️")
+                self.status_main_text.setText("任务执行成功但包含警告 (SUCCEEDED)")
+                self._apply_style_id(self.status_main_text, "statusWarning")
+                self.status_sub_text.setText(result_dict.get("message") or "任务已完成，请检查警告区。")
+                self._apply_style_id(self.status_banner, "statusBannerWarning")
+            elif is_empty_result:
+                self.status_icon_lbl.setText("✅")
+                self.status_main_text.setText("任务执行成功，无返回数据或产物 (SUCCEEDED)")
+                self._apply_style_id(self.status_main_text, "statusSuccess")
+                self.status_sub_text.setText(result_dict.get("message") or "任务已完成，但结果为空。")
+                self._apply_style_id(self.status_banner, "statusBannerSuccess")
+            else:
+                self.status_icon_lbl.setText("✅")
+                self.status_main_text.setText("任务执行成功 (SUCCEEDED)")
+                self._apply_style_id(self.status_main_text, "statusSuccess")
+                self.status_sub_text.setText(result_dict.get("message") or "所有步骤已顺利完成，产物已落盘。")
+                self._apply_style_id(self.status_banner, "statusBannerSuccess")
 
         elif status == "FAILED":
             self.status_icon_lbl.setText("❌")
             self.status_main_text.setText("任务执行失败 (FAILED)")
             self._apply_style_id(self.status_main_text, "statusFailed")
-            err_msg = result_dict.get("message") or "插件执行过程中遇到错误。"
-            self.status_sub_text.setText(err_msg)
+            error_message = result_dict.get("message") or "插件执行过程中遇到错误。"
+            self.status_sub_text.setText(error_message)
             self._apply_style_id(self.status_banner, "statusBannerFailed")
-
-            # 错误诊断与建议
             self.diagnostic_box.setVisible(True)
-            err_code = task_record.get("error_code") or "PLUGIN_ERROR"
-            self.diag_reason_lbl.setText(f"【错误码: {err_code}】 {err_msg}")
-            self.diag_advice_lbl.setText("建议操作: 检查输入参数格式、源文件有效性或依赖项是否完备后，点击右上角【修改参数并重新执行】。")
+            error_code = task_record.get("error_code") or data.get("error_code") or "PLUGIN_ERROR"
+            self.diag_reason_lbl.setText(f"【错误码: {error_code}】 {error_message}")
+            self.diag_advice_lbl.setText("建议操作: 检查输入参数、源文件和依赖后，修改参数并重新执行。")
+
+        elif status == "CANCELLED":
+            self.status_icon_lbl.setText("⏹️")
+            self.status_main_text.setText("任务已取消 (CANCELLED)")
+            self._apply_style_id(self.status_main_text, "statusCancelled")
+            self.status_sub_text.setText(result_dict.get("message") or "任务未继续执行；已落盘内容仍可查看。")
+            self._apply_style_id(self.status_banner, "statusBannerCancelled")
 
         elif status == "ABANDONED":
             self.status_icon_lbl.setText("⚠️")
@@ -2309,82 +2708,110 @@ class TaskResultDetailView(QtWidgets.QWidget):
             self._apply_style_id(self.status_main_text, "statusAbandoned")
             self.status_sub_text.setText("任务宿主进程非正常退出或超时中断。")
             self._apply_style_id(self.status_banner, "statusBannerAbandoned")
-
             self.diagnostic_box.setVisible(True)
-            self.diag_reason_lbl.setText(f"【错误码: {task_record.get('error_code') or 'HOST_INTERRUPTED'}】 进程执行中断")
-            self.diag_advice_lbl.setText("建议操作: 查看日志确定插件是否因内存不足、超时或崩溃退出，随后重试。")
-
-        elif status == "CANCELLED":
-            self.status_icon_lbl.setText("⏹️")
-            self.status_main_text.setText("任务已取消 (CANCELLED)")
-            self._apply_style_id(self.status_main_text, "statusCancelled")
-            self.status_sub_text.setText("用户已取消该任务执行。")
-            self._apply_style_id(self.status_banner, "statusBannerCancelled")
+            self.diag_reason_lbl.setText(
+                f"【错误码: {task_record.get('error_code') or 'HOST_INTERRUPTED'}】进程执行中断"
+            )
+            self.diag_advice_lbl.setText("建议操作: 查看日志确认超时、崩溃或资源问题后再重试。")
 
         else:
             self.status_icon_lbl.setText("❓")
-            self.status_main_text.setText(f"状态: {status}")
-            self.status_sub_text.setText(result_dict.get("message") or "")
+            self.status_main_text.setText(f"未知 Runtime 状态: {status}")
+            self._apply_style_id(self.status_main_text, "statusFailed")
+            self.status_sub_text.setText(result_dict.get("message") or "Runtime 返回了当前 GUI 不识别的状态。")
+            self._apply_style_id(self.status_banner, "statusBannerFailed")
+            self.diagnostic_box.setVisible(True)
+            self.diag_reason_lbl.setText(f"【UNKNOWN_TASK_STATUS】{status}")
+            self.diag_advice_lbl.setText("建议操作: 查看 Runtime 与 GUI 版本是否一致。")
 
-    def _render_files_table(self, task_id: str, files: list[str]):
+        if result_missing and status != "FAILED":
+            self.diagnostic_box.setVisible(True)
+            detail = f": {result_read_error}" if result_read_error else ""
+            self.diag_reason_lbl.setText(f"【RESULT_NOT_FOUND】result.json 不存在或无法读取{detail}")
+            self.diag_advice_lbl.setText("建议操作: 打开工作区检查任务证据；不要将此展示问题视为新的 Runtime 状态。")
+
+    def _render_files_table(self, task_id: str, files: list[str]) -> list[str]:
         self.files_table.setRowCount(0)
+        self.files_empty_lbl.setText("本任务未产生输出文件。")
         self.current_files = list(files)
         if not files:
             self.files_table.setVisible(False)
             self.files_empty_lbl.setVisible(True)
             self.files_count_lbl.setText("共 0 个产物文件")
             self.btn_export_zip.setVisible(False)
-            return
+            return []
 
         self.files_table.setVisible(True)
         self.files_empty_lbl.setVisible(False)
         self.files_count_lbl.setText(f"共 {len(files)} 个产物文件")
-        # 始终提供或在有产物时提供一键 ZIP 打包下载入口
         self.btn_export_zip.setVisible(True)
         self.files_table.setRowCount(len(files))
 
         workspace_path = self.current_task_info.get("workspace_path")
+        output_root = (Path(workspace_path) / "output").resolve() if workspace_path else None
+        missing_outputs: list[str] = []
 
         for row, rel_path in enumerate(files):
+            rel_path = str(rel_path)
             file_name = Path(rel_path).name
-            full_file_path = Path(workspace_path) / "output" / rel_path if workspace_path else None
+            full_file_path: Path | None = None
+            if output_root is not None:
+                candidate = (output_root / rel_path).resolve()
+                try:
+                    candidate.relative_to(output_root)
+                except ValueError:
+                    candidate = None
+                full_file_path = candidate
+            file_exists = bool(full_file_path and full_file_path.is_file())
+            if not file_exists:
+                missing_outputs.append(rel_path)
 
-            # 1. 文件名
             name_item = QtWidgets.QTableWidgetItem(f"📄 {file_name}")
             name_item.setToolTip(rel_path)
             self.files_table.setItem(row, 0, name_item)
+            self.files_table.setItem(row, 1, QtWidgets.QTableWidgetItem(rel_path))
 
-            # 2. 相对路径
-            path_item = QtWidgets.QTableWidgetItem(rel_path)
-            self.files_table.setItem(row, 1, path_item)
+            if file_exists and full_file_path is not None:
+                size_kb = full_file_path.stat().st_size / 1024.0
+                size_text = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{(size_kb / 1024):.2f} MB"
+            else:
+                size_text = "文件缺失"
+            self.files_table.setItem(row, 2, QtWidgets.QTableWidgetItem(size_text))
 
-            # 3. 大小
-            size_str = "-"
-            if full_file_path and full_file_path.exists():
-                sz = full_file_path.stat().st_size / 1024.0
-                size_str = f"{sz:.1f} KB" if sz < 1024 else f"{(sz/1024):.2f} MB"
-            size_item = QtWidgets.QTableWidgetItem(size_str)
-            self.files_table.setItem(row, 2, size_item)
-
-            # 4. 操作按钮栏 (导出产物 / 标注图片)
             actions_widget = QtWidgets.QWidget()
-            act_layout = QtWidgets.QHBoxLayout(actions_widget)
-            act_layout.setContentsMargins(4, 2, 4, 2)
-            act_layout.setSpacing(6)
+            actions_layout = QtWidgets.QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(4, 2, 4, 2)
+            actions_layout.setSpacing(6)
 
             export_btn = QtWidgets.QPushButton("💾 导出...")
             export_btn.setObjectName("smallButton")
-            export_btn.clicked.connect(lambda _, rp=rel_path, fn=file_name: self._export_single_file(task_id, rp, fn))
-            act_layout.addWidget(export_btn)
+            export_btn.setEnabled(file_exists)
+            if not file_exists:
+                export_btn.setToolTip("已声明的产物文件不存在，无法导出。")
+            export_btn.clicked.connect(
+                lambda _, rp=rel_path, fn=file_name: self._export_single_file(task_id, rp, fn)
+            )
+            actions_layout.addWidget(export_btn)
 
-            # 如果是图片，提供标注入口
             if file_name.lower().endswith((".png", ".jpg", ".jpeg")):
-                annot_btn = QtWidgets.QPushButton("✏️ 标注")
-                annot_btn.setObjectName("smallButton")
-                annot_btn.clicked.connect(lambda _, fp=str(full_file_path): self.openAnnotation.emit(fp))
-                act_layout.addWidget(annot_btn)
+                annotation_btn = QtWidgets.QPushButton("✏️ 标注")
+                annotation_btn.setObjectName("smallButton")
+                annotation_btn.setEnabled(file_exists)
+                annotation_path = str(full_file_path) if full_file_path else ""
+                annotation_btn.clicked.connect(
+                    lambda _, fp=annotation_path: self.openAnnotation.emit(fp)
+                )
+                actions_layout.addWidget(annotation_btn)
 
             self.files_table.setCellWidget(row, 3, actions_widget)
+
+        status = str(self.current_task_info.get("status") or "").upper()
+        self.btn_export_zip.setEnabled(status == "SUCCEEDED" and not missing_outputs)
+        if missing_outputs:
+            self.btn_export_zip.setToolTip("部分声明产物已缺失，不能打包导出。")
+        else:
+            self.btn_export_zip.setToolTip("将任务所有产物打包为 ZIP 格式导出，保持目录层级结构一致")
+        return missing_outputs
 
     def _export_single_file(self, task_id: str, rel_path: str, filename: str):
         """调用 Runtime.commit_output 导出文件到用户选定路径，绝不在 UI 中私自复制"""
@@ -2394,6 +2821,12 @@ class TaskResultDetailView(QtWidgets.QWidget):
         try:
             self.runtime.commit_output(task_id, rel_path, Path(dest_path))
             QtWidgets.QMessageBox.information(self, "导出成功", f"文件已成功导出至:\n{dest_path}")
+        except PermissionError as error:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有导出权限",
+                f"目标位置不可写，请选择其他目录或调整系统权限后重试。\n{error}",
+            )
         except Exception as error:
             QtWidgets.QMessageBox.critical(self, "导出失败", f"导出文件时发生异常:\n{error}")
 
@@ -2415,6 +2848,12 @@ class TaskResultDetailView(QtWidgets.QWidget):
         try:
             self.runtime.commit_outputs_archive(task_id, Path(dest_path))
             QtWidgets.QMessageBox.information(self, "导出成功", f"所有产物已成功打包导出至:\n{dest_path}")
+        except PermissionError as error:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "没有导出权限",
+                f"目标位置不可写，请选择其他目录或调整系统权限后重试。\n{error}",
+            )
         except Exception as error:
             QtWidgets.QMessageBox.critical(self, "导出失败", f"打包导出产物时发生异常:\n{error}")
 
@@ -2430,12 +2869,9 @@ class TaskResultDetailView(QtWidgets.QWidget):
 # ==============================================================================
 
 class TaskHistoryView(QtWidgets.QWidget):
-    """
-    任务历史页面：
-    支持状态筛选、命令筛选、分页查询、任务 ID 搜索、一键查看详情。
-    严格通过 Runtime.list_tasks 与 Runtime.count_tasks 访问，绝不直连 SQLite！
-    """
-    taskSelected = QtCore.Signal(str)  # task_id
+    """Runtime-driven task history with explicit loading, empty, and error states."""
+
+    taskSelected = QtCore.Signal(str)
     reExecuteRequested = QtCore.Signal(str, dict)
 
     def __init__(self, runtime: Runtime, parent=None):
@@ -2451,7 +2887,6 @@ class TaskHistoryView(QtWidgets.QWidget):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(14)
 
-        # 头部标题
         header = QtWidgets.QHBoxLayout()
         title_box = QtWidgets.QVBoxLayout()
         title_lbl = QtWidgets.QLabel("任务历史")
@@ -2465,7 +2900,7 @@ class TaskHistoryView(QtWidgets.QWidget):
 
         clean_history_btn = QtWidgets.QPushButton("🧹 清理工作区")
         clean_history_btn.setObjectName("secondaryButton")
-        clean_history_btn.setToolTip("清理历史任务工作区文件，释放磁盘空间")
+        clean_history_btn.setToolTip("按日期清理任务工作区；删除审计记录需要单独勾选和确认")
         clean_history_btn.clicked.connect(self._on_clean_workspace)
         header.addWidget(clean_history_btn)
 
@@ -2475,7 +2910,6 @@ class TaskHistoryView(QtWidgets.QWidget):
         header.addWidget(refresh_btn)
         layout.addLayout(header)
 
-        # 筛选工具栏
         filter_bar = QtWidgets.QHBoxLayout()
         filter_bar.setSpacing(10)
 
@@ -2486,10 +2920,12 @@ class TaskHistoryView(QtWidgets.QWidget):
 
         self.status_combo = QtWidgets.QComboBox()
         self.status_combo.addItem("全部状态", None)
+        self.status_combo.addItem("⏳ 排队中（PENDING）", "PENDING")
+        self.status_combo.addItem("▶️ 运行中（RUNNING）", "RUNNING")
         self.status_combo.addItem("✅ 成功（SUCCEEDED）", "SUCCEEDED")
         self.status_combo.addItem("❌ 失败（FAILED）", "FAILED")
-        self.status_combo.addItem("⚠️ 异常中断（ABANDONED）", "ABANDONED")
         self.status_combo.addItem("⏹️ 已取消（CANCELLED）", "CANCELLED")
+        self.status_combo.addItem("⚠️ 异常中断（ABANDONED）", "ABANDONED")
         self.status_combo.currentIndexChanged.connect(self._on_filter_changed)
         filter_bar.addWidget(self.status_combo, 1)
 
@@ -2498,50 +2934,123 @@ class TaskHistoryView(QtWidgets.QWidget):
         self.command_combo.currentIndexChanged.connect(self._on_filter_changed)
         filter_bar.addWidget(self.command_combo, 1)
 
+        self.time_combo = QtWidgets.QComboBox()
+        self.time_combo.addItem("全部时间", None)
+        self.time_combo.addItem("最近 24 小时", 1)
+        self.time_combo.addItem("最近 7 天", 7)
+        self.time_combo.addItem("最近 30 天", 30)
+        self.time_combo.currentIndexChanged.connect(self._on_filter_changed)
+        filter_bar.addWidget(self.time_combo, 1)
         layout.addLayout(filter_bar)
 
-        # 历史表格
-        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table = QtWidgets.QTableWidget(0, 9)
         self.table.verticalHeader().setVisible(False)
-        self.table.setHorizontalHeaderLabels(["任务 ID", "命令", "插件 / 版本", "状态", "开始时间", "操作"])
+        self.table.setHorizontalHeaderLabels(
+            ["任务 ID", "命令", "插件 / 版本", "状态", "开始时间", "耗时", "产物数", "完成时间", "操作"]
+        )
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        for column in range(self.table.columnCount()):
+            mode = QtWidgets.QHeaderView.ResizeMode.Stretch if column == 1 else QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            self.table.horizontalHeader().setSectionResizeMode(column, mode)
         self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        layout.addWidget(self.table, 1)
 
-        # 分页与底部信息栏
+        self.table_stack = QtWidgets.QStackedWidget()
+        self.loading_state_lbl = QtWidgets.QLabel("正在通过 Runtime 加载任务历史…")
+        self.loading_state_lbl.setObjectName("mutedText")
+        self.loading_state_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.table_stack.addWidget(self.loading_state_lbl)
+        self.table_stack.addWidget(self.table)
+
+        self.empty_state_lbl = QtWidgets.QLabel()
+        self.empty_state_lbl.setObjectName("mutedText")
+        self.empty_state_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.empty_state_lbl.setWordWrap(True)
+        self.table_stack.addWidget(self.empty_state_lbl)
+
+        error_page = QtWidgets.QWidget()
+        error_layout = QtWidgets.QVBoxLayout(error_page)
+        error_layout.addStretch()
+        self.error_state_lbl = QtWidgets.QLabel()
+        self.error_state_lbl.setObjectName("mutedText")
+        self.error_state_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.error_state_lbl.setWordWrap(True)
+        error_layout.addWidget(self.error_state_lbl)
+        retry_btn = QtWidgets.QPushButton("重试")
+        retry_btn.setObjectName("secondaryButton")
+        retry_btn.clicked.connect(self.refresh_data)
+        error_layout.addWidget(retry_btn, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        error_layout.addStretch()
+        self.table_stack.addWidget(error_page)
+        layout.addWidget(self.table_stack, 1)
+
         page_bar = QtWidgets.QHBoxLayout()
         page_bar.setSpacing(12)
-
         self.count_lbl = QtWidgets.QLabel("共 0 条任务记录")
         self.count_lbl.setObjectName("mutedText")
         page_bar.addWidget(self.count_lbl)
-
         page_bar.addStretch()
-
         self.btn_prev = QtWidgets.QPushButton("◀ 上一页")
         self.btn_prev.setObjectName("smallButton")
         self.btn_prev.clicked.connect(self._prev_page)
-
         self.page_lbl = QtWidgets.QLabel("第 1 页")
         self.page_lbl.setStyleSheet("font-weight: 600; color: #334155;")
-
         self.btn_next = QtWidgets.QPushButton("下一页 ▶")
         self.btn_next.setObjectName("smallButton")
         self.btn_next.clicked.connect(self._next_page)
-
         page_bar.addWidget(self.btn_prev)
         page_bar.addWidget(self.page_lbl)
         page_bar.addWidget(self.btn_next)
-
         layout.addLayout(page_bar)
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _format_timestamp(value: Any) -> str:
+        if not value:
+            return "-"
+        text = str(value).replace("T", " ")
+        if "." in text:
+            text = text.split(".", 1)[0]
+        return text
+
+    @classmethod
+    def _format_duration(cls, task: dict[str, Any]) -> str:
+        started = cls._parse_timestamp(task.get("started_at"))
+        finished = cls._parse_timestamp(task.get("finished_at"))
+        if started is None or finished is None:
+            return "-"
+        try:
+            seconds = max(0.0, (finished - started).total_seconds())
+        except TypeError:
+            return "-"
+        if seconds < 60:
+            return f"{seconds:.2f}s"
+        minutes, seconds = divmod(int(seconds), 60)
+        if minutes < 60:
+            return f"{minutes}m {seconds}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m"
+
+    @staticmethod
+    def _status_label(status: str) -> str:
+        labels = {
+            "PENDING": "排队中（PENDING）",
+            "RUNNING": "运行中（RUNNING）",
+            "SUCCEEDED": "成功（SUCCEEDED）",
+            "FAILED": "失败（FAILED）",
+            "CANCELLED": "已取消（CANCELLED）",
+            "ABANDONED": "异常中断（ABANDONED）",
+        }
+        return labels.get(status, status or "未知")
 
     def populate_command_filter(self):
         current_cmd = self.command_combo.currentData()
@@ -2571,84 +3080,119 @@ class TaskHistoryView(QtWidgets.QWidget):
             self.refresh_data()
 
     def refresh_data(self):
-        self.populate_command_filter()
-
-        status = self.status_combo.currentData()
-        command = self.command_combo.currentData()
-        offset = self.current_page * self.page_size
+        self.table_stack.setCurrentIndex(0)
+        self.count_lbl.setText("正在加载…")
+        self.btn_prev.setEnabled(False)
+        self.btn_next.setEnabled(False)
 
         try:
-            # 严格调用 Runtime.list_tasks 与 count_tasks
-            tasks = self.runtime.list_tasks(status=status, command=command, limit=self.page_size, offset=offset)
-            self.total_count = self.runtime.count_tasks(status=status, command=command)
+            self.populate_command_filter()
+            status = self.status_combo.currentData()
+            command = self.command_combo.currentData()
+            query = self.search_input.text().strip()
+            days = self.time_combo.currentData()
+            has_filter = bool(query or status or command or days)
+            started_from = (datetime.now(UTC) - timedelta(days=days)).isoformat() if days else None
+            filters = {
+                "status": status,
+                "command": command,
+                "task_id_query": query or None,
+                "started_from": started_from,
+            }
+            self.total_count = self.runtime.count_tasks(**filters)
+            max_page = max(1, (self.total_count + self.page_size - 1) // self.page_size)
+            if self.current_page >= max_page:
+                self.current_page = max_page - 1
+            offset = self.current_page * self.page_size
+            tasks = self.runtime.list_tasks(
+                **filters,
+                limit=self.page_size,
+                offset=offset,
+            )
         except Exception as error:
-            QtWidgets.QMessageBox.critical(self, "加载任务历史失败", f"调用 Runtime 获取任务异常:\n{error}")
+            self.table.setRowCount(0)
+            self.error_state_lbl.setText(
+                "任务历史读取失败。Runtime 数据未被修改，也不会自动删除数据库。\n"
+                f"请重试或打开“插件与诊断”查看运行路径。\n\n{error}"
+            )
+            self.table_stack.setCurrentIndex(3)
+            self.count_lbl.setText("任务历史读取失败")
+            self.page_lbl.setText("第 - 页")
             return
-
-        # 客户端过滤任务 ID 搜索词
-        query = self.search_input.text().strip().lower()
-        if query:
-            tasks = [t for t in tasks if query in t.get("id", "").lower()]
 
         self.table.setRowCount(len(tasks))
         for row, task in enumerate(tasks):
-            t_id = task.get("id", "")
-            cmd = task.get("command", "")
-            p_name = task.get("plugin_name", "")
-            p_ver = task.get("plugin_version", "")
-            t_status = task.get("status", "").upper()
-            started_at = task.get("started_at", "")
+            self._render_task_row(row, task)
 
-            # 1. 任务 ID
-            id_item = QtWidgets.QTableWidgetItem(t_id)
-            id_item.setFont(QtGui.QFont("monospace", 11))
-            self.table.setItem(row, 0, id_item)
-
-            # 2. 命令
-            cmd_item = QtWidgets.QTableWidgetItem(cmd)
-            self.table.setItem(row, 1, cmd_item)
-
-            # 3. 插件
-            plugin_item = QtWidgets.QTableWidgetItem(f"{p_name} v{p_ver}")
-            self.table.setItem(row, 2, plugin_item)
-
-            # 4. 状态
-            status_labels = {"SUCCEEDED": "成功（SUCCEEDED）", "FAILED": "失败（FAILED）", "ABANDONED": "异常中断（ABANDONED）", "CANCELLED": "已取消（CANCELLED）", "RUNNING": "运行中（RUNNING）", "PENDING": "排队中（PENDING）"}
-            status_item = QtWidgets.QTableWidgetItem(status_labels.get(t_status, t_status))
-            if t_status == "SUCCEEDED":
-                status_item.setForeground(QtGui.QColor("#10b981"))
-            elif t_status == "FAILED":
-                status_item.setForeground(QtGui.QColor("#ef4444"))
-            elif t_status == "ABANDONED":
-                status_item.setForeground(QtGui.QColor("#ea580c"))
+        if tasks:
+            self.table_stack.setCurrentIndex(1)
+        else:
+            if has_filter:
+                self.empty_state_lbl.setText("当前筛选条件没有结果。\n可清除任务 ID、状态、命令或时间筛选后重试。")
             else:
-                status_item.setForeground(QtGui.QColor("#64748b"))
-            self.table.setItem(row, 3, status_item)
+                self.empty_state_lbl.setText("暂无任务历史。\n任务执行后，Runtime 会在这里保留审计记录和结果入口。")
+            self.table_stack.setCurrentIndex(2)
 
-            # 5. 启动时间
-            started_str = started_at.replace("T", " ").split(".")[0] if started_at else "-"
-            start_item = QtWidgets.QTableWidgetItem(started_str)
-            self.table.setItem(row, 4, start_item)
-
-            # 6. 操作栏
-            action_widget = QtWidgets.QWidget()
-            a_layout = QtWidgets.QHBoxLayout(action_widget)
-            a_layout.setContentsMargins(4, 2, 4, 2)
-            a_layout.setSpacing(6)
-
-            view_btn = QtWidgets.QPushButton("查看详情")
-            view_btn.setObjectName("smallButton")
-            view_btn.clicked.connect(lambda _, tid=t_id: self.taskSelected.emit(tid))
-            a_layout.addWidget(view_btn)
-
-            self.table.setCellWidget(row, 5, action_widget)
-
-        # 分页状态更新
         max_page = max(1, (self.total_count + self.page_size - 1) // self.page_size)
         self.page_lbl.setText(f"第 {self.current_page + 1} / {max_page} 页")
         self.count_lbl.setText(f"共 {self.total_count} 条记录")
         self.btn_prev.setEnabled(self.current_page > 0)
         self.btn_next.setEnabled((self.current_page + 1) * self.page_size < self.total_count)
+
+    def _render_task_row(self, row: int, task: dict[str, Any]):
+        task_id = str(task.get("id", ""))
+        command = str(task.get("command", ""))
+        plugin_name = str(task.get("plugin_name", ""))
+        plugin_version = str(task.get("plugin_version", ""))
+        status = str(task.get("status", "")).upper()
+
+        id_item = QtWidgets.QTableWidgetItem(task_id)
+        id_item.setFont(QtGui.QFont("monospace", 11))
+        self.table.setItem(row, 0, id_item)
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(command))
+        plugin_text = plugin_name if not plugin_version else f"{plugin_name} v{plugin_version}"
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(plugin_text))
+
+        status_item = QtWidgets.QTableWidgetItem(self._status_label(status))
+        color = {
+            "SUCCEEDED": "#10b981",
+            "FAILED": "#ef4444",
+            "ABANDONED": "#ea580c",
+            "RUNNING": "#2563eb",
+            "PENDING": "#7c3aed",
+        }.get(status, "#64748b")
+        status_item.setForeground(QtGui.QColor(color))
+        self.table.setItem(row, 3, status_item)
+        self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(self._format_timestamp(task.get("started_at"))))
+        self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(self._format_duration(task)))
+
+        output_count = "-"
+        try:
+            result = self.runtime.get_task_result(task_id)
+            if result is not None and isinstance(result.get("files"), list):
+                output_count = str(len(result["files"]))
+        except (OSError, ValueError, TypeError):
+            output_count = "-"
+        self.table.setItem(row, 6, QtWidgets.QTableWidgetItem(output_count))
+        self.table.setItem(row, 7, QtWidgets.QTableWidgetItem(self._format_timestamp(task.get("finished_at"))))
+
+        action_widget = QtWidgets.QWidget()
+        actions = QtWidgets.QHBoxLayout(action_widget)
+        actions.setContentsMargins(4, 2, 4, 2)
+        actions.setSpacing(6)
+        view_btn = QtWidgets.QPushButton("查看详情")
+        view_btn.setObjectName("smallButton")
+        view_btn.clicked.connect(lambda _, tid=task_id: self.taskSelected.emit(tid))
+        actions.addWidget(view_btn)
+        reopen_btn = QtWidgets.QPushButton("打开配置")
+        reopen_btn.setObjectName("smallButton")
+        reopen_btn.setToolTip("仅将历史参数回填到命令工作台，不会自动提交执行")
+        params = dict(task.get("params") or {})
+        reopen_btn.clicked.connect(
+            lambda _, cmd=command, values=params: self.reExecuteRequested.emit(cmd, dict(values))
+        )
+        actions.addWidget(reopen_btn)
+        self.table.setCellWidget(row, 8, action_widget)
 
     def _on_cell_double_clicked(self, row: int, col: int):
         id_item = self.table.item(row, 0)
@@ -2656,24 +3200,24 @@ class TaskHistoryView(QtWidgets.QWidget):
             self.taskSelected.emit(id_item.text())
 
     def _on_clean_workspace(self):
-        """弹出工作区清理对话框，支持按日期清理指定日期之前的过期任务工作区与历史记录"""
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("清理历史工作区与记录")
-        dialog.setMinimumWidth(400)
-
+        dialog.setWindowTitle("清理任务工作区")
+        dialog.setMinimumWidth(440)
         d_layout = QtWidgets.QVBoxLayout(dialog)
         d_layout.setContentsMargins(20, 20, 20, 20)
         d_layout.setSpacing(14)
 
-        desc_lbl = QtWidgets.QLabel("选择清理截止日期：\n将永久删除该日期之前所有任务生成的临时工作区目录与文件。")
+        desc_lbl = QtWidgets.QLabel(
+            "选择截止日期。默认仅删除该日期之前的任务工作区文件；"
+            "历史审计记录会保留，除非单独勾选删除。"
+        )
         desc_lbl.setWordWrap(True)
         d_layout.addWidget(desc_lbl)
 
         date_row = QtWidgets.QHBoxLayout()
-        date_lbl = QtWidgets.QLabel("清理此日期之前:")
+        date_lbl = QtWidgets.QLabel("清理此本地日期零点之前:")
         date_lbl.setStyleSheet("font-weight: 600;")
         date_row.addWidget(date_lbl)
-
         date_edit = QtWidgets.QDateEdit()
         date_edit.setCalendarPopup(True)
         date_edit.setDate(QtCore.QDate.currentDate())
@@ -2681,41 +3225,52 @@ class TaskHistoryView(QtWidgets.QWidget):
         date_row.addStretch()
         d_layout.addLayout(date_row)
 
-        clean_history_check = QtWidgets.QCheckBox("同时清除历史任务记录 (SQLite 任务日志)")
-        clean_history_check.setChecked(True)
-        clean_history_check.setToolTip("勾选后将同步从 SQLite 数据库中清除所选日期之前的任务记录")
+        clean_history_check = QtWidgets.QCheckBox("同时永久删除对应历史审计记录")
+        clean_history_check.setChecked(False)
+        clean_history_check.setToolTip("高影响操作：删除后任务将不再出现在历史列表中")
         d_layout.addWidget(clean_history_check)
 
         btn_box = QtWidgets.QHBoxLayout()
         btn_box.addStretch()
-
         btn_cancel = QtWidgets.QPushButton("取消")
         btn_cancel.setObjectName("secondaryButton")
         btn_cancel.clicked.connect(dialog.reject)
         btn_box.addWidget(btn_cancel)
-
-        btn_confirm = QtWidgets.QPushButton("🧹 确认清理")
+        btn_confirm = QtWidgets.QPushButton("继续确认")
         btn_confirm.setObjectName("primaryButton")
 
         def _do_clean():
             qdate = date_edit.date()
             target_date = date(qdate.year(), qdate.month(), qdate.day())
+            delete_history = clean_history_check.isChecked()
+            impact = f"永久删除本地时间 {target_date.isoformat()} 00:00 之前的任务工作区文件。"
+            if delete_history:
+                impact += "\n同时永久删除对应历史审计记录。"
+            else:
+                impact += "\n历史审计记录将保留。"
+            reply = QtWidgets.QMessageBox.question(
+                dialog,
+                "最终确认清理范围",
+                impact + "\n\n是否继续？",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
             dialog.accept()
             try:
                 cleaned_count = self.runtime.clean_workspace(target_date)
-                msg = f"已成功清理 {cleaned_count} 个 {target_date.isoformat()} 之前的工作区产物。"
-                if clean_history_check.isChecked():
+                message = f"已清理 {cleaned_count} 个工作区。"
+                if delete_history:
                     history_cleaned = self.runtime.clean_history(target_date)
-                    msg += f"\n并已从 SQLite 数据库清除了 {history_cleaned} 条历史任务记录。"
-                QtWidgets.QMessageBox.information(self, "清理完成", msg)
+                    message += f"\n已删除 {history_cleaned} 条历史审计记录。"
+                QtWidgets.QMessageBox.information(self, "清理完成", message)
                 self.refresh_data()
             except Exception as error:
-                QtWidgets.QMessageBox.critical(self, "清理失败", f"清理过程中发生异常:\n{error}")
+                QtWidgets.QMessageBox.critical(self, "清理失败", f"Runtime 清理过程中发生异常:\n{error}")
 
         btn_confirm.clicked.connect(_do_clean)
         btn_box.addWidget(btn_confirm)
         d_layout.addLayout(btn_box)
-
         dialog.exec()
 
 
@@ -2724,11 +3279,8 @@ class TaskHistoryView(QtWidgets.QWidget):
 # ==============================================================================
 
 class PluginDiagnosticsView(QtWidgets.QWidget):
-    """
-    插件诊断与工作区清理页面：
-    展示所有发现的插件元数据、命令索引、能力声明、工作区维护工具。
-    插件导入/卸载和工作区维护均通过 Runtime 完成，GUI 不复制插件包业务逻辑。
-    """
+    """Read-only plugin and Runtime diagnostics plus separately confirmed mutations."""
+
     def __init__(self, runtime: Runtime, parent=None):
         super().__init__(parent)
         self.runtime = runtime
@@ -2739,12 +3291,11 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(16)
 
-        # 标题
         header = QtWidgets.QHBoxLayout()
         title_box = QtWidgets.QVBoxLayout()
         title_lbl = QtWidgets.QLabel("插件诊断与状态")
         title_lbl.setObjectName("pageTitle")
-        sub_lbl = QtWidgets.QLabel("检查已加载插件，并从本机导入或卸载用户插件")
+        sub_lbl = QtWidgets.QLabel("分区查看可用插件、不可用插件与 Runtime 只读诊断")
         sub_lbl.setObjectName("mutedText")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -2753,7 +3304,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 
         self.import_btn = QtWidgets.QPushButton("📥 导入插件")
         self.import_btn.setObjectName("primaryButton")
-        self.import_btn.setToolTip("从 ZIP 插件包导入到当前用户配置目录")
+        self.import_btn.setToolTip("先由 Runtime 校验并预览 ZIP，再确认安装或覆盖")
         self.import_btn.clicked.connect(self._on_import_plugin)
         header.addWidget(self.import_btn)
 
@@ -2769,104 +3320,176 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         header.addWidget(refresh_btn)
         layout.addLayout(header)
 
-        # 插件诊断表格
-        self.plugins_table = QtWidgets.QTableWidget(0, 6)
+        available_group = QtWidgets.QGroupBox("可用插件")
+        available_layout = QtWidgets.QVBoxLayout(available_group)
+        self.plugins_table = QtWidgets.QTableWidget(0, 7)
         self.plugins_table.verticalHeader().setVisible(False)
-        self.plugins_table.setHorizontalHeaderLabels(["插件名称", "版本", "分类", "命令列表", "并发支持", "隔离能力"])
-        self.plugins_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.plugins_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.plugins_table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.plugins_table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.plugins_table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.plugins_table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.plugins_table.setHorizontalHeaderLabels(
+            ["插件名称", "版本", "分类", "命令列表", "能力", "Core 兼容", "路径"]
+        )
+        for column in range(self.plugins_table.columnCount()):
+            mode = QtWidgets.QHeaderView.ResizeMode.Stretch if column in {3, 6} else QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            self.plugins_table.horizontalHeader().setSectionResizeMode(column, mode)
         self.plugins_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.plugins_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.plugins_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.plugins_table.itemSelectionChanged.connect(self._on_plugin_selection_changed)
-        layout.addWidget(self.plugins_table, 1)
 
-        # 工作区维护工具箱
-        clean_box = QtWidgets.QGroupBox("工作区维护与清理")
+        self.available_stack = QtWidgets.QStackedWidget()
+        available_loading = QtWidgets.QLabel("正在通过 Runtime 扫描插件…")
+        available_loading.setObjectName("mutedText")
+        available_loading.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.available_stack.addWidget(available_loading)
+        self.available_stack.addWidget(self.plugins_table)
+        self.available_empty = QtWidgets.QLabel("没有发现可用插件。请检查插件目录或下方问题列表。")
+        self.available_empty.setObjectName("mutedText")
+        self.available_empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.available_empty.setWordWrap(True)
+        self.available_stack.addWidget(self.available_empty)
+        self.available_error = QtWidgets.QLabel()
+        self.available_error.setObjectName("mutedText")
+        self.available_error.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.available_error.setWordWrap(True)
+        self.available_stack.addWidget(self.available_error)
+        available_layout.addWidget(self.available_stack)
+        layout.addWidget(available_group, 2)
+
+        unavailable_group = QtWidgets.QGroupBox("不可用插件与 Schema / 兼容性问题")
+        unavailable_layout = QtWidgets.QVBoxLayout(unavailable_group)
+        self.unavailable_table = QtWidgets.QTableWidget(0, 2)
+        self.unavailable_table.verticalHeader().setVisible(False)
+        self.unavailable_table.setHorizontalHeaderLabels(["插件路径", "具体原因"])
+        self.unavailable_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.unavailable_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.unavailable_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.unavailable_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.unavailable_stack = QtWidgets.QStackedWidget()
+        self.unavailable_stack.addWidget(self.unavailable_table)
+        unavailable_empty = QtWidgets.QLabel("未发现 manifest、Schema 或兼容性问题。")
+        unavailable_empty.setObjectName("mutedText")
+        unavailable_empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.unavailable_stack.addWidget(unavailable_empty)
+        unavailable_layout.addWidget(self.unavailable_stack)
+        layout.addWidget(unavailable_group, 1)
+
+        diagnostics_group = QtWidgets.QGroupBox("Runtime 只读诊断")
+        diagnostics_layout = QtWidgets.QFormLayout(diagnostics_group)
+        diagnostics_layout.setContentsMargins(14, 14, 14, 14)
+        self.runtime_diagnostic_labels: dict[str, QtWidgets.QLabel] = {}
+        diagnostic_rows = [
+            ("version", "TestBox 版本"),
+            ("runtime_root", "Runtime 根路径"),
+            ("workspace_dir", "任务工作区"),
+            ("plugins_dir", "用户插件目录"),
+            ("bundled_plugins_dir", "内置插件目录"),
+            ("host_protocol", "Host 协议"),
+        ]
+        for key, caption in diagnostic_rows:
+            value_lbl = QtWidgets.QLabel("-")
+            value_lbl.setObjectName("mutedText")
+            value_lbl.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+            value_lbl.setWordWrap(True)
+            diagnostics_layout.addRow(f"{caption}:", value_lbl)
+            self.runtime_diagnostic_labels[key] = value_lbl
+        boundary_note = QtWidgets.QLabel(
+            "Plugin Host 提供进程级异常隔离，不是恶意代码安全沙箱；本地插件仍按可信代码处理。"
+        )
+        boundary_note.setWordWrap(True)
+        boundary_note.setObjectName("mutedText")
+        diagnostics_layout.addRow("隔离边界:", boundary_note)
+        layout.addWidget(diagnostics_group)
+
+        clean_box = QtWidgets.QGroupBox("高影响操作：工作区清理")
         clean_layout = QtWidgets.QHBoxLayout(clean_box)
         clean_layout.setContentsMargins(16, 16, 16, 16)
         clean_layout.setSpacing(12)
-
-        clean_lbl = QtWidgets.QLabel("清理历史工作区:")
-        clean_lbl.setStyleSheet("font-weight: 600;")
-        clean_layout.addWidget(clean_lbl)
-
+        clean_layout.addWidget(QtWidgets.QLabel("清理此本地日期零点之前的任务工作区:"))
         self.date_picker = QtWidgets.QDateEdit()
         self.date_picker.setCalendarPopup(True)
         self.date_picker.setDate(QtCore.QDate.currentDate())
         clean_layout.addWidget(self.date_picker)
-
-        clean_desc = QtWidgets.QLabel("之前的所有任务工作区目录")
-        clean_desc.setObjectName("mutedText")
-        clean_layout.addWidget(clean_desc)
-
         clean_layout.addStretch()
-
         self.btn_clean = QtWidgets.QPushButton("🧹 执行清理")
         self.btn_clean.setObjectName("secondaryButton")
         self.btn_clean.clicked.connect(self._on_clean_workspace)
         clean_layout.addWidget(self.btn_clean)
-
         layout.addWidget(clean_box)
-
-        plugin_path_lbl = QtWidgets.QLabel(f"用户插件目录：{self.runtime.plugins_dir}")
-        plugin_path_lbl.setObjectName("mutedText")
-        plugin_path_lbl.setWordWrap(True)
-        layout.addWidget(plugin_path_lbl)
 
         self.refresh_plugins()
 
     def refresh_plugins(self):
+        self.available_stack.setCurrentIndex(0)
+        self.uninstall_btn.setEnabled(False)
         try:
             plugins = self.runtime.list_plugins()
+            unavailable = self.runtime.list_unavailable_plugins()
+            runtime_info = self.runtime.get_runtime_diagnostics()
+            schema_issues: list[dict[str, str]] = []
+            for plugin in plugins:
+                for command in plugin.commands:
+                    try:
+                        self.runtime.get_command_schema(command.name)
+                    except Exception as error:
+                        schema_issues.append(
+                            {
+                                "path": str(plugin.path),
+                                "reason": f"Schema {command.input_schema or command.name}: {error}",
+                            }
+                        )
+            unavailable = [*unavailable, *schema_issues]
         except Exception as error:
-            QtWidgets.QMessageBox.critical(self, "读取插件失败", f"Runtime list_plugins 异常:\n{error}")
+            self.plugins_table.setRowCount(0)
+            self.unavailable_table.setRowCount(0)
+            self.available_error.setText(
+                "插件诊断读取失败。Runtime 和插件目录未被修改。\n"
+                f"请修正问题后重新扫描。\n\n{error}"
+            )
+            self.available_stack.setCurrentIndex(3)
+            self.unavailable_stack.setCurrentIndex(1)
             return
 
         self.plugins_table.setRowCount(len(plugins))
-        for row, p in enumerate(plugins):
-            # 1. 名称
-            name_item = QtWidgets.QTableWidgetItem(f"📦 {p.name}")
-            name_item.setData(QtCore.Qt.ItemDataRole.UserRole, p.name)
+        for row, plugin in enumerate(plugins):
+            details = self.runtime.inspect_plugin(plugin.name) or {}
+            name_item = QtWidgets.QTableWidgetItem(f"📦 {plugin.name}")
+            name_item.setData(QtCore.Qt.ItemDataRole.UserRole, details)
             self.plugins_table.setItem(row, 0, name_item)
+            self.plugins_table.setItem(row, 1, QtWidgets.QTableWidgetItem(plugin.version))
+            category = f"{CATEGORY_LABELS.get(plugin.category, plugin.category)}（{plugin.category.upper()}）"
+            self.plugins_table.setItem(row, 2, QtWidgets.QTableWidgetItem(category))
+            command_names = [command.name for command in plugin.commands]
+            self.plugins_table.setItem(row, 3, QtWidgets.QTableWidgetItem(", ".join(command_names)))
+            capabilities = plugin.capabilities or {}
+            capability_text = ", ".join(f"{key}={value}" for key, value in sorted(capabilities.items())) or "-"
+            self.plugins_table.setItem(row, 4, QtWidgets.QTableWidgetItem(capability_text))
+            self.plugins_table.setItem(row, 5, QtWidgets.QTableWidgetItem(plugin.core_compatibility))
+            self.plugins_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(details.get("path", plugin.path))))
+        self.available_stack.setCurrentIndex(1 if plugins else 2)
 
-            # 2. 版本
-            ver_item = QtWidgets.QTableWidgetItem(p.version)
-            self.plugins_table.setItem(row, 1, ver_item)
+        self.unavailable_table.setRowCount(len(unavailable))
+        for row, item in enumerate(unavailable):
+            self.unavailable_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(item.get("path", "-"))))
+            self.unavailable_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(item.get("reason", "未知原因"))))
+        self.unavailable_stack.setCurrentIndex(0 if unavailable else 1)
 
-            # 3. 分类
-            cat_item = QtWidgets.QTableWidgetItem(f"{CATEGORY_LABELS.get(p.category, p.category)}（{p.category.upper()}）")
-            self.plugins_table.setItem(row, 2, cat_item)
+        for key, label in self.runtime_diagnostic_labels.items():
+            label.setText(str(runtime_info.get(key, "-")))
 
-            # 4. 命令列表
-            cmd_names = [c.name for c in p.commands]
-            cmds_item = QtWidgets.QTableWidgetItem(", ".join(cmd_names))
-            self.plugins_table.setItem(row, 3, cmds_item)
-
-            # 5. 并发
-            caps = p.capabilities or {}
-            conc_str = "✅ 支持" if caps.get("concurrency", True) else "🔒 串行"
-            conc_item = QtWidgets.QTableWidgetItem(conc_str)
-            self.plugins_table.setItem(row, 4, conc_item)
-
-            # 6. 文件系统
-            fs_str = caps.get("filesystem", "output-only")
-            fs_item = QtWidgets.QTableWidgetItem({"output-only": "仅输出目录（output-only）", "none": "不写入文件（none）"}.get(fs_str, str(fs_str)))
-            self.plugins_table.setItem(row, 5, fs_item)
-
-    def _on_plugin_selection_changed(self):
+    def _selected_plugin_details(self) -> dict[str, Any] | None:
         selected = self.plugins_table.selectedItems()
         if not selected:
-            self.uninstall_btn.setEnabled(False)
-            return
+            return None
         name_item = self.plugins_table.item(selected[0].row(), 0)
-        name = name_item.data(QtCore.Qt.ItemDataRole.UserRole) if name_item else None
-        # EXE 内置插件位于只读的打包目录，只允许卸载用户插件。
-        self.uninstall_btn.setEnabled(bool(name and (self.runtime.plugins_dir / str(name)).is_dir()))
+        details = name_item.data(QtCore.Qt.ItemDataRole.UserRole) if name_item else None
+        return details if isinstance(details, dict) else None
+
+    def _on_plugin_selection_changed(self):
+        details = self._selected_plugin_details()
+        self.uninstall_btn.setEnabled(bool(details and details.get("uninstallable")))
+        if details and not details.get("uninstallable"):
+            self.uninstall_btn.setToolTip("内置或只读插件不能卸载")
+        else:
+            self.uninstall_btn.setToolTip("卸载用户插件；历史任务不会被删除")
 
     def _on_import_plugin(self):
         source, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -2879,27 +3502,34 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         if not source:
             return
 
+        source_path = Path(source)
         try:
-            manifest = self.runtime.install_plugin(Path(source))
-        except PluginPackageError as error:
-            # 覆盖安装需要用户明确确认，避免误替换现有插件。
-            if "插件已安装:" not in str(error):
-                QtWidgets.QMessageBox.critical(self, "导入插件失败", str(error))
-                return
-            reply = QtWidgets.QMessageBox.question(
-                self,
-                "确认覆盖插件",
-                f"{error}\n\n是否覆盖安装？",
-                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            )
-            if reply != QtWidgets.QMessageBox.StandardButton.Yes:
-                return
-            try:
-                manifest = self.runtime.install_plugin(Path(source), force=True)
-            except (PluginPackageError, OSError, ValueError) as retry_error:
-                QtWidgets.QMessageBox.critical(self, "导入插件失败", str(retry_error))
-                return
-        except (OSError, ValueError) as error:
+            preview = self.runtime.preview_plugin_install(source_path)
+            installed = self.runtime.inspect_plugin(str(preview["name"]))
+        except (PluginPackageError, OSError, ValueError) as error:
+            QtWidgets.QMessageBox.critical(self, "插件包校验失败", str(error))
+            return
+
+        command_text = ", ".join(preview.get("commands") or []) or "无"
+        action = "覆盖安装" if installed else "安装"
+        impact = (
+            f"插件: {preview['name']} v{preview['version']}\n"
+            f"命令: {command_text}\n"
+            f"来源: {source_path}\n\n"
+            f"确认{action}到用户插件目录吗？历史任务不会被删除。"
+        )
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            f"确认{action}插件",
+            impact,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            manifest = self.runtime.install_plugin(source_path, force=bool(installed))
+        except (PluginPackageError, OSError, ValueError) as error:
             QtWidgets.QMessageBox.critical(self, "导入插件失败", str(error))
             return
 
@@ -2907,70 +3537,92 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         QtWidgets.QMessageBox.information(
             self,
             "导入成功",
-            f"插件 {manifest.name} v{manifest.version} 已导入。\n工具目录已同步更新。",
+            f"插件 {manifest.name} v{manifest.version} 已{action}。\n工具目录已同步更新。",
         )
 
     def _on_uninstall_plugin(self):
-        selected = self.plugins_table.selectedItems()
-        if not selected:
+        details = self._selected_plugin_details()
+        if not details or not details.get("uninstallable"):
             return
-        name_item = self.plugins_table.item(selected[0].row(), 0)
-        name = name_item.data(QtCore.Qt.ItemDataRole.UserRole) if name_item else None
-        if not name:
-            return
-
+        name = str(details.get("name", ""))
+        version = str(details.get("version", ""))
+        commands = ", ".join(item.get("name", "") for item in details.get("commands", [])) or "无"
         reply = QtWidgets.QMessageBox.question(
             self,
             "确认卸载插件",
-            f"确定要卸载插件“{name}”吗？\n\n卸载后，该插件提供的工具也会从工具目录移除。",
+            f"插件: {name} v{version}\n路径: {details.get('path', '-')}\n将移除命令: {commands}\n\n"
+            "卸载后工具目录会更新，但历史任务和审计记录不会被删除。是否继续？",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
         )
         if reply != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         try:
-            self.runtime.uninstall_plugin(str(name))
+            self.runtime.uninstall_plugin(name)
         except (PluginPackageError, OSError, ValueError) as error:
             QtWidgets.QMessageBox.critical(self, "卸载插件失败", str(error))
             return
-
         self.refresh_plugins()
         QtWidgets.QMessageBox.information(self, "卸载成功", f"插件 {name} 已卸载。\n工具目录已同步更新。")
 
     def _on_clean_workspace(self):
         qdate = self.date_picker.date()
         target_date = date(qdate.year(), qdate.month(), qdate.day())
-
         reply = QtWidgets.QMessageBox.question(
             self,
             "确认清理工作区",
-            f"将永久清理 {target_date.isoformat()} 之前的过期任务工作区文件。\n是否继续？",
+            f"将永久清理本地时间 {target_date.isoformat()} 00:00 之前的任务工作区文件。\n"
+            "历史审计记录不会被删除。是否继续？",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
         )
-        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-            try:
-                cleaned_count = self.runtime.clean_workspace(target_date)
-                QtWidgets.QMessageBox.information(self, "清理完成", f"已成功清理 {cleaned_count} 个过期工作区。")
-            except Exception as error:
-                QtWidgets.QMessageBox.critical(self, "清理失败", f"清理过程中发生异常:\n{error}")
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            cleaned_count = self.runtime.clean_workspace(target_date)
+            QtWidgets.QMessageBox.information(self, "清理完成", f"已清理 {cleaned_count} 个过期工作区。")
+        except Exception as error:
+            QtWidgets.QMessageBox.critical(self, "清理失败", f"Runtime 清理过程中发生异常:\n{error}")
 
 
-# ==============================================================================
+# ============================================================================
 # 主窗口 (MainWindow)
-# ==============================================================================
+# ============================================================================
 
 class SettingsDialog(QtWidgets.QDialog):
-    """首选项与设置弹窗：展示常用目录、任务历史 SQLite 存储位置并支持一键打开目录"""
+    """只读展示 Runtime、工作区、插件目录、版本和环境诊断。"""
+
     def __init__(self, runtime: Runtime, parent=None):
         super().__init__(parent)
         self.runtime = runtime
+        self.runtime_info = self.runtime.get_runtime_diagnostics()
         self.setWindowTitle("首选项与系统设置")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(620)
         self._init_ui()
 
     def _open_folder(self, target_path: Path):
-        p = target_path if target_path.is_dir() else target_path.parent
-        p.mkdir(parents=True, exist_ok=True)
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(p)))
+        folder = target_path if target_path.is_dir() else target_path.parent
+        if not folder.exists():
+            QtWidgets.QMessageBox.warning(self, "目录不存在", f"当前路径不存在，未执行任何创建操作:\n{folder}")
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))
+
+    def _add_path_row(self, layout, caption: str, path_key: str):
+        path = Path(self.runtime_info.get(path_key) or self.runtime.root)
+        row = QtWidgets.QHBoxLayout()
+        info = QtWidgets.QVBoxLayout()
+        label = QtWidgets.QLabel(caption)
+        label.setStyleSheet("font-weight: 600;")
+        value = QtWidgets.QLabel(str(path))
+        value.setObjectName("mutedText")
+        value.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        value.setWordWrap(True)
+        info.addWidget(label)
+        info.addWidget(value)
+        row.addLayout(info, 1)
+        button = QtWidgets.QPushButton("📂 打开位置")
+        button.setObjectName("secondaryButton")
+        button.clicked.connect(lambda: self._open_folder(path))
+        row.addWidget(button)
+        layout.addLayout(row)
 
     def _init_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
@@ -2980,84 +3632,35 @@ class SettingsDialog(QtWidgets.QDialog):
         title = QtWidgets.QLabel("⚙️ 首选项与设置")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
-
-        desc = QtWidgets.QLabel("查看系统核心目录配置及数据持久化存储位置。")
+        desc = QtWidgets.QLabel("只读查看 Runtime 路径、数据持久化位置和环境诊断；本阶段不修改配置。")
         desc.setObjectName("mutedText")
+        desc.setWordWrap(True)
         layout.addWidget(desc)
 
-        # 1. 存储与目录分组
-        paths_group = QtWidgets.QGroupBox("常用目录与存储位置")
+        paths_group = QtWidgets.QGroupBox("Runtime 与存储路径")
         paths_layout = QtWidgets.QVBoxLayout(paths_group)
         paths_layout.setContentsMargins(14, 14, 14, 14)
         paths_layout.setSpacing(12)
-
-        # 任务工作区
-        ws_row = QtWidgets.QHBoxLayout()
-        ws_info = QtWidgets.QVBoxLayout()
-        ws_lbl = QtWidgets.QLabel("任务工作区目录 (Workspace):")
-        ws_lbl.setStyleSheet("font-weight: 600;")
-        ws_path = QtWidgets.QLabel(str(self.runtime.workspace_dir))
-        ws_path.setObjectName("mutedText")
-        ws_path.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        ws_info.addWidget(ws_lbl)
-        ws_info.addWidget(ws_path)
-        ws_row.addLayout(ws_info, 1)
-        ws_btn = QtWidgets.QPushButton("📂 打开目录")
-        ws_btn.setObjectName("secondaryButton")
-        ws_btn.clicked.connect(lambda: self._open_folder(self.runtime.workspace_dir))
-        ws_row.addWidget(ws_btn)
-        paths_layout.addLayout(ws_row)
-
-        # 任务历史 SQLite 数据库
-        db_row = QtWidgets.QHBoxLayout()
-        db_info = QtWidgets.QVBoxLayout()
-        db_lbl = QtWidgets.QLabel("任务历史数据库 (SQLite):")
-        db_lbl.setStyleSheet("font-weight: 600;")
-        db_path = QtWidgets.QLabel(str(self.runtime.history.path))
-        db_path.setObjectName("mutedText")
-        db_path.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        db_tip = QtWidgets.QLabel("注：所有任务的执行记录、状态及输出清单均持久化保存在此 SQLite 数据库中。")
-        db_tip.setStyleSheet("color: #10b981; font-size: 11px;")
-        db_info.addWidget(db_lbl)
-        db_info.addWidget(db_path)
-        db_info.addWidget(db_tip)
-        db_row.addLayout(db_info, 1)
-        db_btn = QtWidgets.QPushButton("📂 打开所在目录")
-        db_btn.setObjectName("secondaryButton")
-        db_btn.clicked.connect(lambda: self._open_folder(self.runtime.history.path.parent))
-        db_row.addWidget(db_btn)
-        paths_layout.addLayout(db_row)
-
-        # 用户插件目录
-        pl_row = QtWidgets.QHBoxLayout()
-        pl_info = QtWidgets.QVBoxLayout()
-        pl_lbl = QtWidgets.QLabel("用户插件目录 (Plugins):")
-        pl_lbl.setStyleSheet("font-weight: 600;")
-        pl_path = QtWidgets.QLabel(str(self.runtime.plugins_dir))
-        pl_path.setObjectName("mutedText")
-        pl_path.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        pl_info.addWidget(pl_lbl)
-        pl_info.addWidget(pl_path)
-        pl_row.addLayout(pl_info, 1)
-        pl_btn = QtWidgets.QPushButton("📂 打开目录")
-        pl_btn.setObjectName("secondaryButton")
-        pl_btn.clicked.connect(lambda: self._open_folder(self.runtime.plugins_dir))
-        pl_row.addWidget(pl_btn)
-        paths_layout.addLayout(pl_row)
-
+        self._add_path_row(paths_layout, "Runtime 根路径:", "runtime_root")
+        self._add_path_row(paths_layout, "任务工作区目录 (Workspace):", "workspace_dir")
+        self._add_path_row(paths_layout, "任务历史数据库位置:", "history_path")
+        self._add_path_row(paths_layout, "用户插件目录 (Plugins):", "plugins_dir")
+        self._add_path_row(paths_layout, "内置插件目录:", "bundled_plugins_dir")
         layout.addWidget(paths_group)
 
-        # 2. 环境与版本
-        sys_group = QtWidgets.QGroupBox("系统与环境")
+        sys_group = QtWidgets.QGroupBox("版本与只读运行诊断")
         sys_layout = QtWidgets.QFormLayout(sys_group)
         sys_layout.setContentsMargins(14, 14, 14, 14)
         sys_layout.setSpacing(8)
-        sys_layout.addRow("软件版本:", QtWidgets.QLabel("TestBox 1.0 (Local-First Desktop)"))
+        sys_layout.addRow("TestBox 版本:", QtWidgets.QLabel(str(self.runtime_info.get("version", "-"))))
         sys_layout.addRow("操作系统:", QtWidgets.QLabel(sys.platform))
         sys_layout.addRow("Python 环境:", QtWidgets.QLabel(sys.version.split()[0]))
+        sys_layout.addRow("Host 协议:", QtWidgets.QLabel(str(self.runtime_info.get("host_protocol", "-"))))
+        boundary = QtWidgets.QLabel(str(self.runtime_info.get("plugin_host_boundary", "-")))
+        boundary.setWordWrap(True)
+        sys_layout.addRow("Plugin Host 边界:", boundary)
         layout.addWidget(sys_group)
 
-        # 关闭按钮
         btn_box = QtWidgets.QHBoxLayout()
         btn_box.addStretch()
         btn_close = QtWidgets.QPushButton("关闭")
@@ -3162,7 +3765,8 @@ class MainWindow(QtWidgets.QMainWindow):
         sidebar_layout.addSpacing(6)
 
         # 底部版本信息
-        footer_lbl = QtWidgets.QLabel("TestBox Engine v1.0\nLocal-First Desktop")
+        runtime_version = self.runtime.get_runtime_diagnostics().get("version", "-")
+        footer_lbl = QtWidgets.QLabel(f"TestBox Engine v{runtime_version}\nLocal-First Desktop")
         footer_lbl.setStyleSheet("color: #64748b; font-size: 11px; line-height: 1.4;")
         sidebar_layout.addWidget(footer_lbl)
 
@@ -3199,6 +3803,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.page_result.openAnnotation.connect(self.open_annotation_dialog)
 
         self.page_history.taskSelected.connect(self.navigate_to_task_result)
+        self.page_history.reExecuteRequested.connect(self.navigate_to_command)
 
         # 默认高亮并打开工具目录
         self.nav_list.setCurrentRow(0)
@@ -3283,7 +3888,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_task_finished(self, task_id: str, result: Any, elapsed: float):
         self._restore_after_interactive()
         self._select_nav_page(4)
-        self.page_result.display_task(task_id, direct_result=result, elapsed=elapsed)
+        # The worker result is only a completion signal. Detail rendering reads
+        # the persisted task and result through the main Runtime facade.
+        self.page_result.display_task(task_id, elapsed=elapsed)
         self.stack.setCurrentIndex(3)
 
     def _on_task_failed(self, command: str, error_msg: str, elapsed: float):

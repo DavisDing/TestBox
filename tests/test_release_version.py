@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -17,6 +19,21 @@ class ReleaseVersionTests(unittest.TestCase):
 
     def test_declared_version_is_synchronized_to_latest_patch(self):
         self.assertEqual(next_release_version("2.0.0", "v1.4.9"), "1.4.10")
+
+    def test_repository_release_version_declarations_are_consistent(self):
+        root = Path(__file__).resolve().parents[1]
+        project_version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+        runtime_version = re.search(r'^__version__ = "([^"]+)"$', (root / "testbox" / "__init__.py").read_text(encoding="utf-8"), re.MULTILINE)
+        installer_version = re.search(r'^#define AppVersion "([^"]+)"$', (root / "installer" / "TestBox.iss").read_text(encoding="utf-8"), re.MULTILINE)
+        update_script = (root / "installer" / "TestBoxUpdate.iss").read_text(encoding="utf-8")
+        update_version = re.search(r'^#define AppVersion "([^"]+)"$', update_script, re.MULTILINE)
+        update_package = re.search(r'^#define UpdatePackage "TestBox-update-v([^"]+)\.zip"$', update_script, re.MULTILINE)
+
+        self.assertIsNotNone(runtime_version)
+        self.assertIsNotNone(installer_version)
+        self.assertIsNotNone(update_version)
+        self.assertIsNotNone(update_package)
+        self.assertEqual({project_version, runtime_version.group(1), installer_version.group(1), update_version.group(1), update_package.group(1)}, {project_version})
 
     def test_sync_updates_all_release_version_declarations(self):
         with tempfile.TemporaryDirectory() as temp_name:

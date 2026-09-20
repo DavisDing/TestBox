@@ -6,7 +6,7 @@ import os
 import secrets
 import shutil
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time as datetime_time, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,8 @@ from testbox.core.history import TaskHistory
 from testbox.core.locks import PluginExecutionLock
 from testbox.core.manifest import Manifest
 from testbox.core.models import TaskPaths, TaskStatus
-from testbox.core.plugin_packages import PluginPackageError, install_plugin as install_plugin_package, package_plugin as package_plugin_archive, uninstall_plugin as uninstall_plugin_package
+from testbox import __version__
+from testbox.core.plugin_packages import PluginPackageError, inspect_plugin as inspect_plugin_package, install_plugin as install_plugin_package, package_plugin as package_plugin_archive, uninstall_plugin as uninstall_plugin_package
 from testbox.core.plugin_registry import PluginManager
 from testbox.core.process_runner import ProcessRunner
 from testbox.core.report import write_json, write_report
@@ -103,9 +104,42 @@ class Runtime:
         """重新扫描插件目录，使 GUI 安装/卸载后立即更新命令索引。"""
         self.manager.discover()
 
+    def list_unavailable_plugins(self) -> list[dict[str, str]]:
+        """返回插件发现阶段不可用项，供 CLI/GUI 展示诊断原因。"""
+        return [
+            {"path": path, "reason": reason, "status": "unavailable"}
+            for path, reason in sorted(self.manager.unavailable.items())
+        ]
+
     def validate_plugin(self, source: Path) -> Manifest:
-        """Validate a plugin directory through the Runtime facade."""
-        return Manifest.load(source / "manifest.yaml")
+        """Validate a plugin directory or ZIP through the Runtime facade."""
+        return inspect_plugin_package(source)
+
+    def _validate_plugin_install_conflicts(self, manifest: Manifest) -> None:
+        conflicts = sorted(
+            command.name
+            for command in manifest.commands
+            if command.name in self.manager.available
+            and self.manager.available[command.name].name != manifest.name
+        )
+        if conflicts:
+            owners = sorted({self.manager.available[command].name for command in conflicts})
+            raise PluginPackageError(
+                f"插件命令冲突: {', '.join(conflicts)}（已有插件: {', '.join(owners)}）"
+            )
+
+    def preview_plugin_install(self, source: Path) -> dict[str, Any]:
+        """Return validated package metadata without changing the plugin directory."""
+        manifest = inspect_plugin_package(source)
+        self._validate_plugin_install_conflicts(manifest)
+        return {
+            "name": manifest.name,
+            "version": manifest.version,
+            "description": manifest.description,
+            "category": manifest.category,
+            "core_compatibility": manifest.core_compatibility,
+            "commands": [item.name for item in manifest.commands],
+        }
 
     def package_plugin(self, source: Path, destination: Path) -> Path:
         """Package a plugin through the Runtime facade."""
@@ -113,27 +147,70 @@ class Runtime:
 
     def install_plugin(self, source: Path, *, force: bool = False) -> Manifest:
         """安装用户插件并刷新当前 Runtime 的插件索引。"""
-        manifest = install_plugin_package(source, self.plugins_dir, force=force)
-        self.reload_plugins()
-        return manifest
+        management_lock = PluginExecutionLock(self.workspace_dir / ".locks" / "plugin-management.lock")
+        management_lock.acquire()
+        try:
+            self.reload_plugins()
+            manifest = install_plugin_package(
+                source,
+                self.plugins_dir,
+                force=force,
+                validate=self._validate_plugin_install_conflicts,
+            )
+            self.reload_plugins()
+            return manifest
+        finally:
+            management_lock.release()
 
     def uninstall_plugin(self, name: str) -> None:
         """卸载用户插件；冻结版不允许删除随程序发布的内置插件。"""
-        target = self.plugins_dir / name
-        if not target.is_dir():
-            raise PluginPackageError(f"未安装插件: {name}")
-        if self.bundled_plugins_dir.resolve() != self.plugins_dir.resolve():
-            try:
-                target.resolve().relative_to(self.bundled_plugins_dir.resolve())
-            except ValueError:
-                pass
-            else:
-                raise PluginPackageError("内置插件不能卸载，请先安装同名用户插件后再管理")
-        uninstall_plugin_package(name, self.plugins_dir)
-        self.reload_plugins()
+        management_lock = PluginExecutionLock(self.workspace_dir / ".locks" / "plugin-management.lock")
+        management_lock.acquire()
+        try:
+            self.reload_plugins()
+            target = self.plugins_dir / name
+            if not target.is_dir():
+                raise PluginPackageError(f"未安装插件: {name}")
+            if self.bundled_plugins_dir.resolve() != self.plugins_dir.resolve():
+                try:
+                    target.resolve().relative_to(self.bundled_plugins_dir.resolve())
+                except ValueError:
+                    pass
+                else:
+                    raise PluginPackageError("内置插件不能卸载，请先安装同名用户插件后再管理")
+            uninstall_plugin_package(name, self.plugins_dir)
+            self.reload_plugins()
+        finally:
+            management_lock.release()
 
     def get_command(self, command: str) -> Manifest:
         return self.manager.get_manifest(command)
+
+    def can_uninstall_plugin(self, name: str) -> bool:
+        """Return whether the named plugin is installed in the writable user plugin directory."""
+        target = self.plugins_dir / name
+        if not target.is_dir():
+            return False
+        if self.bundled_plugins_dir.resolve() == self.plugins_dir.resolve():
+            return True
+        try:
+            target.resolve().relative_to(self.plugins_dir.resolve())
+        except ValueError:
+            return False
+        return True
+
+    def get_runtime_diagnostics(self) -> dict[str, str]:
+        """Expose stable read-only Runtime paths and execution protocol details to clients."""
+        return {
+            "version": __version__,
+            "runtime_root": str(self.root),
+            "workspace_dir": str(self.workspace_dir),
+            "plugins_dir": str(self.plugins_dir),
+            "bundled_plugins_dir": str(self.bundled_plugins_dir),
+            "history_path": str(self.history.path),
+            "host_protocol": "single-request/single-response",
+            "plugin_host_boundary": "process isolation for failures; not a malicious-code security sandbox",
+        }
 
     def inspect_plugin(self, identifier: str) -> dict[str, Any] | None:
         manifest = next((item for item in self.list_plugins() if item.name == identifier), None)
@@ -150,6 +227,7 @@ class Runtime:
             "path": str(manifest.path),
             "entry": manifest.entry,
             "capabilities": manifest.capabilities,
+            "uninstallable": self.can_uninstall_plugin(manifest.name),
             "commands": [
                 {"name": item.name, "description": item.description, "input_schema": item.input_schema}
                 for item in manifest.commands
@@ -163,12 +241,12 @@ class Runtime:
             return {"type": "object", "properties": {}}
         return self.schema_validator.load(manifest.path / spec.input_schema)
 
+    def validate_params(self, command: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Validate command parameters without creating a task or staging files."""
+        return self.schema_validator.validate(self.get_command_schema(command), params)
+
     def _validate(self, manifest: Manifest, command: str, params: dict[str, Any]) -> dict[str, Any]:
-        schema = self.get_command_schema(command)
-        try:
-            return self.schema_validator.validate(schema, params)
-        except SchemaValidationError:
-            raise
+        return self.validate_params(command, params)
 
     def _stage_file_inputs(self, manifest: Manifest, command: str, params: dict[str, Any], input_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         paths = TaskPaths.create(input_dir.parent)
@@ -278,32 +356,106 @@ class Runtime:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def list_tasks(self, *, status: str | TaskStatus | None = None, command: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        return self.history.list_tasks(status=status, command=command, limit=limit, offset=offset)
+    def get_task_report(self, task_id: str) -> str | None:
+        """Return the Runtime-generated Markdown report for a task."""
+        record = self.get_task(task_id)
+        if not record:
+            return None
+        path = Path(record["workspace_path"]) / "report.md"
+        if not path.is_file():
+            return None
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
 
-    def count_tasks(self, *, status: str | TaskStatus | None = None, command: str | None = None) -> int:
-        return self.history.count(status=status, command=command)
+    def get_task_log(self, task_id: str, *, max_chars: int = 8_000) -> str | None:
+        """Return the tail of the task log without exposing workspace I/O to GUI callers."""
+        record = self.get_task(task_id)
+        if not record:
+            return None
+        path = Path(record["workspace_path"]) / "logs" / "task.log"
+        if not path.is_file():
+            return None
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if max_chars <= 0:
+            return ""
+        return content[-max_chars:]
+
+    def list_tasks(
+        self,
+        *,
+        status: str | TaskStatus | None = None,
+        command: str | None = None,
+        task_id_query: str | None = None,
+        started_from: str | None = None,
+        started_before: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        return self.history.list_tasks(
+            status=status,
+            command=command,
+            task_id_query=task_id_query,
+            started_from=started_from,
+            started_before=started_before,
+            limit=limit,
+            offset=offset,
+        )
+
+    def count_tasks(
+        self,
+        *,
+        status: str | TaskStatus | None = None,
+        command: str | None = None,
+        task_id_query: str | None = None,
+        started_from: str | None = None,
+        started_before: str | None = None,
+    ) -> int:
+        return self.history.count(
+            status=status,
+            command=command,
+            task_id_query=task_id_query,
+            started_from=started_from,
+            started_before=started_before,
+        )
+
+    @staticmethod
+    def _local_midnight_utc(before: date, local_timezone: tzinfo | None = None) -> datetime:
+        """Convert a user-facing local date boundary to an exact UTC instant."""
+        if local_timezone is None:
+            local_midnight = datetime.combine(before, datetime_time.min).astimezone()
+        else:
+            local_midnight = datetime.combine(before, datetime_time.min, tzinfo=local_timezone)
+        return local_midnight.astimezone(UTC)
 
     def clean_workspace(self, before: date) -> int:
+        """Remove workspaces created before local midnight on the selected date."""
         removed = 0
         if not self.workspace_dir.exists():
             return removed
+        cutoff = self._local_midnight_utc(before)
         for task_dir in self.workspace_dir.iterdir():
             if not task_dir.is_dir():
                 continue
             try:
-                started = datetime.strptime(task_dir.name.split("-", 1)[0], "%Y%m%dT%H%M%S").date()
+                started = datetime.strptime(
+                    task_dir.name.split("-", 1)[0], "%Y%m%dT%H%M%S"
+                ).replace(tzinfo=UTC)
             except ValueError:
                 continue
-            if started < before:
+            if started < cutoff:
                 shutil.rmtree(task_dir)
                 removed += 1
         return removed
 
-
     def clean_history(self, before: date) -> int:
-        """清理指定日期之前的任务历史记录。"""
-        return self.history.clean_before(before.isoformat())
+        """Remove history created before local midnight on the selected date."""
+        cutoff = self._local_midnight_utc(before)
+        return self.history.clean_before(cutoff.isoformat())
 
     def commit_output(self, task_id: str, relative_path: str, destination: Path) -> Path:
         record = self.get_task(task_id)

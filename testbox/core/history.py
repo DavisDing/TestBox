@@ -161,7 +161,15 @@ class TaskHistory:
         row = self.connection.execute("SELECT * FROM task_history WHERE id = ?", (task_id,)).fetchone()
         return self._to_dict(row) if row else None
 
-    def list_tasks(self, *, status: str | TaskStatus | None = None, command: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    @staticmethod
+    def _task_filters(
+        *,
+        status: str | TaskStatus | None = None,
+        command: str | None = None,
+        task_id_query: str | None = None,
+        started_from: str | None = None,
+        started_before: str | None = None,
+    ) -> tuple[list[str], list[Any]]:
         clauses: list[str] = []
         values: list[Any] = []
         if status is not None:
@@ -170,6 +178,36 @@ class TaskHistory:
         if command is not None:
             clauses.append("command = ?")
             values.append(command)
+        if task_id_query:
+            escaped = task_id_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append("id LIKE ? ESCAPE '\\'")
+            values.append(f"%{escaped}%")
+        if started_from is not None:
+            clauses.append("started_at >= ?")
+            values.append(started_from)
+        if started_before is not None:
+            clauses.append("started_at < ?")
+            values.append(started_before)
+        return clauses, values
+
+    def list_tasks(
+        self,
+        *,
+        status: str | TaskStatus | None = None,
+        command: str | None = None,
+        task_id_query: str | None = None,
+        started_from: str | None = None,
+        started_before: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses, values = self._task_filters(
+            status=status,
+            command=command,
+            task_id_query=task_id_query,
+            started_from=started_from,
+            started_before=started_before,
+        )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.connection.execute(
             f"SELECT * FROM task_history {where} ORDER BY started_at DESC LIMIT ? OFFSET ?",
@@ -177,24 +215,31 @@ class TaskHistory:
         ).fetchall()
         return [self._to_dict(row) for row in rows]
 
-    def count(self, *, status: str | TaskStatus | None = None, command: str | None = None) -> int:
-        clauses: list[str] = []
-        values: list[Any] = []
-        if status is not None:
-            clauses.append("status = ?")
-            values.append(status.value if isinstance(status, TaskStatus) else status)
-        if command is not None:
-            clauses.append("command = ?")
-            values.append(command)
+    def count(
+        self,
+        *,
+        status: str | TaskStatus | None = None,
+        command: str | None = None,
+        task_id_query: str | None = None,
+        started_from: str | None = None,
+        started_before: str | None = None,
+    ) -> int:
+        clauses, values = self._task_filters(
+            status=status,
+            command=command,
+            task_id_query=task_id_query,
+            started_from=started_from,
+            started_before=started_before,
+        )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return int(self.connection.execute(f"SELECT COUNT(*) FROM task_history {where}", values).fetchone()[0])
 
 
-    def clean_before(self, before_date: str) -> int:
-        """删除指定 ISO 日期（YYYY-MM-DD）之前的全部任务历史记录。"""
+    def clean_before(self, before_timestamp: str) -> int:
+        """删除指定 ISO 时间戳之前的全部任务历史记录。"""
         cursor = self.connection.execute(
             "DELETE FROM task_history WHERE started_at < ?",
-            (before_date,),
+            (before_timestamp,),
         )
         self.connection.commit()
         return cursor.rowcount
