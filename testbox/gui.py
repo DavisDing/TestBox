@@ -13,9 +13,11 @@ from testbox.core.runtime import Runtime
 from testbox.core.schema_validator import SchemaValidationError
 
 
-# The frozen GUI executable is also the plugin Host for GUI-initiated tasks.
-# Handle that internal mode before importing or starting Qt so it works in
-# headless child processes as well as in the desktop application.
+# Source and legacy frozen launches can still expose the Host protocol from
+# this module.  The packaged windowed GUI uses the console-mode
+# ``TestBox-GUI-Host.exe`` companion from ProcessRunner instead, because a
+# windowed Windows executable cannot provide a reliable stdout pipe.
+# Handle this internal mode before importing or starting Qt.
 if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--plugin-host":
     from testbox.core.host import main as host_main
     host_main()

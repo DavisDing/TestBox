@@ -164,7 +164,8 @@ jobs:
         run: |
           $cliExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\cli\TestBox\TestBox.exe"
           $guiExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\gui\TestBox-GUI\TestBox-GUI.exe"
-          foreach ($exe in @($cliExe, $guiExe)) {
+          $guiHostExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\gui\TestBox-GUI-Host.exe"
+          foreach ($exe in @($cliExe, $guiExe, $guiHostExe)) {
             if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
               Write-Host "--- Windows build output ---"
               Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "dist\windows") -Recurse -File | Select-Object -ExpandProperty FullName
@@ -187,9 +188,9 @@ jobs:
             }
             exit $exitCode
           }
-          # The GUI executable exposes the same headless plugin Host protocol
-          # before loading Qt. A successful request verifies the frozen GUI has
-          # its Core, SDK, and bundled plugins in the expected onedir layout.
+          # The GUI package exposes the same headless plugin Host protocol
+          # through its console-mode companion. A successful request verifies
+          # the GUI package has its Core, SDK, and bundled plugins available.
           $guiBundle = Split-Path -Parent $guiExe
           $guiWorkspace = Join-Path $env:RUNNER_TEMP "testbox-gui-host"
           New-Item -ItemType Directory -Force -Path (Join-Path $guiWorkspace "input"), (Join-Path $guiWorkspace "output"), (Join-Path $guiWorkspace "logs") | Out-Null
@@ -203,7 +204,10 @@ jobs:
             params = @{ count = 1; format = "csv"; seed = 10001; fields = @(@{ name = "value"; generator = "constant"; options = @{ value = "TEST DATA ONLY" } }) }
             config = @{}
           } | ConvertTo-Json -Depth 10 -Compress
-          $guiResult = $guiRequest | & $guiExe --plugin-host
+          # Test the console-mode companion used by the windowed GUI for
+          # plugin tasks.  The GUI executable itself intentionally has no
+          # console/stdout on Windows.
+          $guiResult = $guiRequest | & $guiHostExe
           if ($LASTEXITCODE -ne 0) { throw "TestBox GUI plugin Host failed with exit code $LASTEXITCODE" }
           $guiEvent = $guiResult | ConvertFrom-Json
           if ($guiEvent.event -ne "result" -or $guiEvent.result.status -ne "succeeded") {

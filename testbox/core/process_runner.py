@@ -28,7 +28,18 @@ class ProcessRunner:
     def run(self, request: dict[str, Any], *, task_id: str, on_started: Callable[[int], None] | None = None) -> HostExecution:
         environment = os.environ.copy()
         if getattr(sys, "frozen", False):
-            command = [sys.executable, "--plugin-host"]
+            executable = Path(sys.executable).resolve()
+            if executable.name.casefold() == "testbox-gui.exe":
+                # The GUI is a PyInstaller windowed executable.  On Windows
+                # that subsystem does not expose a reliable stdout pipe, so
+                # using it directly for the JSON Host protocol produces an
+                # empty response (and may log OSError 22 while flushing
+                # stdout).  The GUI package ships a small console-mode
+                # companion next to the GUI bundle for task execution.
+                gui_host = executable.parent.parent / "TestBox-GUI-Host.exe"
+                command = [str(gui_host)]
+            else:
+                command = [sys.executable, "--plugin-host"]
         else:
             package_root = str(Path(__file__).resolve().parents[2])
             environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
