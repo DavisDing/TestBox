@@ -29,7 +29,7 @@ TestBox 是面向测试工程师的本地化、插件化测试效能工具。它
 - 插件通过 `manifest.yaml` 发现和校验。
 - 插件由 Plugin Host 子进程加载和执行。
 - 插件包为 ZIP；安装前在临时目录校验。
-- Windows 使用 PyInstaller 构建可执行文件。
+- Windows 使用 PyInstaller 构建可执行文件；GUI 保持 `windowed` 单 EXE，冻结 GUI 的 Host 模式通过临时 UTF-8 请求/响应文件通信，避免 Windows GUI 子系统的 stdout 管道问题。
 - 测试主要使用 Python `unittest`。
 
 `pyproject.toml` 中的依赖声明不等于代码一定使用；修改依赖前应检查实际导入和发行构建。

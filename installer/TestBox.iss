@@ -26,6 +26,9 @@ DisableProgramGroupPage=yes
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\TestBox-GUI"
 Type: files; Name: "{app}\TestBox-GUI-Updater.exe"
+; Compatibility cleanup: versions built during the GUI Host transition
+; may have installed this console companion next to the GUI bundle.
+Type: files; Name: "{app}\TestBox-GUI-Host.exe"
 Type: files; Name: "{app}\update-manifest.json"
 
 [Registry]

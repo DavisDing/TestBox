@@ -14,8 +14,11 @@ class TaskLogger:
     def error(self, message: str) -> None: self.path.open("a", encoding="utf-8").write(f"ERROR {message}\n")
 
 
-def main() -> None:
-    request = json.loads(sys.stdin.read())
+def main(*, request_path: Path | None = None, response_path: Path | None = None) -> None:
+    if (request_path is None) != (response_path is None):
+        raise ValueError("Host 文件协议必须同时提供 request 和 response 路径")
+    request_text = sys.stdin.read() if request_path is None else request_path.read_text(encoding="utf-8")
+    request = json.loads(request_text)
     if request.get("protocol_version") != 1:
         raise ValueError("不支持的 Host 协议版本")
     workspace = Path(request["workspace"]); module_name, class_name = request["entry"].split(":", 1)
@@ -54,10 +57,13 @@ def main() -> None:
             try: plugin.destroy()
             except Exception: logger.error("插件 destroy 失败")
     event = {"protocol_version": 1, "event": "result", "task_id": request["task_id"], "result": payload}
-    # The host protocol travels through subprocess pipes.  Keep it ASCII-only so
-    # Windows runners using a legacy code page can reliably decode the response;
-    # json.loads restores the original Unicode strings in the parent process.
-    sys.stdout.write(json.dumps(event, ensure_ascii=True))
+    # Pipe mode stays ASCII-only for legacy Windows code pages. File mode is
+    # UTF-8 because it never crosses a console encoding boundary.
+    serialized = json.dumps(event, ensure_ascii=request_path is None)
+    if response_path is None:
+        sys.stdout.write(serialized)
+    else:
+        response_path.write_text(serialized, encoding="utf-8")
 
 
 if __name__ == "__main__": main()

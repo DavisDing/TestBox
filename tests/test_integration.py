@@ -176,6 +176,26 @@ class RuntimeIntegrationTests(unittest.TestCase):
         event = json.loads(process.stdout)
         self.assertEqual(event["result"]["status"], "success")
         self.assertTrue((workspace / "output" / event["result"]["files"][0]).is_file())
+    def test_gui_entrypoint_can_run_plugin_host_with_utf8_file_protocol(self):
+        workspace = self.temp / "gui-host-file-workspace"
+        for child in ("input", "output", "logs"):
+            (workspace / child).mkdir(parents=True, exist_ok=True)
+        request_path = self.temp / "gui-host-request.json"
+        response_path = self.temp / "gui-host-response.json"
+        request = {"protocol_version": 1, "task_id": "gui-host-file-test", "plugin_path": str(self.temp / "plugins" / "data-generator"), "entry": "src.main:Plugin", "command": "data.mock", "params": {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS}, "config": {}, "workspace": str(workspace)}
+        request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+        process = subprocess.run(
+            [sys.executable, "-m", "testbox.gui", "--plugin-host", "--request-file", str(request_path), "--response-file", str(response_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(process.stdout, "")
+        event = json.loads(response_path.read_text(encoding="utf-8"))
+        self.assertEqual(event["result"]["status"], "success")
+        self.assertTrue((workspace / "output" / event["result"]["files"][0]).is_file())
+
     def test_mock_is_repeatable_and_traced(self):
         first_id, first = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         second_id, second = self.runtime.run("data.mock", {"count": 2, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})

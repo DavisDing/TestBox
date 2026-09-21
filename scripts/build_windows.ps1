@@ -88,18 +88,6 @@ if ($exitCode -ne 0) {
     throw "PyInstaller GUI build failed with exit code $exitCode"
 }
 
-# The GUI executable uses PyInstaller's windowed subsystem so launching it
-# does not open a console.  Windows windowed processes cannot reliably serve
-# the JSON Host protocol over stdout, so ship a small console-mode companion
-# for GUI task workers.  It reuses the same bundled plugins and Core contract.
-& python -m PyInstaller --noconfirm --clean --onefile --console --name TestBox-GUI-Host --icon $appIcon `
-    --distpath $guiDist --workpath (Join-Path $repoRoot "build\pyinstaller-gui-host") --specpath (Join-Path $repoRoot "build\specs\gui-host") `
-    @coreImportArgs @evidenceImportArgs @pluginHiddenImportArgs --add-data "$pluginsSource;plugins" (Join-Path $repoRoot "testbox\gui_host.py")
-$exitCode = $LASTEXITCODE
-if ($exitCode -ne 0) {
-    throw "PyInstaller GUI Host build failed with exit code $exitCode"
-}
-
 # The updater is intentionally onefile: it runs only during an update and must
 # be available as a small bootstrap outside the files it replaces. Its filename
 # selects the matching CLI or GUI release manifest at runtime.
@@ -123,8 +111,7 @@ $expectedExecutables = @(
     (Join-Path $cliDist "TestBox\TestBox.exe"),
     (Join-Path $cliDist "TestBox-CLI-Updater.exe"),
     (Join-Path $guiDist "TestBox-GUI\TestBox-GUI.exe"),
-    (Join-Path $guiDist "TestBox-GUI-Updater.exe"),
-    (Join-Path $guiDist "TestBox-GUI-Host.exe")
+    (Join-Path $guiDist "TestBox-GUI-Updater.exe")
 )
 foreach ($executable in $expectedExecutables) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {

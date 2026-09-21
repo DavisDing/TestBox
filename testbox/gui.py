@@ -13,14 +13,20 @@ from testbox.core.runtime import Runtime
 from testbox.core.schema_validator import SchemaValidationError
 
 
-# Source and legacy frozen launches can still expose the Host protocol from
-# this module.  The packaged windowed GUI uses the console-mode
-# ``TestBox-GUI-Host.exe`` companion from ProcessRunner instead, because a
-# windowed Windows executable cannot provide a reliable stdout pipe.
-# Handle this internal mode before importing or starting Qt.
-if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--plugin-host":
+# The GUI executable supports both the desktop mode and the headless Host
+# mode.  Host file mode is used by frozen Windows launches because a windowed
+# executable cannot provide a reliable stdout pipe; stdin/stdout remains
+# available for source execution and backward compatibility.
+if __name__ == "__main__" and len(sys.argv) >= 2 and sys.argv[1] == "--plugin-host":
     from testbox.core.host import main as host_main
-    host_main()
+
+    if len(sys.argv) == 6 and sys.argv[2] == "--request-file" and sys.argv[4] == "--response-file":
+        host_main(request_path=Path(sys.argv[3]), response_path=Path(sys.argv[5]))
+    elif len(sys.argv) == 2:
+        # Keep stdin/stdout mode for source execution and backward compatibility.
+        host_main()
+    else:
+        raise SystemExit("Host 参数必须是 --plugin-host [--request-file PATH --response-file PATH]")
     raise SystemExit
 
 

@@ -164,8 +164,7 @@ jobs:
         run: |
           $cliExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\cli\TestBox\TestBox.exe"
           $guiExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\gui\TestBox-GUI\TestBox-GUI.exe"
-          $guiHostExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\gui\TestBox-GUI-Host.exe"
-          foreach ($exe in @($cliExe, $guiExe, $guiHostExe)) {
+          foreach ($exe in @($cliExe, $guiExe)) {
             if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
               Write-Host "--- Windows build output ---"
               Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "dist\windows") -Recurse -File | Select-Object -ExpandProperty FullName
@@ -188,11 +187,13 @@ jobs:
             }
             exit $exitCode
           }
-          # The GUI package exposes the same headless plugin Host protocol
-          # through its console-mode companion. A successful request verifies
-          # the GUI package has its Core, SDK, and bundled plugins available.
+          # Test the same GUI executable in headless Host mode. Because this
+          # is a windowed executable on Windows, the request/result use files
+          # rather than stdout/stderr pipes.
           $guiBundle = Split-Path -Parent $guiExe
           $guiWorkspace = Join-Path $env:RUNNER_TEMP "testbox-gui-host"
+          $guiRequestPath = Join-Path $guiWorkspace "request.json"
+          $guiResponsePath = Join-Path $guiWorkspace "response.json"
           New-Item -ItemType Directory -Force -Path (Join-Path $guiWorkspace "input"), (Join-Path $guiWorkspace "output"), (Join-Path $guiWorkspace "logs") | Out-Null
           $guiRequest = @{
             protocol_version = 1
@@ -204,14 +205,12 @@ jobs:
             params = @{ count = 1; format = "csv"; seed = 10001; fields = @(@{ name = "value"; generator = "constant"; options = @{ value = "TEST DATA ONLY" } }) }
             config = @{}
           } | ConvertTo-Json -Depth 10 -Compress
-          # Test the console-mode companion used by the windowed GUI for
-          # plugin tasks.  The GUI executable itself intentionally has no
-          # console/stdout on Windows.
-          $guiResult = $guiRequest | & $guiHostExe
+          [System.IO.File]::WriteAllText($guiRequestPath, $guiRequest, [System.Text.UTF8Encoding]::new($false))
+          & $guiExe --plugin-host --request-file $guiRequestPath --response-file $guiResponsePath
           if ($LASTEXITCODE -ne 0) { throw "TestBox GUI plugin Host failed with exit code $LASTEXITCODE" }
-          $guiEvent = $guiResult | ConvertFrom-Json
-          if ($guiEvent.event -ne "result" -or $guiEvent.result.status -ne "succeeded") {
-            throw "TestBox GUI plugin Host returned an unexpected result: $guiResult"
+          $guiEvent = Get-Content $guiResponsePath -Raw | ConvertFrom-Json
+          if ($guiEvent.event -ne "result" -or $guiEvent.result.status -ne "success") {
+            throw "TestBox GUI plugin Host returned an unexpected result: $(Get-Content $guiResponsePath -Raw)"
           }
       - name: Resolve previous release manifests
         if: needs.prepare-release.outputs.publish_release == 'true'
