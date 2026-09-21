@@ -61,8 +61,8 @@ jobs:
 
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            if ! git diff --quiet -- pyproject.toml testbox/__init__.py installer/TestBox.iss installer/TestBoxUpdate.iss; then
-              git add pyproject.toml testbox/__init__.py installer/TestBox.iss installer/TestBoxUpdate.iss
+            if ! git diff --quiet -- pyproject.toml testbox/__init__.py installer/TestBox.iss installer/TestBoxCLI.iss installer/TestBoxUpdate.iss installer/TestBoxCLIUpdate.iss; then
+              git add pyproject.toml testbox/__init__.py installer/TestBox.iss installer/TestBoxCLI.iss installer/TestBoxUpdate.iss installer/TestBoxCLIUpdate.iss
               git commit -m "chore: bump version to $release_version [skip ci]"
               git push origin "HEAD:${GITHUB_REF_NAME}"
             fi
@@ -159,17 +159,20 @@ jobs:
       - name: Create Windows executables
         shell: pwsh
         run: ./scripts/build_windows.ps1
-      - name: Smoke test executable
+      - name: Smoke test CLI and GUI executables
         shell: pwsh
         run: |
-          $cliExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\TestBox\TestBox.exe"
-          if (-not (Test-Path -LiteralPath $cliExe -PathType Leaf)) {
-            Write-Host "--- Windows build output ---"
-            Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "dist\windows") -Recurse -File | Select-Object -ExpandProperty FullName
-            throw "TestBox CLI executable was not created: $cliExe"
+          $cliExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\cli\TestBox\TestBox.exe"
+          $guiExe = Join-Path $env:GITHUB_WORKSPACE "dist\windows\gui\TestBox-GUI\TestBox-GUI.exe"
+          foreach ($exe in @($cliExe, $guiExe)) {
+            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+              Write-Host "--- Windows build output ---"
+              Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "dist\windows") -Recurse -File | Select-Object -ExpandProperty FullName
+              throw "TestBox executable was not created: $exe"
+            }
           }
           & $cliExe plugin list
-          if ($LASTEXITCODE -ne 0) { throw "TestBox plugin list failed with exit code $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "TestBox CLI plugin list failed with exit code $LASTEXITCODE" }
           & $cliExe run data.mock --set count=2 --set format=csv --set seed=10001 --set 'fields=[{"name":"value","generator":"constant","options":{"value":"TEST DATA ONLY"}}]'
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
@@ -184,7 +187,29 @@ jobs:
             }
             exit $exitCode
           }
-      - name: Resolve previous release manifest
+          # The GUI executable exposes the same headless plugin Host protocol
+          # before loading Qt. A successful request verifies the frozen GUI has
+          # its Core, SDK, and bundled plugins in the expected onedir layout.
+          $guiBundle = Split-Path -Parent $guiExe
+          $guiWorkspace = Join-Path $env:RUNNER_TEMP "testbox-gui-host"
+          New-Item -ItemType Directory -Force -Path (Join-Path $guiWorkspace "input"), (Join-Path $guiWorkspace "output"), (Join-Path $guiWorkspace "logs") | Out-Null
+          $guiRequest = @{
+            protocol_version = 1
+            task_id = "gui-smoke"
+            command = "data.mock"
+            entry = "src.main:Plugin"
+            plugin_path = (Join-Path $guiBundle "_internal\plugins\data-generator")
+            workspace = $guiWorkspace
+            params = @{ count = 1; format = "csv"; seed = 10001; fields = @(@{ name = "value"; generator = "constant"; options = @{ value = "TEST DATA ONLY" } }) }
+            config = @{}
+          } | ConvertTo-Json -Depth 10 -Compress
+          $guiResult = $guiRequest | & $guiExe --plugin-host
+          if ($LASTEXITCODE -ne 0) { throw "TestBox GUI plugin Host failed with exit code $LASTEXITCODE" }
+          $guiEvent = $guiResult | ConvertFrom-Json
+          if ($guiEvent.event -ne "result" -or $guiEvent.result.status -ne "succeeded") {
+            throw "TestBox GUI plugin Host returned an unexpected result: $guiResult"
+          }
+      - name: Resolve previous release manifests
         if: needs.prepare-release.outputs.publish_release == 'true'
         shell: pwsh
         env:
@@ -204,27 +229,37 @@ jobs:
             Sort-Object Version -Descending |
             Select-Object -First 1
           if ($previous) {
-            $asset = $previous.Release.assets | Where-Object { $_.name -eq 'update-manifest.json' } | Select-Object -First 1
-            if ($asset) {
-              Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\previous-update-manifest.json"
-              Write-Host "Using previous release manifest: $($previous.Release.tag_name)"
+            foreach ($component in @('CLI', 'GUI')) {
+              $assetName = "TestBox-$component-update-manifest.json"
+              $asset = $previous.Release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+              if ($asset) {
+                Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\previous-$($component.ToLower())-update-manifest.json"
+                Write-Host "Using previous $component release manifest: $($previous.Release.tag_name)"
+              }
             }
           }
-      - name: Create incremental update package
+      - name: Create component update packages
         shell: pwsh
         run: |
-          $previousArgs = @()
-          $previousManifest = "$env:RUNNER_TEMP\previous-update-manifest.json"
-          if (Test-Path $previousManifest) {
-            $previousArgs = @('--previous-manifest', $previousManifest)
-          }
           $packageBaseUrlArgs = @()
           if ('${{ needs.prepare-release.outputs.publish_release }}' -eq 'true') {
             $baseUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/${{ needs.prepare-release.outputs.release_tag }}"
             $packageBaseUrlArgs = @('--package-base-url', $baseUrl)
           }
-          python scripts/build_update_package.py --root dist/windows --version $env:RELEASE_VERSION --output "dist/TestBox-update-v$env:RELEASE_VERSION.zip" --manifest dist/windows/update-manifest.json @packageBaseUrlArgs @previousArgs
-      - name: Build full installation and incremental setup programs
+          foreach ($component in @('cli', 'gui')) {
+            $title = $component.ToUpperInvariant()
+            $previousArgs = @()
+            $previousManifest = "$env:RUNNER_TEMP\previous-$component-update-manifest.json"
+            if (Test-Path $previousManifest) {
+              $previousArgs = @('--previous-manifest', $previousManifest)
+            }
+            $package = "dist/TestBox-$title-update-v$env:RELEASE_VERSION.zip"
+            $manifest = "dist/windows/$component/update-manifest.json"
+            python scripts/build_update_package.py --component $component --root "dist/windows/$component" --version $env:RELEASE_VERSION --output $package --manifest $manifest @packageBaseUrlArgs @previousArgs
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create $title update package" }
+            Copy-Item $manifest "dist/TestBox-$title-update-manifest.json"
+          }
+      - name: Build component installation and incremental setup programs
         shell: pwsh
         run: |
           $isccCandidates = @(
@@ -237,15 +272,23 @@ jobs:
             $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           }
           if (-not $iscc) { throw 'Inno Setup compiler (ISCC.exe) was not found' }
+          & $iscc "/DAppVersion=$env:RELEASE_VERSION" installer/TestBoxCLI.iss
+          if ($LASTEXITCODE -ne 0) { throw "CLI installer build failed with exit code $LASTEXITCODE" }
+          & $iscc "/DAppVersion=$env:RELEASE_VERSION" "/DUpdatePackage=TestBox-CLI-update-v$env:RELEASE_VERSION.zip" installer/TestBoxCLIUpdate.iss
+          if ($LASTEXITCODE -ne 0) { throw "CLI incremental setup build failed with exit code $LASTEXITCODE" }
           & $iscc "/DAppVersion=$env:RELEASE_VERSION" installer/TestBox.iss
-          if ($LASTEXITCODE -ne 0) { throw "Full installer build failed with exit code $LASTEXITCODE" }
-          & $iscc "/DAppVersion=$env:RELEASE_VERSION" "/DUpdatePackage=TestBox-update-v$env:RELEASE_VERSION.zip" installer/TestBoxUpdate.iss
-          if ($LASTEXITCODE -ne 0) { throw "Incremental setup build failed with exit code $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "GUI installer build failed with exit code $LASTEXITCODE" }
+          & $iscc "/DAppVersion=$env:RELEASE_VERSION" "/DUpdatePackage=TestBox-GUI-update-v$env:RELEASE_VERSION.zip" installer/TestBoxUpdate.iss
+          if ($LASTEXITCODE -ne 0) { throw "GUI incremental setup build failed with exit code $LASTEXITCODE" }
           $expected = @(
-            "dist\TestBox-Install-v$env:RELEASE_VERSION.exe",
-            "dist\TestBox-Setup-v$env:RELEASE_VERSION.exe",
-            "dist\TestBox-update-v$env:RELEASE_VERSION.zip",
-            "dist\windows\update-manifest.json"
+            "dist\TestBox-CLI-Install-v$env:RELEASE_VERSION.exe",
+            "dist\TestBox-CLI-Setup-v$env:RELEASE_VERSION.exe",
+            "dist\TestBox-CLI-update-v$env:RELEASE_VERSION.zip",
+            "dist\TestBox-CLI-update-manifest.json",
+            "dist\TestBox-GUI-Install-v$env:RELEASE_VERSION.exe",
+            "dist\TestBox-GUI-Setup-v$env:RELEASE_VERSION.exe",
+            "dist\TestBox-GUI-update-v$env:RELEASE_VERSION.zip",
+            "dist\TestBox-GUI-update-manifest.json"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Expected Windows release asset was not created: $path" }
@@ -256,10 +299,14 @@ jobs:
         with:
           name: testbox-windows-applications
           path: |
-            dist/TestBox-Install-v*.exe
-            dist/TestBox-Setup-v*.exe
-            dist/TestBox-update-v*.zip
-            dist/windows/update-manifest.json
+            dist/TestBox-CLI-Install-v*.exe
+            dist/TestBox-CLI-Setup-v*.exe
+            dist/TestBox-CLI-update-v*.zip
+            dist/TestBox-CLI-update-manifest.json
+            dist/TestBox-GUI-Install-v*.exe
+            dist/TestBox-GUI-Setup-v*.exe
+            dist/TestBox-GUI-update-v*.zip
+            dist/TestBox-GUI-update-manifest.json
           if-no-files-found: error
 
   release:
@@ -306,9 +353,12 @@ jobs:
             Commit: ${{ needs.prepare-release.outputs.checkout_ref }}
 
             Windows assets:
-            - TestBox-Install-v${{ needs.prepare-release.outputs.version }}.exe: full installation program
-            - TestBox-Setup-v${{ needs.prepare-release.outputs.version }}.exe: incremental setup program
-            - TestBox-update-v${{ needs.prepare-release.outputs.version }}.zip: updater payload
+            - TestBox-CLI-Install-v${{ needs.prepare-release.outputs.version }}.exe: CLI full installation program
+            - TestBox-CLI-Setup-v${{ needs.prepare-release.outputs.version }}.exe: CLI incremental setup program
+            - TestBox-CLI-update-v${{ needs.prepare-release.outputs.version }}.zip: CLI updater payload
+            - TestBox-GUI-Install-v${{ needs.prepare-release.outputs.version }}.exe: GUI full installation program
+            - TestBox-GUI-Setup-v${{ needs.prepare-release.outputs.version }}.exe: GUI incremental setup program
+            - TestBox-GUI-update-v${{ needs.prepare-release.outputs.version }}.zip: GUI updater payload
           target_commitish: ${{ needs.prepare-release.outputs.checkout_ref }}
           prerelease: false
           make_latest: true

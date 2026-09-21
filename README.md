@@ -68,27 +68,47 @@ python3 -m testbox.cli plugin uninstall data-generator
 
 ## Windows 使用
 
-Windows 全量安装程序会安装命令行工具和桌面端；安装完成后可在 PowerShell 或命令提示符执行：
+Windows 发行版按用途拆为**独立的 CLI 和 GUI 产品**，分别安装、分别增量更新：
 
-```text
-& "$env:LOCALAPPDATA\Programs\TestBox\TestBox\TestBox.exe" plugin list
-& "$env:LOCALAPPDATA\Programs\TestBox\TestBox\TestBox.exe" run data.mock --count 100 --format csv --seed 10001
+| 产品 | 完整安装程序 | 增量安装程序 | 默认安装目录 |
+| --- | --- | --- | --- |
+| CLI | `TestBox-CLI-Install-vX.Y.Z.exe` | `TestBox-CLI-Setup-vX.Y.Z.exe` | `%LOCALAPPDATA%\Programs\TestBox CLI` |
+| GUI | `TestBox-GUI-Install-vX.Y.Z.exe` | `TestBox-GUI-Setup-vX.Y.Z.exe` | `%LOCALAPPDATA%\Programs\TestBox GUI` |
+
+CLI 包不携带 PySide6/Qt 桌面运行时，适合命令行任务；GUI 包单独携带桌面端。两者可同时安装，并共享 `%LOCALAPPDATA%\TestBox\` 下的用户插件、工作区和任务历史；卸载任一产品不会删除这些用户数据。
+
+```powershell
+# CLI
+& "$env:LOCALAPPDATA\Programs\TestBox CLI\TestBox\TestBox.exe" plugin list
+& "$env:LOCALAPPDATA\Programs\TestBox CLI\TestBox\TestBox.exe" run data.mock --count 100 --format csv --seed 10001
+
+# GUI
+& "$env:LOCALAPPDATA\Programs\TestBox GUI\TestBox-GUI\TestBox-GUI.exe"
 ```
 
-发布包包含命令行 `TestBox.exe` 和桌面端 `TestBox-GUI.exe`，两者均内置当前版本的官方插件，可直接使用。桌面端进入左侧“插件与诊断”页面后，可以点击“导入插件”选择 ZIP 插件包，也可以选中用户插件后点击“卸载选中插件”；覆盖安装和卸载都会二次确认。Release 中的 `data-generator`、`sql-parser`、`sql-select` 与 `evidence-tool` ZIP 是独立插件包，用于为已安装的软件额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。通过 ZIP 安装的插件和任务工作区保存在 `%LOCALAPPDATA%\TestBox\`，因此不会尝试写入受保护的安装目录。插件安装、卸载命令与其他平台一致。
-Windows 发行版使用 PyInstaller `onedir`，首次启动不再解压整个 EXE；用户应运行 EXE 安装程序，不需要解压后直接使用。Release 同时提供 `TestBox-Install-vX.Y.Z.exe` 全量安装程序、`TestBox-Setup-vX.Y.Z.exe` 增量安装程序、`TestBox-update-vX.Y.Z.zip` 更新载荷和 `update-manifest.json`。全量安装程序只管理程序安装目录；任务工作区、配置和用户插件继续保存在 `%LOCALAPPDATA%\TestBox\`，升级时不会覆盖这些用户数据。
+冻结的 CLI 安装包不包含桌面端，因此 `TestBox.exe gui` 会提示安装 GUI 包；从源码或普通 Python 安装运行该子命令仍可启动桌面端。CLI 保留官方插件和 Evidence Tool 的非交互处理能力；需要 Evidence Tool 的交互式截图选择等 Qt 功能时，请使用 GUI 包。
 
-增量更新由安装目录中的 `TestBox-Updater.exe` 执行。它依据版本清单校验 SHA-256，只替换新增或变化的文件，删除新版本清单中已移除的受管文件，并保留未受管的用户文件。增量包要求从对应的上一正式版本升级；如果版本跨度不连续，请先使用最新完整安装包。
-
-手动执行更新示例：
+每个产品的 Release 资产各自包含版本化更新 ZIP 和 manifest：
 
 ```text
-TestBox-Updater.exe --manifest-url https://github.com/DavisDing/TestBox/releases/latest/download/update-manifest.json
+TestBox-CLI-update-vX.Y.Z.zip
+TestBox-CLI-update-manifest.json
+TestBox-GUI-update-vX.Y.Z.zip
+TestBox-GUI-update-manifest.json
 ```
 
-GitHub Actions 发布规则：每次推送到 `main` 或 `master`，都会自动创建一个正式 Release。工作流以最新 `vX.Y.Z` 标签为基准将补丁版本加 `0.0.1`，自动同步 `pyproject.toml`、运行时版本与两个安装程序版本、创建对应标签并发布构建产物。例如已有 `v1.0.1` 时，下一次提交会发布 `v1.0.2`。首次自动发布使用仓库声明的版本号。
+增量更新只接受同一产品、对应上一正式版本的 manifest；安装目录和更新清单隔离，避免 GUI 更新删除 CLI 文件（或反向删除）。旧的“CLI + GUI 合包”不能直接用新分包增量更新；请下载对应的新版完整安装程序迁移。新安装器不会删除旧安装目录或 `%LOCALAPPDATA%\TestBox\` 用户数据。
 
-无需手动创建标签；如需手动重跑或补发，可推送一个与 `pyproject.toml` 版本完全一致的 `vX.Y.Z` 标签。Pull Request 只执行验证，不会发布 Release。
+CLI 和 GUI 安装目录分别包含 `TestBox-CLI-Updater.exe`、`TestBox-GUI-Updater.exe`。它们会按自身产品自动下载对应 manifest，校验 SHA-256 后仅替换受管文件。手动更新示例：
+
+```text
+TestBox-CLI-Updater.exe --manifest-url https://github.com/DavisDing/TestBox/releases/latest/download/TestBox-CLI-update-manifest.json
+TestBox-GUI-Updater.exe --manifest-url https://github.com/DavisDing/TestBox/releases/latest/download/TestBox-GUI-update-manifest.json
+```
+
+发布的独立 `data-generator`、`sql-parser`、`sql-select` 与 `evidence-tool` ZIP 是插件包，可额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。Windows 发行版使用 PyInstaller `onedir`，用户应运行 EXE 安装程序而不是直接解压绿色包。
+
+GitHub Actions 发布规则：每次推送到 `main` 或 `master`，都会自动创建一个正式 Release。工作流以最新 `vX.Y.Z` 标签为基准将补丁版本加 `0.0.1`，自动同步 `pyproject.toml`、运行时版本和四个 Windows 安装器版本、创建对应标签并发布构建产物。首次自动发布使用仓库声明的版本号。Pull Request 只执行验证，不会发布 Release。
 
 ## 任务历史与清理
 

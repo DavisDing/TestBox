@@ -182,9 +182,10 @@ Evidence Tool、Excel Tool、Env Check、AI 插件、插件市场等作为后续
 
 ## 9.1 Windows 发布与自动版本
 
-- Windows 主程序使用 PyInstaller `onedir`，GitHub Release 必须同时提供全量安装程序 `TestBox-Install-vX.Y.Z.exe` 和增量安装程序 `TestBox-Setup-vX.Y.Z.exe`，不能只提供需要解压后运行的绿色包或只提供增量包。
-- 增量安装程序内部使用版本化更新载荷和 `TestBox-Updater.exe`，要求从对应的上一正式版本升级；更新清单和增量 ZIP 作为技术载荷随 Release 发布。
-- 每次推送到 `main` 或 `master` 都由 GitHub Actions 创建正式版本，版本号以最新 `vX.Y.Z` 标签为基准自动增加补丁号 `0.0.1`，并同步 Python 包、运行时版本和两个 Windows 安装程序的版本。
+- Windows 主程序使用 PyInstaller `onedir`，GitHub Release 必须分别提供 CLI 的 `TestBox-CLI-Install-vX.Y.Z.exe`、`TestBox-CLI-Setup-vX.Y.Z.exe` 和 GUI 的 `TestBox-GUI-Install-vX.Y.Z.exe`、`TestBox-GUI-Setup-vX.Y.Z.exe`，不能只提供绿色包或只提供增量包。
+- CLI 与 GUI 必须使用独立安装目录、独立更新载荷、独立更新清单和独立 updater；更新清单必须带组件身份，跨组件更新必须被拒绝。CLI 不得打入 Qt 桌面依赖；GUI 只收集实际所需 Qt 模块，以尽可能降低安装包大小。
+- 增量安装程序内部使用版本化更新载荷，要求从对应产品的上一正式版本升级；CLI/GUI 的更新清单和增量 ZIP 都作为技术载荷随 Release 发布。旧版 CLI+GUI 合包用户通过相应完整安装器迁移。
+- 每次推送到 `main` 或 `master` 都由 GitHub Actions 创建正式版本，版本号以最新 `vX.Y.Z` 标签为基准自动增加补丁号 `0.0.1`，并同步 Python 包、运行时版本和四个 Windows 安装程序的版本。
 - Pull Request 只执行测试和构建验证，不创建版本提交、标签或正式 Release。
 
 ## 10. Out of Scope

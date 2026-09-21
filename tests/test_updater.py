@@ -68,7 +68,8 @@ class UpdaterTests(unittest.TestCase):
             manifest = temp / "manifest.json"
             previous_manifest = temp / "previous-manifest.json"
             previous_manifest.write_text(json.dumps({
-                "schema_version": 1,
+                "schema_version": 2,
+                "component": "test",
                 "version": "1.0.0",
                 "files": [{"path": "old.txt", "size": 3, "sha256": "0" * 64}],
             }), encoding="utf-8")
@@ -89,12 +90,93 @@ class UpdaterTests(unittest.TestCase):
             apply_update(install, package)
             self.assertEqual((install / "app.txt").read_text(encoding="utf-8"), "first")
 
+
+    def test_update_rejects_a_package_for_another_component(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            temp = Path(temp_name)
+            gui_release = temp / "gui-release"
+            gui_release.mkdir()
+            (gui_release / "app.txt").write_text("gui", encoding="utf-8")
+            gui_package = temp / "gui-update.zip"
+            gui_manifest = temp / "gui-manifest.json"
+            create_update_package(
+                gui_release,
+                version="1.0.0",
+                output=gui_package,
+                manifest_output=gui_manifest,
+                component="gui",
+            )
+
+            install = temp / "install"
+            cli_release = temp / "cli-release"
+            cli_release.mkdir()
+            (cli_release / "app.txt").write_text("cli", encoding="utf-8")
+            cli_package = temp / "cli-update.zip"
+            create_update_package(
+                cli_release,
+                version="1.0.0",
+                output=cli_package,
+                manifest_output=temp / "cli-manifest.json",
+                component="cli",
+            )
+            apply_update(install, cli_package)
+
+            with self.assertRaisesRegex(ValueError, "更新组件不匹配"):
+                apply_update(install, gui_package)
+            self.assertEqual((install / "app.txt").read_text(encoding="utf-8"), "cli")
+
+    def test_create_update_rejects_previous_manifest_for_another_component(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            temp = Path(temp_name)
+            gui_release = temp / "gui-release"
+            gui_release.mkdir()
+            (gui_release / "app.txt").write_text("gui", encoding="utf-8")
+            gui_manifest = temp / "gui-manifest.json"
+            create_update_package(
+                gui_release,
+                version="1.0.0",
+                output=temp / "gui-update.zip",
+                manifest_output=gui_manifest,
+                component="gui",
+            )
+            cli_release = temp / "cli-release"
+            cli_release.mkdir()
+            (cli_release / "app.txt").write_text("cli", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "更新清单组件不匹配"):
+                create_update_package(
+                    cli_release,
+                    version="1.0.1",
+                    output=temp / "cli-update.zip",
+                    manifest_output=temp / "cli-manifest.json",
+                    previous_manifest=gui_manifest,
+                    component="cli",
+                )
+
+    def test_update_manifest_does_not_manage_component_updaters(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            temp = Path(temp_name)
+            release = temp / "release"
+            release.mkdir()
+            (release / "app.txt").write_text("app", encoding="utf-8")
+            (release / "TestBox-CLI-Updater.exe").write_text("cli updater", encoding="utf-8")
+            (release / "TestBox-GUI-Updater.exe").write_text("gui updater", encoding="utf-8")
+            manifest = create_update_package(
+                release,
+                version="1.0.0",
+                output=temp / "update.zip",
+                manifest_output=temp / "manifest.json",
+                component="cli",
+            )
+            self.assertEqual([item["path"] for item in manifest["files"]], ["app.txt"])
+
+
     def test_update_rejects_zip_path_traversal(self):
         with tempfile.TemporaryDirectory() as temp_name:
             temp = Path(temp_name)
             package = temp / "bad.zip"
             manifest = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "component": "test",
                 "version": "1.0.0",
                 "base_version": None,
                 "package": package.name,

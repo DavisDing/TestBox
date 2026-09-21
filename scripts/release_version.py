@@ -13,8 +13,11 @@ _VERSION_FILES = (
     (Path("pyproject.toml"), re.compile(r'(?m)^version = "[^"]+"$'), 'version = "{version}"'),
     (Path("testbox/__init__.py"), re.compile(r'(?m)^__version__ = "[^"]+"$'), '__version__ = "{version}"'),
     (Path("installer/TestBox.iss"), re.compile(r'(?m)^#define AppVersion "[^"]+"$'), '#define AppVersion "{version}"'),
+    (Path("installer/TestBoxCLI.iss"), re.compile(r'(?m)^#define AppVersion "[^"]+"$'), '#define AppVersion "{version}"'),
     (Path("installer/TestBoxUpdate.iss"), re.compile(r'(?m)^#define AppVersion "[^"]+"$'), '#define AppVersion "{version}"'),
-    (Path("installer/TestBoxUpdate.iss"), re.compile(r'(?m)^#define UpdatePackage "[^"]+"$'), '#define UpdatePackage "TestBox-update-v{version}.zip"'),
+    (Path("installer/TestBoxUpdate.iss"), re.compile(r'(?m)^#define UpdatePackage "[^"]+"$'), '#define UpdatePackage "TestBox-GUI-update-v{version}.zip"'),
+    (Path("installer/TestBoxCLIUpdate.iss"), re.compile(r'(?m)^#define AppVersion "[^"]+"$'), '#define AppVersion "{version}"'),
+    (Path("installer/TestBoxCLIUpdate.iss"), re.compile(r'(?m)^#define UpdatePackage "[^"]+"$'), '#define UpdatePackage "TestBox-CLI-update-v{version}.zip"'),
 )
 
 

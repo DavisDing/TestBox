@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--previous-manifest", type=Path)
     parser.add_argument("--package-base-url")
+    parser.add_argument("--component", choices=("cli", "gui"), required=True)
     args = parser.parse_args()
     manifest = create_update_package(
         args.root,
@@ -27,6 +28,7 @@ def main() -> None:
         manifest_output=args.manifest,
         previous_manifest=args.previous_manifest,
         package_base_url=args.package_base_url,
+        component=args.component,
     )
     print(f"Created update package {args.output} ({len(manifest['changed_files'])} changed, {len(manifest['deleted_files'])} deleted)")
 

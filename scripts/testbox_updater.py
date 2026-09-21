@@ -11,12 +11,19 @@ if str(ROOT) not in sys.path:
 
 from testbox.updater import apply_update, download_and_apply
 
-DEFAULT_MANIFEST_URL = "https://github.com/DavisDing/TestBox/releases/latest/download/update-manifest.json"
+RELEASE_DOWNLOAD_BASE_URL = "https://github.com/DavisDing/TestBox/releases/latest/download"
+
+
+def default_manifest_url() -> str:
+    """Return the release manifest matching the installed package channel."""
+    executable_name = Path(sys.executable).stem.lower() if getattr(sys, "frozen", False) else ""
+    channel = "CLI" if "cli" in executable_name else "GUI"
+    return f"{RELEASE_DOWNLOAD_BASE_URL}/TestBox-{channel}-update-manifest.json"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="TestBox incremental updater")
-    parser.add_argument("--manifest-url", default=DEFAULT_MANIFEST_URL, help="URL of update-manifest.json")
+    parser.add_argument("--manifest-url", default=default_manifest_url(), help="URL of the channel update manifest")
     parser.add_argument("--package", type=Path, help="local full or incremental update ZIP")
     default_install_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
     parser.add_argument("--install-dir", type=Path, default=default_install_dir)

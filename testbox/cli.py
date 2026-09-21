@@ -189,7 +189,18 @@ def main() -> None:
     runtime: Runtime | None = None
     try:
         if arguments.action == "gui":
-            from testbox.gui import main as gui_main
+            if getattr(sys, "frozen", False):
+                raise CliFailure(
+                    ErrorCode.INVALID_PARAMS,
+                    "CLI 安装包不包含桌面端；请安装并运行 TestBox-GUI.exe",
+                    int(ExitCode.USAGE),
+                )
+            # Keep the desktop dependency optional for Core/CLI installations.
+            # A normal import here would make PyInstaller pull PySide6 into the
+            # standalone CLI package during static analysis.
+            from importlib import import_module
+
+            gui_main = import_module("testbox.gui").main
             gui_main()
             return
 

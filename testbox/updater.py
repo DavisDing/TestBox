@@ -18,8 +18,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 MANIFEST_NAME = "update-manifest.json"
-UPDATER_NAME = "TestBox-Updater.exe"
-MANIFEST_SCHEMA_VERSION = 1
+UPDATER_NAMES = frozenset({"TestBox-Updater.exe", "TestBox-CLI-Updater.exe", "TestBox-GUI-Updater.exe"})
+MANIFEST_SCHEMA_VERSION = 2
+VALID_COMPONENTS = frozenset({"cli", "gui", "test"})
 
 
 def sha256_file(path: Path) -> str:
@@ -43,7 +44,7 @@ def _managed_files(root: Path) -> list[dict[str, Any]]:
         if not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        if relative in {MANIFEST_NAME, UPDATER_NAME}:
+        if relative == MANIFEST_NAME or Path(relative).name in UPDATER_NAMES:
             continue
         entries.append({"path": relative, "size": path.stat().st_size, "sha256": sha256_file(path)})
     return entries
@@ -52,6 +53,9 @@ def _managed_files(root: Path) -> list[dict[str, Any]]:
 def _validate_manifest(data: Any, source: str = "更新清单") -> dict[str, Any]:
     if not isinstance(data, dict) or data.get("schema_version") != MANIFEST_SCHEMA_VERSION:
         raise ValueError(f"不支持的更新清单: {source}")
+    component = data.get("component")
+    if component not in VALID_COMPONENTS:
+        raise ValueError("更新清单中的 component 无效")
     files = data.get("files")
     if not isinstance(files, list):
         raise ValueError("更新清单缺少 files 列表")
@@ -98,13 +102,20 @@ def create_update_package(
     manifest_output: Path,
     previous_manifest: Path | None = None,
     package_base_url: str | None = None,
+    component: str = "test",
 ) -> dict[str, Any]:
     """Create a full first-release or changed-files-only update archive."""
+    if component not in VALID_COMPONENTS:
+        raise ValueError(f"不支持的更新组件: {component}")
     root = root.resolve()
     current_files = _managed_files(root)
     previous: dict[str, Any] = {}
     if previous_manifest and previous_manifest.is_file():
         previous = _read_manifest(previous_manifest)
+        if previous["component"] != component:
+            raise ValueError(
+                f"更新清单组件不匹配: {previous['component']} 不能用于 {component}"
+            )
     previous_by_path = {item["path"]: item for item in previous.get("files", [])}
     current_by_path = {item["path"]: item for item in current_files}
 
@@ -117,6 +128,7 @@ def create_update_package(
     output = output.resolve()
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
+        "component": component,
         "version": version,
         "base_version": previous.get("version"),
         "package": output.name,
@@ -194,10 +206,16 @@ def apply_update(
             raise ValueError("更新包缺少 update-manifest.json") from error
         manifest = _validate_manifest(json.loads(manifest_bytes.decode("utf-8")), f"{package}:{MANIFEST_NAME}")
         local_manifest = install_root / MANIFEST_NAME
+        if local_manifest.is_file():
+            installed_manifest = _read_manifest(local_manifest)
+            if installed_manifest["component"] != manifest["component"]:
+                raise ValueError(
+                    f"更新组件不匹配：安装的是 {installed_manifest['component']}，更新包是 {manifest['component']}"
+                )
         if manifest.get("base_version"):
             if not local_manifest.is_file():
                 raise ValueError("当前安装没有版本清单，请先使用完整安装包安装")
-            installed_version = _read_manifest(local_manifest).get("version")
+            installed_version = installed_manifest.get("version")
             if installed_version != manifest["base_version"]:
                 raise ValueError(
                     f"更新包基于 v{manifest['base_version']}，当前安装是 v{installed_version or 'unknown'}；请先更新到对应版本"
@@ -288,7 +306,12 @@ def download_and_apply(
         local_manifest_path = install_root / MANIFEST_NAME
         local_version = None
         if local_manifest_path.is_file():
-            local_version = _read_manifest(local_manifest_path).get("version")
+            local_manifest = _read_manifest(local_manifest_path)
+            if local_manifest["component"] != manifest["component"]:
+                raise ValueError(
+                    f"更新组件不匹配：安装的是 {local_manifest['component']}，更新清单是 {manifest['component']}"
+                )
+            local_version = local_manifest.get("version")
         if local_version == manifest.get("version") and not force:
             return {"status": "up_to_date", "version": local_version}
         package_url = manifest.get("package_url")
