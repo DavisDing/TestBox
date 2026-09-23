@@ -53,10 +53,9 @@ class ProcessRunnerTests(unittest.TestCase):
 
     def test_frozen_cli_keeps_embedded_host_mode(self):
         executable = "/install/TestBox CLI/TestBox/TestBox.exe"
-        resolved_executable = str(Path(executable).resolve())
         result, command = self._run_frozen(executable)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(command, [resolved_executable, "--plugin-host"])
+        self.assertEqual(command, [executable, "--plugin-host"])
 
 
 if __name__ == "__main__":
