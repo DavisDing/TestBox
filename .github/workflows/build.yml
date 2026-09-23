@@ -206,8 +206,28 @@ jobs:
             config = @{}
           } | ConvertTo-Json -Depth 10 -Compress
           [System.IO.File]::WriteAllText($guiRequestPath, $guiRequest, [System.Text.UTF8Encoding]::new($false))
-          & $guiExe --plugin-host --request-file $guiRequestPath --response-file $guiResponsePath
-          if ($LASTEXITCODE -ne 0) { throw "TestBox GUI plugin Host failed with exit code $LASTEXITCODE" }
+          # A GUI-subsystem executable can be launched asynchronously by the
+          # PowerShell call operator. Use ProcessStartInfo so the smoke test
+          # waits for the same executable to finish writing its response file
+          # before attempting to read it.
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $guiExe
+          $startInfo.UseShellExecute = $false
+          foreach ($argument in @(
+              "--plugin-host",
+              "--request-file",
+              $guiRequestPath,
+              "--response-file",
+              $guiResponsePath
+            )) {
+            [void]$startInfo.ArgumentList.Add($argument)
+          }
+          $guiProcess = [System.Diagnostics.Process]::Start($startInfo)
+          $guiProcess.WaitForExit()
+          if ($guiProcess.ExitCode -ne 0) { throw "TestBox GUI plugin Host failed with exit code $($guiProcess.ExitCode)" }
+          if (-not (Test-Path -LiteralPath $guiResponsePath -PathType Leaf)) {
+            throw "TestBox GUI plugin Host did not create its response file: $guiResponsePath"
+          }
           $guiEvent = Get-Content $guiResponsePath -Raw | ConvertFrom-Json
           if ($guiEvent.event -ne "result" -or $guiEvent.result.status -ne "success") {
             throw "TestBox GUI plugin Host returned an unexpected result: $(Get-Content $guiResponsePath -Raw)"
