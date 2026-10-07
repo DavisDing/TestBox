@@ -5,13 +5,13 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable
 
 from testbox.core.models import TaskStatus
 
 
 def _is_process_alive(pid: int) -> bool:
-    """Return whether a recorded Host PID still refers to a live process."""
+    """Return whether a recorded Host or owner PID refers to a live process."""
     if pid <= 0:
         return False
 
@@ -42,13 +42,20 @@ def _is_process_alive(pid: int) -> bool:
 
     try:
         os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
+    except PermissionError:
+        # A process owned by another user may exist but reject the probe.
+        return True
+    except OSError:
         return False
     return True
 
 
 class TaskHistory:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
+    TERMINAL_STATUSES = (
+        TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value,
+        TaskStatus.CANCELLED.value, TaskStatus.ABANDONED.value,
+    )
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,106 +63,133 @@ class TaskHistory:
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
-        self._migrate()
+        try:
+            self._migrate()
+        except Exception:
+            self.connection.close()
+            raise
 
     def _migrate(self) -> None:
-        self.connection.execute("CREATE TABLE IF NOT EXISTS schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        row = self.connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
-        current = int(row[0]) if row else 0
-        if current < 1:
-            self.connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS task_history (
-                    id TEXT PRIMARY KEY,
-                    plugin_name TEXT NOT NULL,
-                    plugin_version TEXT NOT NULL,
-                    command TEXT NOT NULL,
-                    params TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    finished_at TEXT,
-                    status TEXT NOT NULL,
-                    result_path TEXT NOT NULL,
-                    workspace_path TEXT NOT NULL,
-                    error_code TEXT,
-                    heartbeat_at TEXT,
-                    host_pid INTEGER
+        # Serialize version reads and ALTER TABLE across concurrent startups.
+        # The connection's default busy timeout bounds waiting for other writers.
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute("CREATE TABLE IF NOT EXISTS schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            row = self.connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
+            current = int(row[0]) if row else 0
+            if current > self.SCHEMA_VERSION:
+                raise ValueError(
+                    f"Unsupported task history schema version {current}; maximum supported is {self.SCHEMA_VERSION}"
                 )
-                """
-            )
-            self.connection.execute("CREATE INDEX IF NOT EXISTS idx_task_history_started_at ON task_history(started_at)")
-            self.connection.execute("CREATE INDEX IF NOT EXISTS idx_task_history_status ON task_history(status)")
-            self.connection.execute("CREATE INDEX IF NOT EXISTS idx_task_history_command ON task_history(command)")
-            self.connection.execute(
-                "INSERT INTO schema_metadata(key, value) VALUES('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (str(self.SCHEMA_VERSION),),
-            )
-        self.connection.commit()
+            if current < 1:
+                self.connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS task_history (
+                        id TEXT PRIMARY KEY,
+                        plugin_name TEXT NOT NULL,
+                        plugin_version TEXT NOT NULL,
+                        command TEXT NOT NULL,
+                        params TEXT NOT NULL,
+                        started_at TEXT NOT NULL,
+                        finished_at TEXT,
+                        status TEXT NOT NULL,
+                        result_path TEXT NOT NULL,
+                        workspace_path TEXT NOT NULL,
+                        error_code TEXT,
+                        heartbeat_at TEXT,
+                        host_pid INTEGER
+                    )
+                    """
+                )
+                self.connection.execute("CREATE INDEX IF NOT EXISTS idx_task_history_started_at ON task_history(started_at)")
+                self.connection.execute("CREATE INDEX IF NOT EXISTS idx_task_history_status ON task_history(status)")
+                self.connection.execute("CREATE INDEX IF NOT EXISTS idx_task_history_command ON task_history(command)")
+            if current < 2:
+                columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(task_history)")}
+                if "owner_pid" not in columns:
+                    self.connection.execute("ALTER TABLE task_history ADD COLUMN owner_pid INTEGER")
+                self.connection.execute(
+                    "INSERT INTO schema_metadata(key, value) VALUES('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (str(self.SCHEMA_VERSION),),
+                )
 
     def close(self) -> None:
         self.connection.close()
 
     def create(self, record: dict[str, Any]) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO task_history
-            (id, plugin_name, plugin_version, command, params, started_at, status,
-             result_path, workspace_path, heartbeat_at, host_pid)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record["id"],
-                record["plugin_name"],
-                record["plugin_version"],
-                record["command"],
-                json.dumps(record["params"], ensure_ascii=False),
-                record["started_at"],
-                TaskStatus.PENDING.value,
-                record["result_path"],
-                record["workspace_path"],
-                record.get("started_at"),
-                record.get("host_pid"),
-            ),
-        )
-        self.start(record["id"])
+        # Creation and the initial RUNNING transition are one atomic write.
+        # owner_pid is explicit: legacy/manual records must remain unowned.
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO task_history
+                (id, plugin_name, plugin_version, command, params, started_at, status,
+                 result_path, workspace_path, heartbeat_at, host_pid, owner_pid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["id"],
+                    record["plugin_name"],
+                    record["plugin_version"],
+                    record["command"],
+                    json.dumps(record["params"], ensure_ascii=False),
+                    record["started_at"],
+                    TaskStatus.RUNNING.value,
+                    record["result_path"],
+                    record["workspace_path"],
+                    self._now(),
+                    record.get("host_pid"),
+                    record.get("owner_pid"),
+                ),
+            )
 
     def start(self, task_id: str) -> None:
-        self.connection.execute(
-            "UPDATE task_history SET status = ?, heartbeat_at = ? WHERE id = ? AND status = ?",
-            (TaskStatus.RUNNING.value, self._now(), task_id, TaskStatus.PENDING.value),
-        )
-        self.connection.commit()
+        with self.connection:
+            self.connection.execute(
+                "UPDATE task_history SET status = ?, heartbeat_at = ? WHERE id = ? AND status = ?",
+                (TaskStatus.RUNNING.value, self._now(), task_id, TaskStatus.PENDING.value),
+            )
 
     def finish(self, task_id: str, *, status: str | TaskStatus, finished_at: str, error_code: str | None = None) -> None:
         value = status.value if isinstance(status, TaskStatus) else str(status)
-        self.connection.execute(
-            "UPDATE task_history SET status = ?, finished_at = ?, error_code = ?, heartbeat_at = ? WHERE id = ? AND status = ?",
-            (value, finished_at, error_code, finished_at, task_id, TaskStatus.RUNNING.value),
-        )
-        self.connection.commit()
+        with self.connection:
+            self.connection.execute(
+                "UPDATE task_history SET status = ?, finished_at = ?, error_code = ?, heartbeat_at = ? WHERE id = ? AND status = ?",
+                (value, finished_at, error_code, finished_at, task_id, TaskStatus.RUNNING.value),
+            )
 
     def set_host_pid(self, task_id: str, host_pid: int) -> None:
-        self.connection.execute(
-            "UPDATE task_history SET host_pid = ? WHERE id = ? AND status = ?",
-            (host_pid, task_id, TaskStatus.RUNNING.value),
-        )
-        self.connection.commit()
+        with self.connection:
+            self.connection.execute(
+                "UPDATE task_history SET host_pid = ? WHERE id = ? AND status = ?",
+                (host_pid, task_id, TaskStatus.RUNNING.value),
+            )
 
-    def abandon_incomplete(self, finished_at: str) -> int:
-        rows = self.connection.execute("SELECT id, host_pid FROM task_history WHERE status = ?", (TaskStatus.RUNNING.value,)).fetchall()
-        abandoned: list[str] = []
-        for row in rows:
-            host_pid = row["host_pid"]
-            if host_pid is None:
-                abandoned.append(row["id"])
-                continue
-            if not _is_process_alive(host_pid):
-                abandoned.append(row["id"])
-        cursor = self.connection.executemany(
-            "UPDATE task_history SET status = ?, finished_at = ?, error_code = 'HOST_INTERRUPTED' WHERE id = ? AND status = ?",
-            [(TaskStatus.ABANDONED.value, finished_at, task_id, TaskStatus.RUNNING.value) for task_id in abandoned],
-        )
-        self.connection.commit()
-        return cursor.rowcount
+    def abandon_incomplete(
+        self, finished_at: str, *, is_task_active: Callable[[str], bool] | None = None,
+    ) -> int:
+        # Lock before the snapshot, not after probing: another connection must
+        # not record a Host PID between our liveness check and terminal update.
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            rows = self.connection.execute(
+                "SELECT id, host_pid, owner_pid FROM task_history WHERE status IN (?, ?)",
+                (TaskStatus.PENDING.value, TaskStatus.RUNNING.value),
+            ).fetchall()
+            abandoned: list[str] = []
+            for row in rows:
+                pid = row["host_pid"] if row["host_pid"] is not None else row["owner_pid"]
+                if pid is None or not _is_process_alive(pid):
+                    # The Host may have just exited while its live Runtime is
+                    # still persisting the result. A nonblocking lifecycle-lock
+                    # probe distinguishes this from an interrupted owner.
+                    if is_task_active is None or not is_task_active(row["id"]):
+                        abandoned.append(row["id"])
+            cursor = self.connection.executemany(
+                "UPDATE task_history SET status = ?, finished_at = ?, error_code = 'HOST_INTERRUPTED' WHERE id = ? AND status IN (?, ?)",
+                [(TaskStatus.ABANDONED.value, finished_at, task_id, TaskStatus.PENDING.value, TaskStatus.RUNNING.value) for task_id in abandoned],
+            )
+            return cursor.rowcount
 
     def get(self, task_id: str) -> dict[str, Any] | None:
         row = self.connection.execute("SELECT * FROM task_history WHERE id = ?", (task_id,)).fetchone()
@@ -236,13 +270,14 @@ class TaskHistory:
 
 
     def clean_before(self, before_timestamp: str) -> int:
-        """删除指定 ISO 时间戳之前的全部任务历史记录。"""
-        cursor = self.connection.execute(
-            "DELETE FROM task_history WHERE started_at < ?",
-            (before_timestamp,),
-        )
-        self.connection.commit()
-        return cursor.rowcount
+        """Delete only known terminal tasks older than the ISO boundary."""
+        placeholders = ", ".join("?" for _ in self.TERMINAL_STATUSES)
+        with self.connection:
+            cursor = self.connection.execute(
+                f"DELETE FROM task_history WHERE started_at < ? AND status IN ({placeholders})",
+                (before_timestamp, *self.TERMINAL_STATUSES),
+            )
+            return cursor.rowcount
 
     @staticmethod
     def _to_dict(row: sqlite3.Row) -> dict[str, Any]:

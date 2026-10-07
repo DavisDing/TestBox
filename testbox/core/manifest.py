@@ -104,6 +104,11 @@ def load_yaml_subset(path: Path) -> dict[str, Any]:
         elif indent >= 4 and ":" in text and current_item is not None:
             key, value = (part.strip() for part in text.split(":", 1))
             current_item[key] = _scalar(value)
+        else:
+            # The fallback supports only this documented subset. Silently
+            # dropping malformed/unsupported lines can turn broken config into
+            # empty settings and start a task with unintended defaults.
+            raise ValueError(f"YAML 子集格式无效或不支持: {text}")
     return root
 
 
@@ -149,9 +154,10 @@ class Manifest:
         if len({command.name for command in commands}) != len(commands): raise ValueError("commands 不能包含重复命令")
         for command in commands:
             if command.input_schema:
-                schema_path = path.parent / str(command.input_schema)
+                plugin_root = path.parent.resolve()
+                schema_path = (plugin_root / str(command.input_schema)).resolve()
                 try:
-                    schema_path.relative_to(path.parent)
+                    schema_path.relative_to(plugin_root)
                 except ValueError as error:
                     raise ValueError("input_schema 路径不能逃逸插件目录") from error
                 if not schema_path.is_file(): raise ValueError(f"命令 Schema 不存在: {command.input_schema}")

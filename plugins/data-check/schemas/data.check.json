@@ -1,0 +1,239 @@
+{
+  "type": "object",
+  "required": [
+    "input",
+    "rules"
+  ],
+  "additionalProperties": false,
+  "x-preview": {
+    "command": "data.preview",
+    "sources": [
+      {
+        "input": "input",
+        "options": "options",
+        "normalize": "normalize",
+        "label": "输入数据"
+      }
+    ]
+  },
+  "properties": {
+    "input": {
+      "type": "string",
+      "format": "file-path",
+      "description": "本地输入文件，不改写源文件"
+    },
+    "options": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "公共 SDK 读取配置；超过读取上限会失败，不抽样检查",
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "csv",
+            "tsv",
+            "txt",
+            "json",
+            "jsonl",
+            "ndjson",
+            "xlsx",
+            "xlsm",
+            "sql"
+          ]
+        },
+        "encoding": {
+          "type": "string"
+        },
+        "delimiter": {
+          "type": "string"
+        },
+        "quotechar": {
+          "type": "string"
+        },
+        "escapechar": {
+          "type": "string"
+        },
+        "record_separator": {
+          "type": "string"
+        },
+        "sheet": {
+          "type": "string"
+        },
+        "json_path": {
+          "type": "string"
+        },
+        "has_header": {
+          "type": "boolean"
+        },
+        "skip_empty_rows": {
+          "type": "boolean"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "formula_mode": {
+          "type": "string",
+          "enum": [
+            "formula",
+            "cached"
+          ]
+        },
+        "header_row": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_columns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_cells": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_cell_length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_row": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "normalize": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "公共 SDK 显式标准化配置；仅影响内存中的检查数据",
+      "properties": {
+        "column_mapping": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "trim": {
+          "type": "boolean"
+        },
+        "casefold": {
+          "type": "boolean"
+        },
+        "null_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "types": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "max_issues": {
+      "type": "integer",
+      "default": 1000,
+      "minimum": 0,
+      "maximum": 10000,
+      "description": "保留明细上限，0 仅保留汇总；仍检查全量"
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "description": "type 标识规则种类；条件配置由插件在读取输入前完整校验；regex 不支持",
+      "items": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "required",
+              "unique",
+              "type",
+              "enum",
+              "range",
+              "length",
+              "compare",
+              "row_count"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "可选唯一规则标识"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "default": "error"
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "field": {
+            "type": "string"
+          },
+          "value_type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "integer",
+              "number",
+              "boolean",
+              "date",
+              "datetime"
+            ]
+          },
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "additionalProperties": true
+            }
+          },
+          "min": {},
+          "max": {},
+          "left": {
+            "type": "string"
+          },
+          "right": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "eq",
+              "ne",
+              "lt",
+              "le",
+              "gt",
+              "ge"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

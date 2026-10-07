@@ -1,0 +1,106 @@
+{
+  "type": "object",
+  "required": [
+    "left",
+    "right"
+  ],
+  "properties": {
+    "left": {
+      "type": "string",
+      "format": "file-path",
+      "description": "左侧基准数据文件；支持 CSV/TSV/TXT/JSON/JSONL/XLSX/XLSM/SQL"
+    },
+    "right": {
+      "type": "string",
+      "format": "file-path",
+      "description": "右侧待比较数据文件；可与左侧格式不同"
+    },
+    "left_options": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "左侧读取选项（SDK）：format、encoding、delimiter、record_separator、has_header、header_row、start_row、sheet、json_path、skip_empty_rows、formula_mode、解析上限"
+    },
+    "right_options": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "右侧读取选项（SDK）；与左侧独立，可通过预览调整"
+    },
+    "left_normalize": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "左侧显式标准化：column_mapping（输入列→统一列）、trim、casefold、null_values、types（统一列名为键）"
+    },
+    "right_normalize": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "右侧显式标准化；仅在用户指定时转换"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "position",
+        "key",
+        "multiset"
+      ],
+      "default": "position",
+      "description": "position 按位置、key 按唯一主键、multiset 无序但保留重复次数"
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "key 模式必须指定标准化后的主键列名；重复/缺失/空值失败，主键不使用数值容差"
+    },
+    "ignore_columns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "忽略的标准化列名；不能忽略主键，不存在的字段会报错"
+    },
+    "absolute_tolerance": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0,
+      "description": "数值绝对容差（非负）；字符串需双方显式转换为 decimal/integer"
+    },
+    "relative_tolerance": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0,
+      "description": "数值相对容差（非负）；差值 ≤ max(绝对容差, 相对容差 × max(|左|, |右|))"
+    },
+    "max_differences": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000,
+      "default": 1000,
+      "description": "报告明细上限（1–100000）；equal 与计数始终依据全量数据"
+    }
+  },
+  "additionalProperties": false,
+  "x-preview": {
+    "command": "data.preview",
+    "sources": [
+      {
+        "input": "left",
+        "options": "left_options",
+        "normalize": "left_normalize",
+        "label": "左侧"
+      },
+      {
+        "input": "right",
+        "options": "right_options",
+        "normalize": "right_normalize",
+        "label": "右侧"
+      }
+    ]
+  }
+}

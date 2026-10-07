@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "properties": {
+    "left": {
+      "type": "string",
+      "format": "file-path",
+      "description": "SQL / TXT / CSV / TSV / XLSX / XLSM / JSON / JSONL 本地文件"
+    },
+    "right": {
+      "type": "string",
+      "format": "file-path",
+      "description": "SQL / TXT / CSV / TSV / XLSX / XLSM / JSON / JSONL 本地文件"
+    },
+    "left_text": {
+      "type": "string",
+      "description": "直接输入 SQL；与文件恰好选一种，仅用于 sql 模式"
+    },
+    "right_text": {
+      "type": "string",
+      "description": "直接输入 SQL；与文件恰好选一种，仅用于 sql 模式"
+    },
+    "left_options": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "SDK read_dataset 配置：format、encoding、delimiter、record_separator、has_header、sheet、header_row、start_row、json_path、formula_mode、max_rows 等；纯 SQL .txt 必须 format=sql"
+    },
+    "right_options": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "SDK read_dataset 配置：format、encoding、delimiter、record_separator、has_header、sheet、header_row、start_row、json_path、formula_mode、max_rows 等；纯 SQL .txt 必须 format=sql"
+    },
+    "left_mode": {
+      "type": "string",
+      "enum": [
+        "sql",
+        "structure"
+      ],
+      "default": "sql",
+      "description": "sql 解析 SQL 文本列；structure 消费声明字段清单，不能输入普通业务数据"
+    },
+    "right_mode": {
+      "type": "string",
+      "enum": [
+        "sql",
+        "structure"
+      ],
+      "default": "sql",
+      "description": "sql 解析 SQL 文本列；structure 消费声明字段清单，不能输入普通业务数据"
+    },
+    "sql_column": {
+      "type": "string",
+      "default": "sql",
+      "minLength": 1,
+      "description": "表格 SQL 文本列名（format=sql 固定为 sql）"
+    }
+  },
+  "additionalProperties": false,
+  "x-preview": {
+    "command": "sql.preview",
+    "sql_column": "sql_column",
+    "sources": [
+      {
+        "input": "left",
+        "text": "left_text",
+        "options": "left_options",
+        "mode": "left_mode",
+        "label": "左侧"
+      },
+      {
+        "input": "right",
+        "text": "right_text",
+        "options": "right_options",
+        "mode": "right_mode",
+        "label": "右侧"
+      }
+    ]
+  }
+}

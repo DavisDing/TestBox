@@ -1,0 +1,16 @@
+schema_version: 1
+name: data-preview
+version: 1.0.0
+description: 多格式数据解析、标准化与只读预览
+category: data
+core_compatibility: ">=1.0.16,<2.0"
+capabilities:
+  concurrency: true
+  network: false
+  filesystem: output-only
+  resources: []
+entry: src.main:Plugin
+commands:
+  - name: data.preview
+    description: 调整编码、分隔符、记录换行和区域后预览解析结果
+    input_schema: schemas/data.preview.json

@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "string",
+      "format": "file-path",
+      "description": "SQL / TXT / CSV / TSV / XLSX / XLSM / JSON / JSONL 本地文件"
+    },
+    "text": {
+      "type": "string",
+      "description": "直接输入 SQL；与文件恰好选一种，仅用于 sql 模式"
+    },
+    "options": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "SDK read_dataset 配置：format、encoding、delimiter、record_separator、has_header、sheet、header_row、start_row、json_path、formula_mode、max_rows 等；纯 SQL .txt 必须 format=sql"
+    },
+    "input_mode": {
+      "type": "string",
+      "enum": [
+        "sql",
+        "structure"
+      ],
+      "default": "sql",
+      "description": "sql 解析 SQL 文本列；structure 消费声明字段清单，不能输入普通业务数据"
+    },
+    "sql_column": {
+      "type": "string",
+      "default": "sql",
+      "minLength": 1,
+      "description": "表格 SQL 文本列名（format=sql 固定为 sql）"
+    },
+    "sample_rows": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 20,
+      "description": "只限制展示的结构行数；不限制解析或修改 complete"
+    }
+  },
+  "additionalProperties": false,
+  "x-preview": {
+    "command": "sql.preview",
+    "sources": [
+      {
+        "input": "input",
+        "text": "text",
+        "options": "options",
+        "mode": "input_mode",
+        "label": "SQL / 结构输入"
+      }
+    ]
+  }
+}

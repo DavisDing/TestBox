@@ -1,0 +1,16 @@
+schema_version: 1
+name: data-compare
+version: 1.0.0
+description: 跨格式读取、标准化并比较测试数据
+category: data
+core_compatibility: ">=1.0.16,<2.0"
+capabilities:
+  concurrency: true
+  network: false
+  filesystem: output-only
+  resources: []
+entry: src.main:Plugin
+commands:
+  - name: data.compare
+    description: 比较两个 CSV、TXT、JSON、JSONL、Excel 或 SQL 数据集
+    input_schema: schemas/data.compare.json

@@ -62,11 +62,11 @@ Core 负责发现、校验、参数处理、工作区、任务记录、Host 进�
 | 插件协议 | 标准输入/输出上的 JSON 请求与结果 | 保持版本化；仅在有实时进度需求时扩展 |
 | 持久化 | SQLite `task_history` | 继续使用本地 SQLite，不引入服务端数据库 |
 | 配置 | YAML 文件 + 环境变量；PyYAML 不可用时有简化解析兜底 | 保持简单配置合并，不增加配置中心 |
-| 构建 | setuptools；Windows 使用 PyInstaller 脚本 | 保持现有构建链路 |
+| 构建 | setuptools 构建钩子装配官方插件资源至 wheel；Windows 使用 PyInstaller 脚本 | 保持现有构建链路，源码与 wheel 分别验证 |
 | 测试 | `unittest` 集成测试 | 先修复/稳定现有测试，再补充关键边界 |
 | 插件产物 | ZIP，根目录直接包含 `manifest.yaml` | 保持安装前临时校验、成功后替换 |
 
-`pyproject.toml` 声明了 `typer`、`pydantic`、`loguru`，但当前核心实现未普遍使用它们。这是依赖与实现的偏差，暂不直接删除，进入依赖收敛决策。
+当前 `pyproject.toml` 核心依赖只有 PyYAML；PySide6、Evidence 库与 Windows 构建工具分别为可选 extra。历史方案中的 Typer/Pydantic/Loguru 不再是当前声明依赖。
 
 ### 3.1 技术选型评估（2026-08-25）
 
@@ -197,7 +197,9 @@ Plugin(context) -> init(context) -> execute(command, params) -> destroy()
 
 ### 5.7 任务历史
 
-SQLite 表 `task_history` 保存任务 ID、插件及版本、命令、脱敏参数、开始/结束时间、状态、结果路径、工作区路径、错误码、心跳字段和 Host PID。状态包括 `PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`，启动时会尝试将已无 Host 进程的运行中任务标记为 `ABANDONED`。
+SQLite 表 `task_history` 保存任务 ID、插件及版本、命令、脱敏参数、开始/结束时间、状态、结果路径、工作区路径、错误码、心跳字段和 Host PID。状态包括 `PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`、`ABANDONED`。schema v2 兼容迁移新增 `owner_pid`：Host 未启动时检查拥有者存活，已记录 Host 时检查 Host；Runtime 用任务生命周期锁保护暂存和结果收尾窗口，避免并发启动误回收。明确终态不被重复更新改写。
+
+迁移使用事务，只增加可空列，不删除历史数据；未知未来版本被拒绝。上线前应备份现有 SQLite 文件。回退应用版本不应手工删除列或覆盖数据，若需要恢复 v1 数据库应停用所有 Runtime 后从备份恢复。
 
 ## 6. 插件设计
 
@@ -224,7 +226,7 @@ plugin-name/
 | data-generator | `data.mock` | `CURRENT`；有规则 Schema、固定行政区划数据和多种输出，输出文件名使用任务 ID |
 | sql-parser | `sql.parse` | `CURRENT`；覆盖多种 DDL 解析场景并支持警告/严格模式，输出文件名使用任务 ID |
 | sql-select | `sql.select` | `CURRENT`；消费 SQL Parser 的 JSON/CSV/XLSX 字段清单并生成 SELECT 文本 |
-| evidence-tool | `evidence.build` | `CURRENT/PARTIAL`；单次任务内完成 Excel 识别、截图关联、Word/Excel 输出；依赖可选包，部分集成测试在当前环境跳过 |
+| evidence-tool | `evidence.build` | `CURRENT/PARTIAL`；单次任务内完成 Excel 识别、截图关联、Word/Excel 输出；安装可选依赖时有完整批处理测试，真实交互截图/权限仍需目标平台验收 |
 
 ### 6.3 插件能力与安全边界
 
@@ -344,7 +346,7 @@ CURRENT UI 不作为必须保留的设计资产。
 3. 插件业务错误：插件抛出 `PluginError`，由 Host 转为结构化失败。
 4. Host 崩溃/协议错误/超时：Runtime 写入诊断摘要并将任务标记失败。
 5. 输出非法/缺失/过大：Runtime 拒绝结果并保留任务证据。
-6. 历史写入失败：不得覆盖原始任务结果，应至少记录警告（当前实现需继续验证）。
+6. 历史写入失败：保留已经落盘的业务结果及产物登记，进行一次有界重试；返回同步失败或重试恢复警告，不改写为插件失败。持续失败时历史可能暂未同步。
 
 CLI/GUI 面向用户显示可理解摘要；完整堆栈只放任务日志或受控诊断，不显示敏感信息。
 
@@ -354,14 +356,16 @@ CLI/GUI 面向用户显示可理解摘要；完整堆栈只放任务日志或受
 - Host 子进程隔离 Core 的异常影响，但不是恶意代码沙箱。
 - 文件输入暂存并记录来源哈希。
 - 输出路径限制在任务 output 目录。
-- 参数脱敏后才写历史和任务清单。
+- 参数脱敏后才写历史和任务清单；Host 与 Runtime 统一处理日志、异常、Result 摘要和 GUI 参数展示中的已知敏感值，保留协议与产物路径身份。插件任意产物内容不由诊断脱敏机制扫描。
 - 数据生成器只输出测试数据；证件/身份图像必须有不可移除的测试水印。
 - SQL Parser 不执行 SQL。
 - 插件能力默认最小化；网络、外部服务和用户目录写入不应隐式开放。
 
 ## 12. 性能与资源
 
-- 默认 Host 超时为 300 秒，Core 对输入/输出大小有上限。
+- 默认 Host 超时为 300 秒；文件输入分块暂存并哈希，任务累计限 100 MiB；登记输出总量限 500 MiB（结束时校验，不是执行中硬磁盘配额）。
+- Host 日志按 UTF-8 字节限 1 MiB，带一次截断提示；管道响应限 8 MiB，stderr 只保留最后 64 KiB。冻结 GUI 保持文件响应协议，运行中监测响应大小并有界读取；监测不能阻止两次检查之间的瞬时磁盘写入。
+- 插件 ZIP 限 4096 项、单项 128 MiB、总解压 512 MiB，同时校验声明大小和实际流式读取量。链接、路径穿越和冲突路径被拒绝。覆盖激活失败恢复旧目录；恢复失败保留备份并报告人工恢复路径。
 - 非并发插件使用跨进程锁；当前 Evidence Tool 声明不支持并发。
 - 10 万条数据是 Data Generator 目标规模，需使用真实设备做基准，不把文档数字当成已验证指标。
 - 不引入队列、服务端、缓存集群或数据库服务器。
@@ -377,44 +381,36 @@ CLI/GUI 面向用户显示可理解摘要；完整堆栈只放任务日志或受
 - 插件打包、安装和卸载。
 - 任务历史和工作区清理。
 
-### 13.2 后续必须补齐
+### 13.2 验证入口与未验收边界
 
-- 真实安装环境下 CLI 可启动和可执行，不依赖当前工作目录偶然可导入源码。
-- GUI 的 Loading/Empty/Error/Success/Warning/Cancelled 状态。
-- GUI 与 CLI 对同一命令、参数和结果模型的一致性。
-- 文件路径穿越、超大输入/输出、损坏插件包和缺失资源。
-- 敏感参数在任务清单、日志、报告、错误堆栈中的脱敏。
-- Evidence Tool 在安装可选依赖时的完整集成测试。
-- 取消、进程孤儿、SQLite 并发更新和重复终态保护。
+- `python -m unittest discover -s tests -v`：Runtime/SDK/Host、GUI 状态契约与可选 offscreen 交互、文件额度/路径安全、插件包回滚、脱敏、SQLite 并发/迁移/终态保护；GUI/Evidence 运行测试要求相应可选依赖。
+- `scripts/smoke_installed.py --python <独立虚拟环境Python>`：从空 cwd 验证实际 wheel 的命令、资源、Host、可复现生成、SQL 接力、任务读取/导出及同名插件覆盖恢复。`--evidence` 验证合成 Excel/图片到 Word 和 Excel 状态回写；`--gui` 验证安装后的 offscreen 窗口及异步执行。
+- 更新器的故障注入测试覆盖备份、提交、删除和回滚失败；Windows 等待 API 的跨平台 mock 只验证调用/收尾逻辑，不代替原生进程测试。Inno 静态契约不是编译或安装器实机验收。
+- CI 包含 Linux clean wheel/Evidence 与 Windows clean wheel/GUI/Evidence 入口，以及冻结程序构建后的原生安装器生命周期验收。原生入口只允许 GitHub-hosted Windows 临时 runner，记录完整安装、合成 delta（含锁文件回滚）、路径/组件/基线/hash 失败和卸载保留；日志与 JSON 摘要无论成功失败均上传。配置存在不等于对应流水线已运行，合成增量不等于相邻发布版本兼容性。
+- 仍需实际执行 Windows 原生流水线并验收相邻正式版本升级、真实截图权限及交互 Evidence 流程；通用取消与后代进程管理边界需要单独确认，不承诺未实现的取消协议。
 
-## 14. 当前代码问题
+## 14. 当前代码问题与验收边界
 
-### Critical
+### 已收敛的历史问题
 
-- 暂未发现会阻止核心 CLI 正常运行的必现 Critical 问题。
+- 2026-08-25 的 49 项测试失败/跳过记录仅代表当时环境，不应继续作为当前运行基线。
+- GUI 已具有工具目录、执行表单、结果详情、历史、插件诊断和只读设置，复用同一 Runtime；新增可选 PySide6 offscreen 交互回归，不能用旧 GUI 描述判断现状。
+- Evidence 批处理集成测试在安装可选依赖的环境执行；真实截图权限与交互证据流程仍需目标平台验收。
+- 原始配置失败、并发启动恢复、活动任务清理、历史同步失败覆盖结果及诊断泄露均有专项回归。
 
-### High
+### 仍需加强或确认
 
-- 全量测试在 2026-08-25 执行结果为 `49` 个测试中 `1` 个失败、`5` 个跳过。失败为 `test_cli_listing_survives_legacy_console_encoding`：子进程以临时目录为工作目录运行 `python -m testbox.cli` 时找不到 `testbox` 模块。该问题说明源码运行/安装运行边界未统一，必须在正式开发前修复或明确测试运行方式。
-- 旧 Core 设计描述的多事件 Host 协议、独立插件虚拟环境、依赖哈希锁定和完整权限确认没有在当前实现中落地，文档不能继续把它们当作已实现事实。
-
-### Medium
-
-- GUI 当前页面结构和结果呈现较弱，且与重新定义的产品工作流不匹配。
-- `pyproject.toml` 的声明依赖与实际代码使用不完全一致，增加维护和打包认知成本。
-- Evidence Tool 的部分测试因当前环境未安装可选依赖而跳过，不能据此宣称完整通过。
-- 当前配置解析、Schema 校验属于项目自有简化实现，尚未覆盖完整 JSON Schema 语义。
-
-### Low
-
-- CLI 文件和 Core 文件存在较密集的单行语句，后续修改时可在相关模块内逐步改善可读性，但不应在无业务理由时大范围重写。
-- README 的历史文档链接与实际 `docs/` 目录结构不一致，归档后需要同步文档入口。
+- Python 发行包通过构建钩子收录官方插件资源，安装后的 CLI/Host、用户插件覆盖和证据流程使用独立 smoke 入口验收；GUI offscreen 与 Windows 安装/升级/卸载实机验收必须区分，不以源码测试或构建配置存在代替。
+- 通用取消、实时事件、插件独立环境和权限确认仍为 NEEDS_CONFIRMATION，当前没有新增这些协议。
+- Schema 校验对输入与默认对象进行深拷贝，支持对象/数组递归默认及显式 nullable 类型列表，校验空值 enum。已有 Schema 校验后扫描补默认值的完整参数树，拒绝开放对象、嵌套数组及空 Schema 自由值中的 NaN/Infinity；仍是简化实现，不支持完整 JSON Schema，也不扫描输入文件正文、插件配置或产物。
+- Host 隔离不是安全沙箱；执行后产物额度、响应文件轮询、PID 存活检查都有边界，不能宣称能限制恶意插件、杀掉全部后代或识别 PID 复用。
+- 持续 SQLite 写入失败时原结果保留，但历史可能未同步；需要后续决定是否加入持久化补偿机制。
 
 ## 15. Architecture Recommendations
 
 ### Recommendation A：先修复运行基线，再做功能扩展
 
-- Current：核心命令可在仓库根目录运行，但安装/临时工作目录场景存在模块发现失败。
+- Current：源码/可编辑安装支持从其他工作目录定位源码和插件；wheel 收录官方插件并使用用户数据目录。CI 配置冻结程序和干净 wheel 的独立 smoke，执行结果须以实际运行记录为准。
 - Problem：测试与发行包可能在不同导入路径下表现不同。
 - Recommendation：明确“可编辑安装运行”和“打包运行”两条支持路径，补充安装后子进程 smoke test，不以修改业务逻辑掩盖环境问题。
 - Reason：这是 Core、CLI、GUI 和 Host 的共同基础。
@@ -430,11 +426,11 @@ CLI/GUI 面向用户显示可理解摘要；完整堆栈只放任务日志或受
 
 ### Recommendation C：重做 GUI 信息架构，不修补旧布局
 
-- Current：按命令生成的左侧列表 + 表单 + 结果消息框。
-- Problem：不能承载任务历史、工作区、插件状态和多文件结果。
+- Current：GUI 已采用工具目录、执行工作区、任务结果、历史和插件诊断。
+- Problem：真实系统权限、长任务生命周期、安装后交互仍需加强验证；不应重复重写已落地页面。
 - Recommendation：按工具目录、执行工作区、任务详情、历史任务组织页面。
 - Reason：与产品定位和长期 AI Coding 协作更一致。
-- Impact：UI Agent 可重建 `testbox/gui.py` 或拆分 GUI 模块；Runtime/SDK 契约保持稳定。
+- Impact：优先补交互回归；必要改动仍保护 Runtime/SDK 契约，不因旧建议重写当前 GUI。
 
 ### Recommendation D：暂不引入数据库服务器或微服务
 
@@ -446,7 +442,7 @@ CLI/GUI 面向用户显示可理解摘要；完整堆栈只放任务日志或受
 
 ### Recommendation E：收敛依赖和契约
 
-- Current：声明依赖多于实际使用，Schema/配置/Host 协议都有自有简化实现。
+- Current：依赖已收敛为 PyYAML 与可选 extra，Schema/配置/Host 仍保持轻量实现。
 - Problem：AI Agent 容易依据依赖名误判项目能力。
 - Recommendation：下一阶段建立“实际使用依赖清单”和“契约测试”，确认后再删除或保留依赖。
 - Reason：减少隐性环境差异。
@@ -486,3 +482,26 @@ CLI/GUI 面向用户显示可理解摘要；完整堆栈只放任务日志或受
 - Architecture Agent：维护需求/设计/上下文，分析冲突，不直接实现业务代码。
 - UI Agent：根据本设计重做 GUI 信息架构和视觉实现，不改变 Runtime/SDK 契约。
 - Full-stack Agent：先修复启动、测试和契约问题，再实现确认过的功能；修改前读取三个核心 MD 和当前代码。
+
+## 15. 多格式工具与解析预览实现方案
+
+- 新增官方 data-preview、data-compare、schema-diff、data-check 插件；插件互相不导入，不连接数据库/网络。
+- 可复用解析/标准化是 SDK 显式能力 `read_dataset(path, options)` / `normalize_dataset(dataset, rules)`，实现位于 `testbox.tabular`，不在 Runtime 复制业务比对。数据形状包含 columns、rows、locations、format、warnings、complete；缺失字段保留缺失，decimal标准化成精确文本并记录types。
+- 解析采用有界读取。文本列/记录分隔通过引号感知扫描器解析，不split字符串；CSV/TSV单字符，TXT可多字符。JSON拒绝重复键/非有限值，点分路径不执行表达式。Excel按只读模式读取，不执行宏；使用已有可选openpyxl，没有依赖时返回明确错误，不新增Core强依赖。
+- Schema的 `x-preview` 只描述预览命令与输入/配置参数映射。GUI加载通用ParsingPreviewPanel，编辑编码/分隔符/表头/Sheet/JSON路径并同步原Schema表单；预览调用异步Runtime/Host、独立任务落盘。修改输入或配置清除旧样本，执行期间变更的响应丢弃，防止展示过期结果。预览不是新的Host事件协议。
+- data.compare独立实现记录对齐与差异；sql.diff/sql.preview独立实现有明确语法边界的结构抽取；data.check独立实现声明式质量规则。任务status仍沿用SDK，equal/passed/verdict作为业务结果，不把差异伪装成Host异常。
+- 先完成有验收覆盖的基础闭环；结构unknown不能当missing/equal，复杂语法明确警告/inconclusive。后续支持完整SQL需要重新评估解析器依赖，不继续无限扩展正则。
+- 所有报告在任务output目录，CSV保护公式前缀，默认不打印输入数据到日志。JSON/明细产物可能含用户数据，脱敏日志不等于自动脱敏产物。
+
+## 16. 旧版Office转换插件方案
+
+- 独立 `office-convert` 官方插件，命令 `office.convert` 与无文件的 `office.inspect`。Schema使用顶层file-path `input` 或array file-path `inputs`，Runtime沿用既有文件暂存、额度、Host、结果和导出契约；无需新增后端或数据库。
+- GUI复用Schema表单和现有SingleFilePicker/MultiFilesPicker，添加旧Office过滤器与二选一说明；不在GUI执行转换。转换器不可用通过真实inspect/失败结果展示，不造可用状态。
+- 可信配置 `soffice_path` 或PATH/常见安装路径定位引擎，不允许CLI提交任意命令参数。每个文件用固定headless参数和指定OOXML过滤器；临时UserInstallation仅在本任务的私有工作目录，清理不触碰用户配置。
+- 所有输出命名 `converted/{四位序号}-{源stem}.{固定目标扩展}`，多来源同名不覆盖，以同文件系统no-clobber发布。单文件输入50MiB、累计100MiB；单输出100MiB、整批400MiB、ZIP解压总量200MiB/10000条目。输出OOXML校验ZIP路径、CRC、重复条目、宏/实体、必要XML根与namespace及精确内容类型，不接受退出0无文件；报告仅登记确认成功的产物。
+- `continue_on_error` 默认true；逐文件时限60秒、批次总时限240秒，在Core默认300秒内给清理/报告留时间。双pipe各64KiB有界读取，不持久化引擎正文诊断；过程资源监测不是内核quota。超时清理本插件创建进程，不杀全局Office；报告指出失败/跳过。批次partial与执行失败分开，全部失败返回failed并保留报告。
+- 本次是用户明确请求的外部程序转换例外：仅固定Office引擎、不执行输入中的SQL、宏或脚本、不开放任意shell，不把原先禁止静默外部命令的规则改为普遍许可。系统依赖不加入pip、不自动安装，保真依赖转换器版本及文档特点。
+
+- 原始输入策略由Schema字段显式 `x-input-policy` opt-in，在Workspace暂存前拒绝选中符号链接、重复原始canonical来源及文件数超限；Host继续校验快照内容。避免将内容相同的两个合法不同来源按hash判重，不改变既有插件链接输入契约。
+
+- 转换结果 `data.summary` 与JSON报告summary一致，同时保留顶层小摘要；逐项状态为succeeded/failed/skipped，summary状态为succeeded/partial/failed，均不替换Core任务状态。失败报告仍可从任务详情读取；全部失败的产物导出遵循既有Runtime仅成功任务可导出的规则。

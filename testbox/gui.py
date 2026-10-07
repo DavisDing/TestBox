@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from testbox.core.plugin_packages import PluginPackageError
+from testbox.core.redaction import Redactor
 from testbox.core.runtime import Runtime
 from testbox.core.schema_validator import SchemaValidationError
 
@@ -44,6 +45,15 @@ QtCore, QtGui, QtWidgets = _qt()
 # Schema 字段与枚举值统一使用“中文说明 + 英文键名/原始值”的展示方式。
 # 英文键名仍保留，便于用户与 CLI、插件文档和任务结果对应。
 PARAMETER_LABELS = {
+    "left": "左侧 / 预期文件", "right": "右侧 / 实际文件",
+    "left_text": "左侧 SQL 文本", "right_text": "右侧 SQL 文本", "text": "SQL 文本",
+    "left_options": "左侧解析配置", "right_options": "右侧解析配置", "options": "解析配置",
+    "left_normalize": "左侧标准化规则", "right_normalize": "右侧标准化规则", "normalize": "标准化规则",
+    "mode": "比较模式", "keys": "主键字段", "ignore_columns": "忽略字段",
+    "absolute_tolerance": "绝对误差容差", "relative_tolerance": "相对误差容差",
+    "max_differences": "差异明细上限", "max_issues": "质量问题明细上限",
+    "left_mode": "左侧输入内容", "right_mode": "右侧输入内容", "input_mode": "输入内容",
+    "sql_column": "SQL 文本所在列", "sample_rows": "预览样本行数",
     "count": "生成数量",
     "format": "输出格式",
     "seed": "随机种子",
@@ -60,6 +70,10 @@ PARAMETER_LABELS = {
     "sql_transaction": "使用事务",
     "zip_formats": "压缩包内格式",
     "input": "输入文件",
+    "inputs": "批量文件",
+    "timeout_seconds": "每文件超时",
+    "batch_timeout_seconds": "批次总时限",
+    "continue_on_error": "遇错继续",
     "input_format": "字段清单格式",
     "dialect": "数据库类型 / SQL 方言",
     "include_constraints": "包含约束信息",
@@ -136,6 +150,8 @@ TYPE_LABELS = {
 }
 
 PLUGIN_LABELS = {
+    "data-preview": "解析预览", "data-compare": "数据比对",
+    "data-check": "数据质量", "schema-diff": "结构比对",
     "data-generator": "测试数据生成器",
     "sql-parser": "SQL 字段解析器",
     "sql-select": "SQL 查询生成器",
@@ -1136,13 +1152,26 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         properties: dict[str, dict] = self.schema.get("properties", {})
         required_keys: list[str] = self.schema.get("required", [])
 
+        if self.command_name == "office.convert":
+            hint = QtWidgets.QLabel(
+                "单文件（input）与批量文件（inputs）二选一，不能同时填写；"
+                "切换时请清空另一项。支持 xls → xlsx、doc → docx、ppt → pptx。"
+            )
+            hint.setObjectName("mutedText")
+            hint.setWordWrap(True)
+            main_layout.addWidget(hint)
+
         # 分类为基础参数和高级参数
         basic_props = {}
         advanced_props = {}
 
         # 启发式归类：如果是必填项、或常用核心参数（count, format, input, template）归为基础参数；其余归为高级
         for key, spec in properties.items():
-            if key in required_keys or key in ("count", "format", "input", "dialect", "template", "seed", "rules", "interactive"):
+            if (
+                key in required_keys
+                or key in ("count", "format", "input", "dialect", "template", "seed", "rules", "interactive")
+                or (self.command_name == "office.convert" and key == "inputs")
+            ):
                 basic_props[key] = spec
             else:
                 advanced_props[key] = spec
@@ -1199,6 +1228,27 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         else:
             self.adv_toggle_btn.setText("▶ 展开高级参数配置")
 
+    def _file_filter(self, key: str, spec: dict[str, Any], *, multiple: bool = False) -> str:
+        # Schema hints take precedence; array item hints are supported too.
+        explicit = spec.get("x-file-filter")
+        if not explicit and multiple:
+            explicit = spec.get("items", {}).get("x-file-filter")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit
+        if self.command_name == "office.convert" and key in {"input", "inputs"}:
+            return "旧 Office 文件 (*.xls *.doc *.ppt);;所有文件 (*.*)"
+        if multiple:
+            if key in {"screenshots", "existing_reports"}:
+                return "图片 / 报告文件 (*.png *.jpg *.jpeg *.docx *.xlsx);;所有文件 (*.*)"
+            return "所有文件 (*.*)"
+        if self.command_name in {"data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}:
+            return "数据 / SQL 文件 (*.xlsx *.xlsm *.csv *.tsv *.txt *.json *.jsonl *.ndjson *.sql);;所有文件 (*.*)"
+        if "sql" in key or "sql" in self.command_name:
+            return "SQL 文件 (*.sql *.ddl);;所有文件 (*.*)"
+        if "excel" in key or "input" in key:
+            return "Excel / SQL / 文本 (*.xlsx *.xlsm *.sql *.csv *.json);;所有文件 (*.*)"
+        return "所有文件 (*.*)"
+
     def _create_field_widget(self, key: str, spec: dict[str, Any], is_required: bool) -> QtWidgets.QWidget:
         container = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(container)
@@ -1209,7 +1259,8 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         label_bar = QtWidgets.QHBoxLayout()
         label_bar.setSpacing(6)
 
-        title_text = f"<b>{_parameter_label(key)}</b> <span style='color: #94a3b8;'>（{key}）</span>"
+        field_label = "单文件" if self.command_name == "office.convert" and key == "input" else _parameter_label(key)
+        title_text = f"<b>{spec.get('title') or field_label}</b> <span style='color: #94a3b8;'>（{key}）</span>"
         if is_required:
             title_text += " <span style='color: #ef4444; font-weight: bold;'>*必填</span>"
         lbl = QtWidgets.QLabel(title_text)
@@ -1244,12 +1295,10 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         default_val = spec.get("default")
 
         if fmt == "file-path":
-            filter_str = "所有文件 (*.*)"
-            if "sql" in key or "sql" in self.command_name:
-                filter_str = "SQL 文件 (*.sql *.ddl);;所有文件 (*.*)"
-            elif "excel" in key or "input" in key:
-                filter_str = "Excel / SQL / 文本 (*.xlsx *.xlsm *.sql *.csv *.json);;所有文件 (*.*)"
-            ctrl = SingleFilePicker(placeholder=f"请选择 {_parameter_label(key)}（{key}）文件...", filter_str=filter_str)
+            ctrl = SingleFilePicker(
+                placeholder=f"请选择 {field_label}（{key}）文件...",
+                filter_str=self._file_filter(key, spec),
+            )
             if default_val:
                 ctrl.set_path(str(default_val))
             self.fields[key] = ("file-path", ctrl)
@@ -1280,7 +1329,10 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             spin = QtWidgets.QSpinBox() if type_str == "integer" else QtWidgets.QDoubleSpinBox()
             min_v = spec.get("minimum", -999999999)
             max_v = spec.get("maximum", 999999999)
-            spin.setRange(int(min_v), int(max_v))
+            spin.setRange(int(min_v), int(max_v)) if type_str == "integer" else spin.setRange(float(min_v), float(max_v))
+            if type_str == "number":
+                spin.setDecimals(10)
+                spin.setSingleStep(0.001)
             if default_val is not None:
                 spin.setValue(default_val)
             elif is_required and min_v > 0:
@@ -1295,7 +1347,9 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         elif type_str == "array":
             items_spec = spec.get("items", {})
             if items_spec.get("format") == "file-path" or key in ("screenshots", "existing_reports"):
-                ctrl = MultiFilesPicker(filter_str="图片 / 报告文件 (*.png *.jpg *.jpeg *.docx *.xlsx);;所有文件 (*.*)")
+                ctrl = MultiFilesPicker(filter_str=self._file_filter(key, spec, multiple=True))
+                if default_val:
+                    ctrl.set_paths(default_val)
                 self.fields[key] = ("array-files", ctrl)
                 layout.addWidget(ctrl)
             else:
@@ -1314,6 +1368,14 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             self.fields[key] = ("object-text", edit)
             layout.addWidget(edit)
 
+        elif key == "text" or key.endswith("_text") or spec.get("format") == "sql":
+            edit = QtWidgets.QPlainTextEdit()
+            edit.setMaximumHeight(180)
+            edit.setPlaceholderText("可直接粘贴多行 SQL；不执行语句")
+            if default_val is not None:
+                edit.setPlainText(str(default_val))
+            self.fields[key] = ("multiline", edit)
+            layout.addWidget(edit)
         else:
             # 默认 string
             edit = QtWidgets.QLineEdit()
@@ -1375,6 +1437,10 @@ class DynamicSchemaForm(QtWidgets.QWidget):
                     if not isinstance(parsed, dict):
                         raise FormInputError(key, "参数必须是 JSON 对象")
                     params[key] = parsed
+            elif ftype == "multiline":
+                text = widget.toPlainText()
+                if text.strip():
+                    params[key] = text
             elif ftype == "string":
                 val = widget.text().strip()
                 if val:
@@ -1411,6 +1477,8 @@ class DynamicSchemaForm(QtWidgets.QWidget):
                     widget.setText(json.dumps(val, ensure_ascii=False))
                 else:
                     widget.setText(str(val))
+            elif ftype == "multiline":
+                widget.setPlainText(str(val))
             elif ftype == "string":
                 widget.setText(str(val))
 
@@ -1449,6 +1517,17 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             self.set_field_error(error.field, str(error))
             return False, str(error)
 
+        if self.command_name == "office.convert":
+            # Immediate UI feedback only; Host still enforces the input contract.
+            single = bool(self.fields["input"][1].line_edit.text().strip())
+            batch = bool(values.get("inputs"))
+            if single == batch:
+                message = ("单文件与批量文件不能同时填写，请清空其中一项" if single
+                           else "请选择单文件或批量文件（二选一）")
+                self.set_field_error("inputs", message)
+                self.set_field_error("input", message)
+                return False, message
+
         required_keys: list[str] = self.schema.get("required", [])
         for required in required_keys:
             if required not in values or values[required] is None or values[required] == "" or values[required] == []:
@@ -1459,7 +1538,9 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         for key, (field_type, widget) in self.fields.items():
             paths: list[str] = []
             if field_type == "file-path":
-                value = widget.get_path().strip()
+                # The picker rejects directories as a valid value but keeps the
+                # typed text; do not silently drop that invalid optional input.
+                value = widget.line_edit.text().strip().strip("'\"")
                 if value:
                     paths = [value]
             elif field_type == "array-files":
@@ -1791,6 +1872,7 @@ class CommandDetailFormView(QtWidgets.QWidget):
         self.current_manifest: Any = None
         self.current_schema: dict = {}
         self.form_widget: DynamicSchemaForm | None = None
+        self.preview_panel = None
         self._init_ui()
 
     def _init_ui(self):
@@ -1972,6 +2054,14 @@ class CommandDetailFormView(QtWidgets.QWidget):
         if preset_params:
             self.form_widget.set_values(preset_params)
         self.form_container_layout.addWidget(self.form_widget)
+        self.preview_panel = None
+        preview_metadata = self.current_schema.get("x-preview")
+        if isinstance(preview_metadata, dict):
+            from testbox.gui_preview import ParsingPreviewPanel
+            self.preview_panel = ParsingPreviewPanel(
+                self.runtime, self.runtime_root, self.form_widget, preview_metadata,
+            )
+            self.form_container_layout.addWidget(self.preview_panel)
         self.submit_btn.setEnabled(True)
 
     def _reset_form(self):
@@ -1979,6 +2069,12 @@ class CommandDetailFormView(QtWidgets.QWidget):
             self.load_command(self.current_command)
 
     def _on_submit(self):
+        if self.preview_panel is not None:
+            try:
+                self.preview_panel.apply_options()
+            except ValueError as error:
+                self._set_form_feedback(str(error))
+                return
         if not self.form_widget:
             return
         self._set_form_feedback()
@@ -2103,7 +2199,9 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         else:
             self.lbl_plugin.setText("-")
         self.lbl_started_at.setText(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        self.params_preview_txt.setPlainText(json.dumps(params, ensure_ascii=False, indent=2))
+        self.params_preview_txt.setPlainText(
+            json.dumps(Redactor(params).value(params), ensure_ascii=False, indent=2)
+        )
 
 
 # ==============================================================================

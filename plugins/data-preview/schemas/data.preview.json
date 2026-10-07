@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["input"],
+  "properties": {
+    "input": {"type":"string","format":"file-path","description":"数据文件；预览是可追溯任务，不修改原文件"},
+    "options": {"type":"object","additionalProperties":true,"default":{},"description":"解析配置：format、encoding、delimiter、record_separator、sheet、header_row、json_path 等"},
+    "normalize": {"type":"object","additionalProperties":true,"default":{},"description":"可选标准化：column_mapping、trim、casefold、null_values、types"},
+    "sample_rows": {"type":"integer","minimum":1,"maximum":100,"default":20}
+  },
+  "x-preview": {"command":"data.preview","sources":[{"input":"input","options":"options","normalize":"normalize","label":"输入数据"}]}
+}

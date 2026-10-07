@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "description": "仅接受空对象；引擎来自可信 context.config.soffice_path 或本机发现，不接受命令行路径或参数"
+}

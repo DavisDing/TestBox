@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "input"
+      ],
+      "not": {
+        "required": [
+          "inputs"
+        ]
+      }
+    },
+    {
+      "required": [
+        "inputs"
+      ],
+      "not": {
+        "required": [
+          "input"
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "input": {
+      "type": "string",
+      "format": "file-path",
+      "minLength": 1,
+      "description": "单个真实 OLE CFB 的 .xls/.doc/.ppt 文件；与 inputs 严格二选一，不接受目录或符号链接；单文件上限 50 MiB，整批上限 100 MiB",
+      "x-input-policy": {
+        "reject_symlinks": true,
+        "unique_sources": true,
+        "max_files": 100
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "file-path",
+        "minLength": 1
+      },
+      "description": "1–100 个文件，与 input 严格二选一；不接受重复输入或目录；单文件上限 50 MiB，整批累计上限 100 MiB",
+      "x-input-policy": {
+        "reject_symlinks": true,
+        "unique_sources": true,
+        "max_files": 100
+      }
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 120,
+      "default": 60,
+      "description": "每文件转换上限秒数，实际不超过剩余批次 deadline"
+    },
+    "batch_timeout_seconds": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 240,
+      "default": 240,
+      "description": "从 execute 入口开始的整批 deadline 秒数；不修改 Runtime 的 300 秒上限"
+    },
+    "continue_on_error": {
+      "type": "boolean",
+      "default": true,
+      "description": "false 时首个逐项失败后，其余未处理项标记 skipped；已成功产物和报告保留"
+    }
+  }
+}

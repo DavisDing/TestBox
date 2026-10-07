@@ -23,7 +23,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
     def tearDown(self):
         self.runtime.close()
         shutil.rmtree(self.temp)
-    def test_discovers_bundled_commands(self): self.assertEqual(set(self.runtime.manager.available), {"data.mock", "sql.parse", "sql.select", "evidence.build"})
+    def test_discovers_bundled_commands(self): self.assertEqual(set(self.runtime.manager.available), {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview", "office.convert", "office.inspect"})
     def test_evidence_declares_non_concurrent_execution(self):
         self.assertFalse(self.runtime.manager.available["evidence.build"].capabilities["concurrency"])
     def test_plugin_execution_lock_serializes_callers(self):
@@ -998,6 +998,11 @@ capabilities:
                 "workspace_path": str(workspace),
                 "host_pid": None,
             })
+            # Date-boundary cleanup applies to completed tasks; active tasks
+            # are protected by the lifecycle safety contract.
+            self.runtime.history.finish(
+                task_id, status="SUCCEEDED", finished_at=started.isoformat()
+            )
 
         create_history(old_id, old_started, old_workspace)
         create_history(retained_id, retained_started, retained_workspace)
@@ -1073,7 +1078,16 @@ capabilities:
     def test_lock_failure_is_recorded_as_failed_task(self):
         manifest = self.runtime.manager.available["data.mock"]
         manifest.capabilities["concurrency"] = False
-        with patch.object(PluginExecutionLock, "acquire", side_effect=OSError("lock unavailable")):
+        acquire = PluginExecutionLock.acquire
+
+        def fail_plugin_lock(lock):
+            # Keep the task-lifecycle lock operational so this test continues
+            # to exercise failure of the non-concurrent plugin execution lock.
+            if lock.path.name == "data-generator.lock":
+                raise OSError("lock unavailable")
+            return acquire(lock)
+
+        with patch.object(PluginExecutionLock, "acquire", autospec=True, side_effect=fail_plugin_lock):
             task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.data["error_code"], ErrorCode.CORE_EXECUTION_FAILED)

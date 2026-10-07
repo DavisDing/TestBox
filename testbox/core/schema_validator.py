@@ -1,7 +1,9 @@
 """Small, deterministic JSON Schema validator used by Core and GUI metadata."""
 from __future__ import annotations
 
+import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -28,41 +30,68 @@ class SchemaValidator:
     def validate(self, schema: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(params, dict):
             raise SchemaValidationError("参数必须是对象")
-        result = self._apply_defaults(schema, dict(params))
+        # Validation must not mutate caller-owned nested values, and default
+        # objects/arrays must not share references with the schema definition.
+        result = self._apply_defaults(schema, copy.deepcopy(params))
         self._validate_value(schema, result, "参数")
+        # Keep established field feedback for declared schema properties;
+        # inspect the remaining open values only after normal validation.
+        self._validate_finite_numbers(result, "")
         return result
 
+    def _validate_finite_numbers(self, value: Any, field: str) -> None:
+        """Reject non-finite floats even inside intentionally open schema values.
+
+        ``additionalProperties: true`` and an empty schema are useful for plugin
+        extension payloads, but they must not provide a way to smuggle NaN or
+        Infinity into task parameters, persisted JSON, or a Host request.
+        """
+        if isinstance(value, float) and not math.isfinite(value):
+            raise SchemaValidationError(f"{field} 必须为有限数值", field=field)
+        if isinstance(value, dict):
+            for key, item in value.items():
+                self._validate_finite_numbers(item, f"{field}.{key}" if field else str(key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                self._validate_finite_numbers(item, f"{field}[{index}]")
+
     def _apply_defaults(self, schema: dict[str, Any], value: Any) -> Any:
-        if schema.get("type") == "object" and isinstance(value, dict):
+        kind = schema.get("type")
+        kinds = kind if isinstance(kind, list) else [kind]
+        if "object" in kinds and isinstance(value, dict):
             properties = schema.get("properties", {})
             for key, definition in properties.items():
                 if key not in value and isinstance(definition, dict) and "default" in definition:
-                    value[key] = definition["default"]
+                    value[key] = self._apply_defaults(definition, copy.deepcopy(definition["default"]))
                 elif key in value and isinstance(definition, dict):
                     value[key] = self._apply_defaults(definition, value[key])
-        elif schema.get("type") == "array" and isinstance(value, list) and isinstance(schema.get("items"), dict):
+        elif "array" in kinds and isinstance(value, list) and isinstance(schema.get("items"), dict):
             return [self._apply_defaults(schema["items"], item) for item in value]
         return value
 
     def _validate_value(self, schema: dict[str, Any], value: Any, field: str) -> None:
-        if value is None:
-            if schema.get("type") not in (None, "null"):
-                raise SchemaValidationError(f"{field} 不能为空", field=field)
-            return
         kind = schema.get("type")
-        valid = {
-            "object": isinstance(value, dict),
-            "array": isinstance(value, list),
-            "string": isinstance(value, str),
-            "integer": isinstance(value, int) and not isinstance(value, bool),
-            "number": isinstance(value, (int, float)) and not isinstance(value, bool),
-            "boolean": isinstance(value, bool),
-            "null": value is None,
-        }
-        if kind in valid and not valid[kind]:
-            raise SchemaValidationError(f"{field} 必须为 {kind}", field=field)
+        kinds = kind if isinstance(kind, list) else [kind]
+        if value is None:
+            if kind is not None and "null" not in kinds:
+                raise SchemaValidationError(f"{field} 不能为空", field=field)
+        else:
+            valid = {
+                "object": isinstance(value, dict),
+                "array": isinstance(value, list),
+                "string": isinstance(value, str),
+                "integer": isinstance(value, int) and not isinstance(value, bool),
+                "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+                "boolean": isinstance(value, bool),
+                "null": value is None,
+            }
+            if kind is not None and not any(item in valid and valid[item] for item in kinds):
+                expected = " or ".join(str(item) for item in kinds)
+                raise SchemaValidationError(f"{field} 必须为 {expected}", field=field)
         if "enum" in schema and value not in schema["enum"]:
             raise SchemaValidationError(f"{field} 取值不受支持", field=field)
+        if isinstance(value, float) and not math.isfinite(value):
+            raise SchemaValidationError(f"{field} 必须为有限数值", field=field)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if "minimum" in schema and value < schema["minimum"]:
                 raise SchemaValidationError(f"{field} 不能小于 {schema['minimum']}", field=field)

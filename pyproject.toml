@@ -20,3 +20,9 @@ windows-build = ["pyinstaller>=6.0"]
 
 [tool.setuptools.packages.find]
 include = ["testbox*"]
+
+[tool.setuptools.cmdclass]
+build_py = "testbox_build.BundledBuildPy"
+
+[tool.setuptools.package-data]
+testbox = ["assets/*.ico", "assets/*.svg"]

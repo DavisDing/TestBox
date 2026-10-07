@@ -28,7 +28,17 @@ class PluginExecutionLock:
         self.release()
 
     def acquire(self) -> None:
-        self.local_lock.acquire()
+        self._acquire(blocking=True)
+
+    def try_acquire(self) -> bool:
+        """Acquire without waiting; maintenance skips work owned by a live task."""
+        return self._acquire(blocking=False)
+
+    def _acquire(self, *, blocking: bool) -> bool:
+        if self.handle is not None:
+            raise RuntimeError("同一个锁实例不能重复获取")
+        if not self.local_lock.acquire(blocking=blocking):
+            return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             # Do not use ``a+b`` here.  On Windows, append mode can make the
@@ -51,11 +61,24 @@ class PluginExecutionLock:
                         msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
                         break
                     except OSError:
+                        if not blocking:
+                            self.handle.close()
+                            self.handle = None
+                            self.local_lock.release()
+                            return False
                         time.sleep(0.05)
             else:
                 import fcntl
 
-                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+                    fcntl.flock(self.handle.fileno(), flags)
+                except BlockingIOError:
+                    self.handle.close()
+                    self.handle = None
+                    self.local_lock.release()
+                    return False
+            return True
         except Exception:
             if self.handle is not None:
                 self.handle.close()

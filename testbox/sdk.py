@@ -70,3 +70,15 @@ class Context:
     workspace: Workspace
     files: SafeFiles
     task: Task
+
+
+def read_dataset(path: str | Path, options: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Read a bounded local dataset; see testbox.tabular for supported options."""
+    from testbox.tabular import read_dataset as read
+    return read(path, options)
+
+
+def normalize_dataset(dataset: dict[str, Any], rules: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return independent explicitly normalized records without rewriting sources."""
+    from testbox.tabular import normalize_dataset as normalize
+    return normalize(dataset, rules)

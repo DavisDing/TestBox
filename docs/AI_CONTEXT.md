@@ -115,6 +115,23 @@ CLI 已形成稳定的第二阶段命令面：`plugin inspect`、`task list`、`
 
 Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携带插件运行所需的原始配置，但原始配置不得写入日志、报告、`manifest.json`、`result.json` 或任务历史。
 
+参数校验返回深拷贝后的参数与默认值，成功和失败均不修改调用方嵌套输入或 Schema 默认对象；对象/数组默认值递归应用，并支持显式 nullable 类型列表。空值仍需满足类型与 enum 约束；补默认值后的完整参数树拒绝 NaN/Infinity，包含 `additionalProperties: true`、无 items 定义的数组及空 Schema 下的自由内容。普通有限数值、null、布尔和字符串不受此检查影响。先执行已有 Schema 校验以保留声明字段的错误反馈，再检查开放值；该检查不扫描输入文件正文、插件配置或产物，也不等于完整 JSON Schema 支持。
+
+诊断脱敏统一复用 `core.redaction.Redactor`，根据原始参数与配置中的敏感键收集值，处理日志、异常、结果摘要与 GUI 参数展示；协议身份、任务状态与产物路径不能被通用文本替换改写。此机制不是插件任意输出文件的内容扫描，也不构成恶意代码沙箱。
+
+任务历史 schema v2 在 v1 上增量增加可空 `owner_pid`，保留已有记录；Runtime 显式记录拥有者 PID。恢复在 Host 未启动时检查 owner，Host 已启动时检查 Host，并用非阻塞任务生命周期锁保护结果收尾窗口。PID 存活检查不识别 PID 复用。工作区清理跳过被锁定任务、PENDING/RUNNING 和未知状态，历史清理只删除明确终态。
+
+业务结果先落盘再同步历史；历史写入失败进行一次有界重试，保留原状态和产物列表，并返回可见警告。持续失败可能暂时留下未同步历史，不应宣称数据库已成功更新。
+
+任务日志上限为 1 MiB，Host 响应上限为 8 MiB，stderr 保留最后 64 KiB。文件输入采用分块暂存与哈希，100 MiB 限制按当前任务累计计算；登记产物总量仍限 500 MiB。插件 ZIP 解压限制条目数、单项和总量，并拒绝链接与非法路径；覆盖激活失败先恢复旧目录，回滚失败则保留恢复材料，不删除旧插件。
+
+### 6.1 Python 发行包与运行目录
+
+- setuptools 的 `testbox_build.BundledBuildPy` 在构建输出中将官方 `plugins/` 资源装配到 `testbox/_bundled_plugins`；源码插件仍是唯一资源来源，构建不生成源码副本。`MANIFEST.in` 保留 sdist 重建所需的构建钩子和插件资源；wheel 不包含插件测试、缓存或运行工作区。
+- wheel 从安装目录加载官方插件、Schema、配置、固定数据和图标，忽略无关 cwd 的插件目录。任务与用户插件放在 `_user_data_dir()`：Windows 为 `%LOCALAPPDATA%/TestBox`，其余平台为 `${XDG_DATA_HOME:-~/.local/share}/testbox`，不写入 site-packages 的任务目录。
+- 源码/可编辑安装及显式 `Runtime(root)` 的目录语义不变；冻结程序继续从 `_MEIPASS/plugins` 读取官方资源。同名用户插件可覆盖官方插件；卸载用户副本后官方插件重新可用，不允许卸载官方资源。
+- 安装后验证入口为 `scripts/smoke_installed.py --python <目标虚拟环境Python>`；`--gui` 和 `--evidence` 要求相应可选依赖，使用空 cwd、隔离子进程与临时用户数据。offscreen GUI 和合成证据测试不能替代真实系统权限、截图或安装器实机验证。
+
 ## 7. 当前插件
 
 - `data-generator`：命令 `data.mock`，生成可复现模拟数据，包含规则化输入和固定第三方行政区划资源。
@@ -136,7 +153,7 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - 不把密码、令牌、连接串、真实个人信息放入样例、日志、测试夹具或报告。
 - 数据生成必须可复现；唯一性仅在用户显式声明且当前任务范围内保证。
 - 证件/身份类模拟内容必须带 `TEST DATA ONLY` / `测试数据` 标识，不能用于真实认证。
-- SQL Parser 只解析文本；任何插件都不得静默执行用户输入的 SQL、脚本或外部命令。
+- SQL Parser 只解析文本；任何插件都不得静默执行用户输入的 SQL、脚本或外部命令。用户明确启动 office.convert/office.inspect 时，允许按固定参数调用可信配置或本机发现的 LibreOffice；不开放任意shell、输入脚本或宏执行。
 
 ## 9. UI 长期规则
 
@@ -156,6 +173,9 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - Windows 使用 PyInstaller `onedir` 分别构建 CLI 与 GUI：`TestBox-CLI-Install-vX.Y.Z.exe` / `TestBox-CLI-Setup-vX.Y.Z.exe` 安装到 `%LOCALAPPDATA%\Programs\TestBox CLI`；`TestBox-GUI-Install-vX.Y.Z.exe` / `TestBox-GUI-Setup-vX.Y.Z.exe` 安装到 `%LOCALAPPDATA%\Programs\TestBox GUI`。两者各有独立 updater、更新 ZIP 与 manifest，不能共用安装根目录。
 - CLI 包排除 PySide6 和 `testbox.gui`；GUI 包仅显式引入实际使用的 Qt Core/Gui/Widgets/Svg 模块，避免收集不需要的 Qt WebEngine、QML、3D 等组件。两产品共享 `%LOCALAPPDATA%\TestBox` 中的用户数据，但卸载或更新不会管理该目录。
 - 更新 manifest schema 为 2，并含 `component`（`cli` 或 `gui`）；更新器会拒绝跨组件更新。旧 schema 1 的合包更新不能升级分包安装，应运行相应完整安装器迁移。
+- 更新器先校验 Windows 安全路径、文件清单、ZIP 内容/哈希、基线版本与组件身份；网络清单必须与包内清单一致。拒绝链接/junction 目标和覆盖/删除未登记的用户文件。全部备份完成后才修改文件；失败尽力回滚，回滚失败保留恢复材料并暴露路径。
+- 完整安装器拒绝与共享用户数据及另一组件安装路径重叠（含短文件名及链接路径保护），卸载只管理本次 Inno 已登记文件，不递归删除整个安装根目录。完整重装覆盖旧卸载日志以丢弃历史递归删除规则，因此不在新包中的旧文件可能保留，不做无清单清理。增量安装器等待更新器退出并检查返回码，将 UTF-8 诊断作为失败原因，不能把更新失败显示成安装成功。Windows 原生编译和实机安装/升级/卸载仍需目标平台验证。
+- `scripts/smoke_windows_installers.py` 是原生安装器验收入口，只允许无现有 TestBox 注册的 GitHub-hosted Windows 临时 runner；要求新的 `RUNNER_TEMP` 子目录。实际编译并执行完整安装器、合成增量安装器及卸载程序，校验 CLI/GUI Host、路径冲突、组件/base/hash 拒绝、锁文件回滚、用户数据/未登记文件保留和任务结果读取。日志与 JSON 摘要由 CI `always()` 上传；合成 delta 不代表相邻正式版本兼容性，配置存在不代表已验收。
 - 每次推送到 `main` 或 `master` 都由 GitHub Actions 创建一个正式版本：以最新 `vX.Y.Z` 标签为基准自动增加补丁号，并同步 `pyproject.toml`、四个安装器版本、标签及 GitHub Release。首次自动发布使用声明版本。
 - 自动生成的版本提交和标签由 `github-actions[bot]` 推送；PR 只执行验证，不创建 Release。
 
@@ -215,3 +235,22 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - 本地优先、安全或数据处理约束变化。
 
 普通功能细节、一次性修复和临时任务计划不应写入本文件。
+
+## 15. 多格式工具的已实现边界
+
+- 官方目录新增 data-preview、data-compare、schema-diff、data-check；该阶段合计8插件9命令；加入office-convert后现为9插件11命令。构建hook自动收录目录，CI独立插件ZIP列表同步。
+- 公共SDK新增 read_dataset/normalize_dataset，在testbox.tabular实现：CSV/TSV、分隔TXT（可多字符列/记录分隔）、JSON对象/对象数组/JSONL、XLSX/XLSM、SQL全文载体；默认严格文本，不修改来源。可显式编码、表头、Sheet、数据路径、列映射/trim/casefold/null/types，decimal精确文本+类型元数据。Excel沿用可选openpyxl，不计算公式或运行宏。资源超限失败，不返回截断数据声称complete。
+- 数据结构统一columns/rows/locations/format/warnings/complete，保留缺失/null区别；字符串长度限制按解码内容，嵌套值按序列化规模限制。拒绝重复表头/JSON键、非有限值、引号不闭合/不齐列；共享读取默认跳过空白记录，可显式关闭。
+- x-preview为Schema展示元数据，通用GUI面板通过真实异步Runtime/Host预览，不自行解析；配置同步正式表单，源/配置变化旧结果失效；预览留真实任务和样本产物，不替代完整比较。
+- data.compare按位置/主键/多重集合，支持容差与明细上限；data.check声明式8类规则；数据差异/质量error仍可任务success，分别用equal/passed判断。sql.diff/sql.preview有限语法分析，不执行SQL；unknown不允许报告equal，使用equal/different/inconclusive业务结论。
+- 暂无旧XLS、固定宽TXT、XML、批量多Sheet/目录、任意日期格式、完整SQL语义或自动清洗。Windows原生安装/增量更新/回滚本阶段用户要求跳过，配置存在不代表通过。
+
+新增插件使用新增SDK能力，manifest Core兼容下限为1.0.16；预览传输单元格有界显示，完整采样保留在JSON产物。文本location含row（物理行）和record（解析记录序号），SQL另含单元格内位置。
+
+## 17. 旧Office转换边界
+
+- office-convert提供office.convert/office.inspect，固定xls/doc/ppt→xlsx/docx/pptx；input单文件或inputs多文件二选一，GUI复用现有picker，无目录递归或覆盖源文件。
+- 外部系统依赖是本机LibreOffice headless，不增加pip依赖、不自动安装；soffice_path只来自可信插件配置，CLI不允许自定义命令。inspect为诊断，不替代转换成功验证。conversion通过Runtime/Host，不能在GUI复制业务。
+- 任务output中隔离profile与临时转换目录，转换输出编号防冲突；固定过滤器，禁宏自动执行和自动更新外链，校验OOXML必要结构。不是OS级沙箱；只转换可信输入，保真取决于引擎与文档特点。
+- Schema x-input-policy是显式输入暂存保护：reject_symlinks、unique_sources、max_files，必须在resolve/copy前核对原始来源，否则Host只看到独立快照。未声明策略的旧插件行为不变；同名同内容但不同来源不是重复输入。
+- 最多100文件、单源50MiB/累计100MiB、单产物100MiB/整批400MiB；输出ZIP解压限额200MiB/10000条目。双pipe各64KiB有界读取，不持久化转换器stdout/stderr。批次总deadline默认240秒、每文件60秒，首版不改变Core300秒默认。continue_on_error控制后续处理，失败/跳过逐项报告；成功文件与报告均登记，data.summary与JSON报告一致，逐项succeeded/failed/skipped；业务complete与任务status分离。宏不能保留，无Windows实机验收。

@@ -21,6 +21,7 @@ from testbox.core.plugin_packages import PluginPackageError, inspect_plugin as i
 from testbox.core.plugin_registry import PluginManager
 from testbox.core.process_runner import ProcessRunner
 from testbox.core.report import write_json, write_report
+from testbox.core.redaction import Redactor
 from testbox.core.schema_validator import SchemaValidationError, SchemaValidator
 from testbox.core.workspace import WorkspaceManager
 from testbox.sdk import Result
@@ -31,21 +32,39 @@ class Runtime:
 
     def __init__(self, root: Path | None = None, *, timeout_seconds: float = 300.0):
         self.root = root or self._application_root()
-        if root is not None or not getattr(sys, "frozen", False):
+        packaged_plugins = Path(__file__).resolve().parents[1] / "_bundled_plugins"
+        if root is not None:
+            # Explicit roots remain hermetic for tests and embedding.
             self.plugins_dir = self.root / "plugins"
             self.workspace_dir = self.root / "workspace"
             bundled_plugins = self.plugins_dir
-        else:
+        elif getattr(sys, "frozen", False):
             data_dir = self._user_data_dir()
             self.plugins_dir = data_dir / "plugins"
             self.workspace_dir = data_dir / "workspace"
             bundled_plugins = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "plugins"
+        elif packaged_plugins.is_dir():
+            # Wheels include read-only official resources inside the package;
+            # tasks and installed extensions never write to site-packages/cwd.
+            data_dir = self._user_data_dir()
+            self.plugins_dir = data_dir / "plugins"
+            self.workspace_dir = data_dir / "workspace"
+            bundled_plugins = packaged_plugins
+        else:
+            self.plugins_dir = self.root / "plugins"
+            self.workspace_dir = self.root / "workspace"
+            bundled_plugins = self.plugins_dir
         self.bundled_plugins_dir = bundled_plugins
         plugin_dirs = [self.plugins_dir] if bundled_plugins == self.plugins_dir else [self.plugins_dir, bundled_plugins]
         self.manager = PluginManager(plugin_dirs)
         self.manager.discover()
         self.history = TaskHistory(self.workspace_dir / "task_history.sqlite3")
-        self.history.abandon_incomplete(datetime.now(UTC).isoformat())
+        self.history.abandon_incomplete(
+            datetime.now(UTC).isoformat(), is_task_active=self._task_is_active,
+        )
+        # Infrastructure exists before task snapshots; failed input staging must
+        # not appear to have left a newly created task directory behind.
+        (self.workspace_dir / ".locks").mkdir(exist_ok=True)
         self.timeout_seconds = timeout_seconds
         self.schema_validator = SchemaValidator()
         self.workspace = WorkspaceManager(self.workspace_dir, max_input_bytes=self.MAX_INPUT_BYTES, max_output_bytes=self.MAX_OUTPUT_BYTES)
@@ -58,6 +77,9 @@ class Runtime:
     def _application_root() -> Path:
         if getattr(sys, "frozen", False):
             return Path(sys.executable).resolve().parent
+        package_root = Path(__file__).resolve().parents[1]
+        if (package_root / "_bundled_plugins").is_dir():
+            return package_root
         current = Path.cwd()
         if (current / "plugins").is_dir():
             return current
@@ -80,16 +102,10 @@ class Runtime:
 
     @staticmethod
     def _redact_params(value: Any, key_context: str | None = None) -> Any:
-        sensitive = ("password", "passwd", "secret", "token", "api_key", "apikey", "credential", "connection", "dsn")
-        if key_context and any(marker in key_context.lower() for marker in sensitive):
-            return "***"
-        if isinstance(value, dict):
-            return {key: Runtime._redact_params(item, str(key)) for key, item in value.items()}
-        if isinstance(value, list):
-            return [Runtime._redact_params(item, key_context) for item in value]
-        if isinstance(value, tuple):
-            return [Runtime._redact_params(item, key_context) for item in value]
-        return value
+        """Compatibility helper; all persisted diagnostics use the same redactor."""
+        if key_context is not None:
+            return Redactor({key_context: value}).value({key_context: value})[key_context]
+        return Redactor(value).value(value)
 
     def list_plugins(self) -> list[Manifest]:
         unique: dict[str, Manifest] = {}
@@ -257,43 +273,127 @@ class Runtime:
         """Backward-compatible alias used by existing GUI callers."""
         return self.run(command, params)
 
+    def _task_lock(self, task_id: str) -> PluginExecutionLock:
+        return PluginExecutionLock(self.workspace_dir / ".locks" / f"task-{task_id}.lock")
+
+    def _task_is_active(self, task_id: str) -> bool:
+        lock = self._task_lock(task_id)
+        if not lock.try_acquire():
+            return True
+        lock.release()
+        return False
+
     def run(self, command: str, params: dict[str, Any]) -> tuple[str, Result]:
         manifest = self.get_command(command)
         validated_params = self._validate(manifest, command, params)
+        # Fail invalid configuration before creating an incomplete task. Original
+        # settings remain in memory only and are redacted before persistence.
+        config = load_plugin_config(self.root, manifest.path, manifest.name)
+        redactor = Redactor(validated_params, config)
         task_id = self._task_id()
-        paths = self.workspace.create(task_id)
-        try:
-            staged_params, input_records = self.workspace.stage_file_inputs(self.get_command_schema(command), validated_params, paths)
-        except Exception:
-            # File staging happens before the task is inserted into history.
-            # Do not leave an orphan workspace when an input is missing or
-            # exceeds the configured limit.
-            shutil.rmtree(paths.root, ignore_errors=True)
-            raise
-        started = datetime.now(UTC).isoformat()
-        safe_params = self._redact_params(validated_params)
-        write_json(paths.manifest, {"task_id": task_id, "plugin_name": manifest.name, "plugin_version": manifest.version, "command": command, "params": safe_params, "inputs": input_records, "started_at": started, "host_pid": None})
-        self.history.create({"id": task_id, "plugin_name": manifest.name, "plugin_version": manifest.version, "command": command, "params": safe_params, "started_at": started, "result_path": str(paths.result), "workspace_path": str(paths.root), "host_pid": None})
-        # The plugin may need credentials or other sensitive runtime settings
-        # to execute. They are passed only to the Host process; persisted task
-        # metadata contains redacted params and never contains this config.
-        request = {"protocol_version": 1, "task_id": task_id, "plugin_path": str(manifest.path), "entry": manifest.entry, "command": command, "params": staged_params, "config": load_plugin_config(self.root, manifest.path, manifest.name), "workspace": str(paths.root), "capabilities": manifest.capabilities}
+        task_lock = self._task_lock(task_id)
+        task_lock.acquire()
         execution_lock = None
+        paths = None
+        recorded = False
         try:
-            if not manifest.capabilities["concurrency"]:
-                execution_lock = PluginExecutionLock(self.workspace_dir / ".locks" / f"{manifest.name}.lock")
-                execution_lock.acquire()
-            return self._execute_host(task_id, manifest, paths, request, execution_lock)
-        except Exception as error:
-            if execution_lock:
+            paths = self.workspace.create(task_id)
+            try:
+                staged_params, input_records = self.workspace.stage_file_inputs(
+                    self.get_command_schema(command), validated_params, paths
+                )
+            except Exception:
+                shutil.rmtree(paths.root, ignore_errors=True)
+                raise
+            started = datetime.now(UTC).isoformat()
+            safe_params = redactor.value(validated_params)
+            write_json(paths.manifest, {
+                "task_id": task_id, "plugin_name": manifest.name,
+                "plugin_version": manifest.version, "command": command,
+                "params": safe_params, "inputs": redactor.value(input_records),
+                "started_at": started, "host_pid": None, "owner_pid": os.getpid(),
+            })
+            self.history.create({
+                "id": task_id, "plugin_name": manifest.name,
+                "plugin_version": manifest.version, "command": command,
+                "params": safe_params, "started_at": started,
+                "result_path": str(paths.result), "workspace_path": str(paths.root),
+                "host_pid": None, "owner_pid": os.getpid(),
+            })
+            recorded = True
+            request = {
+                "protocol_version": 1, "task_id": task_id,
+                "plugin_path": str(manifest.path), "entry": manifest.entry,
+                "command": command, "params": staged_params, "config": config,
+                "workspace": str(paths.root), "capabilities": manifest.capabilities,
+            }
+            try:
+                if not manifest.capabilities["concurrency"]:
+                    execution_lock = PluginExecutionLock(
+                        self.workspace_dir / ".locks" / f"{manifest.name}.lock"
+                    )
+                    execution_lock.acquire()
+                return self._execute_host(task_id, manifest, paths, request, redactor)
+            except Exception as error:
+                result = Result("failed", "Core 执行任务时发生异常", data={
+                    "error_code": ErrorCode.CORE_EXECUTION_FAILED,
+                    "exception_type": type(error).__name__,
+                    "exception_message": redactor.text(str(error)),
+                })
+                self._persist_result(task_id, manifest, paths, result, redactor)
+                return task_id, result
+        except Exception:
+            # Failures before the history insert are not runnable tasks. Preserve
+            # existing user data but remove only this newly created workspace.
+            if not recorded and paths is not None:
+                shutil.rmtree(paths.root, ignore_errors=True)
+            raise
+        finally:
+            if execution_lock is not None:
                 execution_lock.release()
-            result = Result("failed", "Core 执行任务时发生异常", data={"error_code": ErrorCode.CORE_EXECUTION_FAILED, "exception_type": type(error).__name__, "exception_message": str(error)})
+            task_lock.release()
+
+    def _persist_result(
+        self, task_id: str, manifest: Manifest, paths: TaskPaths,
+        result: Result, redactor: Redactor,
+    ) -> None:
+        """History bookkeeping must never replace the plugin's business result."""
+        safe = redactor.value(result.to_dict())
+        result.message, result.data = safe["message"], safe["data"]
+        result.warnings = safe["warnings"]
+        write_json(paths.result, result.to_dict())
+        write_report(paths.report, task_id, manifest, result)
+        status = {
+            "success": TaskStatus.SUCCEEDED, "failed": TaskStatus.FAILED,
+            "cancelled": TaskStatus.CANCELLED,
+        }[result.status]
+        finished_at = datetime.now(UTC).isoformat()
+        history_warning = "任务结果已保存，但任务历史同步失败；可通过任务工作区查看原始结果。"
+        had_history_error = False
+        synchronized = False
+        for _ in range(2):
+            try:
+                self.history.finish(
+                    task_id, status=status, finished_at=finished_at,
+                    error_code=result.data.get("error_code"),
+                )
+                synchronized = True
+                break
+            except Exception:
+                had_history_error = True
+                # TaskHistory owns transaction rollback. A bounded retry must
+                # not change the plugin's status or erase its output list.
+        if had_history_error:
+            result.warnings.append(
+                "任务历史同步曾失败，重试后已恢复；原始任务结果和产物已保留。"
+                if synchronized else history_warning
+            )
+            # A warning-write failure cannot erase the already persisted result.
             try:
                 write_json(paths.result, result.to_dict())
                 write_report(paths.report, task_id, manifest, result)
-            finally:
-                self.history.finish(task_id, status=TaskStatus.FAILED, finished_at=datetime.now(UTC).isoformat(), error_code=ErrorCode.CORE_EXECUTION_FAILED)
-            return task_id, result
+            except OSError:
+                pass
 
     @staticmethod
     def _result_from_payload(payload: dict[str, Any]) -> Result:
@@ -310,7 +410,7 @@ class Runtime:
             return Result("failed", "插件 Host 返回结果格式错误", data={"error_code": ErrorCode.HOST_RESULT_INVALID})
         return Result(status, message, data=data, files=files, warnings=warnings)
 
-    def _execute_host(self, task_id: str, manifest: Manifest, paths: TaskPaths, request: dict[str, Any], execution_lock: PluginExecutionLock | None) -> tuple[str, Result]:
+    def _execute_host(self, task_id: str, manifest: Manifest, paths: TaskPaths, request: dict[str, Any], redactor: Redactor) -> tuple[str, Result]:
         def record_host_pid(host_pid: int) -> None:
             # Record the PID immediately after spawn so another Runtime
             # instance cannot mistake an actively starting task for a
@@ -320,29 +420,37 @@ class Runtime:
             manifest_record["host_pid"] = host_pid
             write_json(paths.manifest, manifest_record)
 
-        try:
-            host_execution = self.process_runner.run(request, task_id=task_id, on_started=record_host_pid)
-            result = self._result_from_payload(host_execution.payload)
-            if result.status == "failed":
-                diagnostics: dict[str, Any] = {"host_exit_code": host_execution.returncode}
-                if host_execution.stderr.strip():
-                    diagnostics["host_stderr"] = host_execution.stderr.strip()[-4_000:]
-                task_log = paths.logs / "task.log"
-                if task_log.is_file():
-                    diagnostics["task_log_tail"] = task_log.read_text(encoding="utf-8", errors="replace")[-8_000:]
-                result.data = {**result.data, **diagnostics}
-            output_error = self.workspace.validate_outputs(paths, result.files)
-            if output_error:
-                messages = {ErrorCode.INVALID_OUTPUT_PATH: "插件返回了非法输出路径", ErrorCode.MISSING_OUTPUT_FILE: "插件声明的输出文件不存在", ErrorCode.OUTPUT_TOO_LARGE: "插件输出超过大小限制"}
-                result = Result("failed", messages[output_error], data={"error_code": output_error})
-            write_json(paths.result, result.to_dict())
-            write_report(paths.report, task_id, manifest, result)
-            status = {"success": TaskStatus.SUCCEEDED, "failed": TaskStatus.FAILED, "cancelled": TaskStatus.CANCELLED}[result.status]
-            self.history.finish(task_id, status=status, finished_at=datetime.now(UTC).isoformat(), error_code=result.data.get("error_code"))
-            return task_id, result
-        finally:
-            if execution_lock:
-                execution_lock.release()
+        host_execution = self.process_runner.run(request, task_id=task_id, on_started=record_host_pid)
+        result = self._result_from_payload(host_execution.payload)
+        if result.status == "failed":
+            diagnostics: dict[str, Any] = {"host_exit_code": host_execution.returncode}
+            if host_execution.stderr.strip():
+                diagnostics["host_stderr"] = redactor.text(host_execution.stderr.strip())[-4_000:]
+            task_log = paths.logs / "task.log"
+            if task_log.is_file():
+                diagnostics["task_log_tail"] = redactor.text(self._read_log_tail(task_log, 8_000))
+            result.data = {**result.data, **diagnostics}
+        output_error = self.workspace.validate_outputs(paths, result.files)
+        if output_error:
+            messages = {
+                ErrorCode.INVALID_OUTPUT_PATH: "插件返回了非法输出路径",
+                ErrorCode.MISSING_OUTPUT_FILE: "插件声明的输出文件不存在",
+                ErrorCode.OUTPUT_TOO_LARGE: "插件输出超过大小限制",
+            }
+            result = Result("failed", messages[output_error], data={"error_code": output_error})
+        self._persist_result(task_id, manifest, paths, result, redactor)
+        return task_id, result
+
+    @staticmethod
+    def _read_log_tail(path: Path, max_chars: int) -> str:
+        # At most four UTF-8 bytes per character plus a partial boundary. Do not
+        # load the entire log merely to display a short diagnostic tail.
+        if max_chars <= 0:
+            return ""
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - max_chars * 4))
+            return stream.read(max_chars * 4).decode("utf-8", errors="replace")[-max_chars:]
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         return self.history.get(task_id)
@@ -378,12 +486,9 @@ class Runtime:
         if not path.is_file():
             return None
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
+            return self._read_log_tail(path, max_chars)
         except OSError:
             return None
-        if max_chars <= 0:
-            return ""
-        return content[-max_chars:]
 
     def list_tasks(
         self,
@@ -433,13 +538,13 @@ class Runtime:
         return local_midnight.astimezone(UTC)
 
     def clean_workspace(self, before: date) -> int:
-        """Remove workspaces created before local midnight on the selected date."""
+        """Remove old inactive workspaces without racing task creation/execution."""
         removed = 0
         if not self.workspace_dir.exists():
             return removed
         cutoff = self._local_midnight_utc(before)
         for task_dir in self.workspace_dir.iterdir():
-            if not task_dir.is_dir():
+            if task_dir.is_symlink() or not task_dir.is_dir():
                 continue
             try:
                 started = datetime.strptime(
@@ -447,13 +552,26 @@ class Runtime:
                 ).replace(tzinfo=UTC)
             except ValueError:
                 continue
-            if started < cutoff:
-                shutil.rmtree(task_dir)
-                removed += 1
+            if started >= cutoff:
+                continue
+            task_lock = self._task_lock(task_dir.name)
+            if not task_lock.try_acquire():
+                continue
+            try:
+                record = self.get_task(task_dir.name)
+                if record and record["status"] not in {
+                    "SUCCEEDED", "FAILED", "CANCELLED", "ABANDONED",
+                }:
+                    continue
+                if task_dir.exists():
+                    shutil.rmtree(task_dir)
+                    removed += 1
+            finally:
+                task_lock.release()
         return removed
 
     def clean_history(self, before: date) -> int:
-        """Remove history created before local midnight on the selected date."""
+        """Remove terminal history before the selected date; keep active tasks."""
         cutoff = self._local_midnight_utc(before)
         return self.history.clean_before(cutoff.isoformat())
 

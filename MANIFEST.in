@@ -1,0 +1,7 @@
+include testbox_build.py
+recursive-include testbox/assets *.ico *.svg
+recursive-include plugins manifest.yaml README.md requirements.txt *.py *.json *.yaml *.txt *.md
+prune workspace
+prune build
+prune dist
+global-exclude __pycache__ *.py[cod]

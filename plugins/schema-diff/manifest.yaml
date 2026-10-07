@@ -1,0 +1,19 @@
+schema_version: 1
+name: schema-diff
+version: 1.0.0
+description: 本地 SQL 与声明结构清单比对、预览（不执行 SQL）
+category: sql
+core_compatibility: ">=1.0.16,<2.0"
+capabilities:
+  concurrency: true
+  network: false
+  filesystem: output-only
+  resources: []
+entry: src.main:Plugin
+commands:
+  - name: sql.diff
+    description: 比对 CREATE、SELECT、INSERT 或声明结构清单
+    input_schema: schemas/sql.diff.json
+  - name: sql.preview
+    description: 预览 SQL 结构和未知信息
+    input_schema: schemas/sql.preview.json
