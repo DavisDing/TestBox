@@ -12,14 +12,21 @@ import unittest
 from unittest.mock import patch
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-from PySide6 import QtCore, QtTest, QtWidgets
-
-from testbox.gui import CommandDetailFormView, DynamicSchemaForm, MainWindow
+try:
+    from PySide6 import QtCore, QtTest, QtWidgets
+except ModuleNotFoundError as error:
+    if error.name != "PySide6":
+        raise
+    QT_AVAILABLE = False
+else:
+    QT_AVAILABLE = True
+    from testbox.gui import CommandDetailFormView, DynamicSchemaForm, MainWindow
 
 ROOT = Path(__file__).resolve().parents[1]
 OFFICE_FILTER = "旧 Office 文件 (*.xls *.doc *.ppt);;所有文件 (*.*)"
 
 
+@unittest.skipUnless(QT_AVAILABLE, "PySide6 desktop dependency is not installed")
 class GuiOfficeConvertTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -44,7 +44,7 @@ class SchemaDiffHostTests(unittest.TestCase):
 
     def path(self, name, text):
         path = self.root / name
-        path.write_text(text, encoding="utf-8")
+        path.write_text(text, encoding="utf-8", newline="")
         return str(path)
 
     def test_discovery_and_preview_metadata(self):

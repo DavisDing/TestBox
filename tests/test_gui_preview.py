@@ -8,12 +8,20 @@ import tempfile
 import time
 import unittest
 
-from PySide6 import QtCore, QtTest, QtWidgets
-from testbox.gui import MainWindow
+try:
+    from PySide6 import QtCore, QtTest, QtWidgets
+except ModuleNotFoundError as error:
+    if error.name != "PySide6":
+        raise
+    QT_AVAILABLE = False
+else:
+    QT_AVAILABLE = True
+    from testbox.gui import MainWindow
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipUnless(QT_AVAILABLE, "PySide6 desktop dependency is not installed")
 class GuiPreviewTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -45,7 +45,7 @@ class ComparisonUnitTests(unittest.TestCase):
 
     def write(self, name, text):
         path = self.root / name
-        path.write_text(text, encoding="utf-8")
+        path.write_text(text, encoding="utf-8", newline="")
         return path
 
     def compare(self, left, right, **params):
@@ -250,7 +250,7 @@ class RuntimeHostTests(unittest.TestCase):
         path = self.root / name
         if isinstance(content, (list, dict)):
             content = json.dumps(content, ensure_ascii=False, allow_nan=False)
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8", newline="")
         return path
 
     def run_compare(self, left, right, **params):

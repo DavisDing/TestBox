@@ -450,7 +450,10 @@ class Runtime:
         with path.open("rb") as stream:
             stream.seek(0, os.SEEK_END)
             stream.seek(max(0, stream.tell() - max_chars * 4))
-            return stream.read(max_chars * 4).decode("utf-8", errors="replace")[-max_chars:]
+            text = stream.read(max_chars * 4).decode("utf-8", errors="replace")
+            # Match text-mode universal newlines before taking a character
+            # tail; counting CRLF twice chops the first visible character.
+            return text.replace("\r\n", "\n").replace("\r", "\n")[-max_chars:]
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         return self.history.get(task_id)

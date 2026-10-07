@@ -38,7 +38,9 @@ class SafeFiles:
         target = self.resolve(relative_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_text(content, encoding=encoding)
+        # Preserve the caller's delimiters, including CSV CRLF and quoted
+        # cell newlines; Windows text-mode translation would corrupt them.
+        temporary.write_text(content, encoding=encoding, newline="")
         temporary.replace(target)
         return relative_path
 
