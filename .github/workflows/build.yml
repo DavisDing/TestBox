@@ -121,7 +121,7 @@ jobs:
           python -m testbox.cli plugin package plugins/sql-parser --output "plugin-dist/sql-parser-${RELEASE_VERSION}.zip"
           python -m testbox.cli plugin package plugins/sql-select --output "plugin-dist/sql-select-${RELEASE_VERSION}.zip"
           python -m testbox.cli plugin package plugins/evidence-tool --output "plugin-dist/evidence-tool-${RELEASE_VERSION}.zip"
-          for plugin in data-preview data-compare schema-diff data-check office-convert; do
+          for plugin in data-preview data-compare schema-diff data-check; do
             python -m testbox.cli plugin package "plugins/$plugin" --output "plugin-dist/${plugin}-${RELEASE_VERSION}.zip"
           done
       - name: Smoke clean installed wheel outside the checkout

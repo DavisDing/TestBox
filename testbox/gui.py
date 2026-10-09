@@ -1152,15 +1152,6 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         properties: dict[str, dict] = self.schema.get("properties", {})
         required_keys: list[str] = self.schema.get("required", [])
 
-        if self.command_name == "office.convert":
-            hint = QtWidgets.QLabel(
-                "单文件（input）与批量文件（inputs）二选一，不能同时填写；"
-                "切换时请清空另一项。支持 xls → xlsx、doc → docx、ppt → pptx。"
-            )
-            hint.setObjectName("mutedText")
-            hint.setWordWrap(True)
-            main_layout.addWidget(hint)
-
         # 分类为基础参数和高级参数
         basic_props = {}
         advanced_props = {}
@@ -1170,7 +1161,6 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             if (
                 key in required_keys
                 or key in ("count", "format", "input", "dialect", "template", "seed", "rules", "interactive")
-                or (self.command_name == "office.convert" and key == "inputs")
             ):
                 basic_props[key] = spec
             else:
@@ -1235,8 +1225,6 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             explicit = spec.get("items", {}).get("x-file-filter")
         if isinstance(explicit, str) and explicit.strip():
             return explicit
-        if self.command_name == "office.convert" and key in {"input", "inputs"}:
-            return "旧 Office 文件 (*.xls *.doc *.ppt);;所有文件 (*.*)"
         if multiple:
             if key in {"screenshots", "existing_reports"}:
                 return "图片 / 报告文件 (*.png *.jpg *.jpeg *.docx *.xlsx);;所有文件 (*.*)"
@@ -1259,7 +1247,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         label_bar = QtWidgets.QHBoxLayout()
         label_bar.setSpacing(6)
 
-        field_label = "单文件" if self.command_name == "office.convert" and key == "input" else _parameter_label(key)
+        field_label = _parameter_label(key)
         title_text = f"<b>{spec.get('title') or field_label}</b> <span style='color: #94a3b8;'>（{key}）</span>"
         if is_required:
             title_text += " <span style='color: #ef4444; font-weight: bold;'>*必填</span>"
@@ -1516,17 +1504,6 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         except FormInputError as error:
             self.set_field_error(error.field, str(error))
             return False, str(error)
-
-        if self.command_name == "office.convert":
-            # Immediate UI feedback only; Host still enforces the input contract.
-            single = bool(self.fields["input"][1].line_edit.text().strip())
-            batch = bool(values.get("inputs"))
-            if single == batch:
-                message = ("单文件与批量文件不能同时填写，请清空其中一项" if single
-                           else "请选择单文件或批量文件（二选一）")
-                self.set_field_error("inputs", message)
-                self.set_field_error("input", message)
-                return False, message
 
         required_keys: list[str] = self.schema.get("required", [])
         for required in required_keys:

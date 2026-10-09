@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 from testbox.updater import MANIFEST_NAME, _validate_manifest, sha256_file
 from scripts.windows_smoke_fixtures import build_delta_fixture, corrupt_payload
 
-COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview", "office.convert", "office.inspect"}
+COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
 APP_IDS = {"cli": "A4D1265C-4D25-4935-ACFA-4053B154C2BB", "gui": "3B8BE87A-BBE1-4DE9-9FB7-3E5EC6D9A3C4"}
 
 

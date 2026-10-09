@@ -156,7 +156,7 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - 不把密码、令牌、连接串、真实个人信息放入样例、日志、测试夹具或报告。
 - 数据生成必须可复现；唯一性仅在用户显式声明且当前任务范围内保证。
 - 证件/身份类模拟内容必须带 `TEST DATA ONLY` / `测试数据` 标识，不能用于真实认证。
-- SQL Parser 只解析文本；任何插件都不得静默执行用户输入的 SQL、脚本或外部命令。用户明确启动 office.convert/office.inspect 时，允许按固定参数调用可信配置或本机发现的 LibreOffice；不开放任意shell、输入脚本或宏执行。
+- SQL Parser 只解析文本；任何插件都不得静默执行用户输入的 SQL、脚本或外部命令。旧版 Office 转换已移除，当前官方插件无 LibreOffice 执行例外。
 
 ## 9. UI 长期规则
 
@@ -241,7 +241,7 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 
 ## 15. 多格式工具的已实现边界
 
-- 官方目录新增 data-preview、data-compare、schema-diff、data-check；该阶段合计8插件9命令；加入office-convert后现为9插件11命令。构建hook自动收录目录，CI独立插件ZIP列表同步。
+- 官方目录新增 data-preview、data-compare、schema-diff、data-check；当前合计8插件9命令；旧版 Office 转换已撤除。构建hook自动收录目录，CI独立插件ZIP列表同步。
 - 公共SDK新增 read_dataset/normalize_dataset，在testbox.tabular实现：CSV/TSV、分隔TXT（可多字符列/记录分隔）、JSON对象/对象数组/JSONL、XLSX/XLSM、SQL全文载体；默认严格文本，不修改来源。可显式编码、表头、Sheet、数据路径、列映射/trim/casefold/null/types，decimal精确文本+类型元数据。Excel沿用可选openpyxl，不计算公式或运行宏。资源超限失败，不返回截断数据声称complete。
 - 数据结构统一columns/rows/locations/format/warnings/complete，保留缺失/null区别；字符串长度限制按解码内容，嵌套值按序列化规模限制。拒绝重复表头/JSON键、非有限值、引号不闭合/不齐列；共享读取默认跳过空白记录，可显式关闭。
 - x-preview为Schema展示元数据，通用GUI面板通过真实异步Runtime/Host预览，不自行解析；配置同步正式表单，源/配置变化旧结果失效；预览留真实任务和样本产物，不替代完整比较。
@@ -250,10 +250,8 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 
 新增插件使用新增SDK能力，manifest Core兼容下限为1.0.16；预览传输单元格有界显示，完整采样保留在JSON产物。文本location含row（物理行）和record（解析记录序号），SQL另含单元格内位置。
 
-## 17. 旧Office转换边界
+## 17. 已撤除能力与通用输入策略
 
-- office-convert提供office.convert/office.inspect，固定xls/doc/ppt→xlsx/docx/pptx；input单文件或inputs多文件二选一，GUI复用现有picker，无目录递归或覆盖源文件。
-- 外部系统依赖是本机LibreOffice headless，不增加pip依赖、不自动安装；soffice_path只来自可信插件配置，CLI不允许自定义命令。inspect为诊断，不替代转换成功验证。conversion通过Runtime/Host，不能在GUI复制业务。
-- 任务output中隔离profile与临时转换目录，转换输出编号防冲突；固定过滤器，禁宏自动执行和自动更新外链，校验OOXML必要结构。不是OS级沙箱；只转换可信输入，保真取决于引擎与文档特点。
-- Schema x-input-policy是显式输入暂存保护：reject_symlinks、unique_sources、max_files，必须在resolve/copy前核对原始来源，否则Host只看到独立快照。未声明策略的旧插件行为不变；同名同内容但不同来源不是重复输入。
-- 最多100文件、单源50MiB/累计100MiB、单产物100MiB/整批400MiB；输出ZIP解压限额200MiB/10000条目。双pipe各64KiB有界读取，不持久化转换器stdout/stderr。批次总deadline默认240秒、每文件60秒，首版不改变Core300秒默认。continue_on_error控制后续处理，失败/跳过逐项报告；成功文件与报告均登记，data.summary与JSON报告一致，逐项succeeded/failed/skipped；业务complete与任务status分离。宏不能保留，无Windows实机验收。
+- 旧版 Office 转换插件已按用户决定撤除源码、专属 GUI 分支、专属测试与打包/冒烟入口；当前不提供旧 XLS/DOC/PPT 转换或 Office 引擎诊断，不依赖 LibreOffice。
+- 通用 Schema `x-input-policy` 仍是显式输入暂存保护：`reject_symlinks`、`unique_sources`、`max_files` 在 resolve/copy 前核对原始来源；未声明策略的旧插件行为不变。同名同内容但不同来源不是重复输入，相关回归使用独立测试插件，不依赖已撤除业务。
+- 源码撤除不删除已有任务历史、工作区、输出或用户自行安装的插件，不自动卸载系统软件；不能据此宣称用户安装的旧插件也被禁用。

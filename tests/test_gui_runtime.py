@@ -28,7 +28,7 @@ else:
 from testbox.core.schema_validator import SchemaValidationError, SchemaValidator
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview", "office.convert", "office.inspect"}
+COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
 
 
 @unittest.skipUnless(QT_AVAILABLE, "PySide6 desktop dependency is not installed")
@@ -81,6 +81,39 @@ class GuiRuntimeTests(unittest.TestCase):
         for message in self.messages.values():
             message.assert_not_called()
 
+    def test_schema_file_filters_override_defaults_and_array_item_hints(self):
+        schema = {"type": "object", "properties": {
+            "input": {"type": "string", "format": "file-path",
+                      "x-file-filter": "自定义单文件 (*.sample)"},
+            "attachments": {"type": "array", "x-file-filter": "自定义批量 (*.batch)",
+                            "items": {"type": "string", "format": "file-path",
+                                      "x-file-filter": "项目过滤 (*.item)"}},
+        }}
+        form = DynamicSchemaForm(schema, "example.run")
+        self.addCleanup(form.deleteLater)
+        self.assertEqual(form.fields["input"][1].filter_str, "自定义单文件 (*.sample)")
+        self.assertEqual(form.fields["attachments"][1].filter_str, "自定义批量 (*.batch)")
+        del schema["properties"]["attachments"]["x-file-filter"]
+        item_form = DynamicSchemaForm(schema, "example.run")
+        self.addCleanup(item_form.deleteLater)
+        self.assertEqual(item_form.fields["attachments"][1].filter_str, "项目过滤 (*.item)")
+
+    def test_generic_file_arrays_preserve_defaults_and_evidence_filters(self):
+        schema = {"type": "object", "properties": {
+            key: {"type": "array", "items": {"type": "string", "format": "file-path"}}
+            for key in ("attachments", "screenshots", "existing_reports")
+        }}
+        source = self.root / "default.txt"
+        source.write_text("TEST DATA ONLY", encoding="utf-8")
+        default_paths = [str(source)]
+        schema["properties"]["attachments"]["default"] = default_paths
+        form = DynamicSchemaForm(schema, "example.run")
+        self.addCleanup(form.deleteLater)
+        self.assertEqual(form.fields["attachments"][1].filter_str, "所有文件 (*.*)")
+        self.assertEqual(form.get_values()["attachments"], default_paths)
+        for key in ("screenshots", "existing_reports"):
+            self.assertIn("图片 / 报告文件", form.fields[key][1].filter_str)
+
     def test_catalog_history_and_diagnostics_navigation(self):
         self.assertEqual(self.window.runtime.root, self.root)
         self.assertEqual(self.window.runtime.workspace_dir, self.root / "workspace")
@@ -95,7 +128,7 @@ class GuiRuntimeTests(unittest.TestCase):
         self.window.nav_list.setCurrentRow(2)
         self.assertEqual(self.window.stack.currentIndex(), 5)
         diagnostics = self.window.page_diagnostics
-        self.assertEqual(diagnostics.plugins_table.rowCount(), 9)
+        self.assertEqual(diagnostics.plugins_table.rowCount(), 8)
         self.assertEqual(diagnostics.unavailable_table.rowCount(), 0)
         self.assertEqual(diagnostics.available_stack.currentIndex(), 1)
         self.assertEqual(

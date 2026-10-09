@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
+import re
+import shlex
 import shutil
 import tempfile
 import tomllib
@@ -22,6 +25,45 @@ class DistributionContractTests(unittest.TestCase):
         self.assertIn("include testbox_build.py", manifest)
         self.assertIn("recursive-include plugins", manifest)
 
+    def test_official_archives_release_and_smoke_inventories_match(self):
+        supported = {"data-generator", "sql-parser", "sql-select", "evidence-tool",
+                     "data-preview", "data-compare", "schema-diff", "data-check"}
+        commands = {"data.mock", "sql.parse", "sql.select", "evidence.build",
+                    "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
+        sources = {path.name: path for path in (ROOT / "plugins").iterdir()
+                   if path.is_dir() and (path / "manifest.yaml").is_file()}
+        self.assertEqual(set(sources), supported)
+        self.assertFalse((ROOT / "plugins" / "office-convert").exists())
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Runtime(Path(directory))
+            archived_commands = set()
+            try:
+                for name, source in sources.items():
+                    with self.subTest(plugin=name):
+                        archive = runtime.package_plugin(source, Path(directory) / f"{name}.zip")
+                        manifest = runtime.validate_plugin(archive)
+                        self.assertEqual(manifest.name, name)
+                        archived_commands.update(command.name for command in manifest.commands)
+            finally:
+                # Windows cannot remove an open task-history database.
+                runtime.close()
+        self.assertEqual(archived_commands, commands)
+        for filename in ("smoke_installed.py", "smoke_windows_installers.py"):
+            with self.subTest(smoke=filename):
+                source = (ROOT / "scripts" / filename).read_text(encoding="utf-8")
+                self.assertNotIn("office_inspect", source)
+                tree = ast.parse(source)
+                declared = next(ast.literal_eval(node.value) for node in tree.body
+                                if isinstance(node, ast.Assign)
+                                and any(isinstance(target, ast.Name) and target.id == "COMMANDS"
+                                        for target in node.targets))
+                self.assertEqual(declared, commands)
+        workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
+        packaged = set(re.findall(r"plugin package plugins/([a-z0-9-]+)", workflow))
+        for loop in re.findall(r"for plugin in ([^;\n]+); do", workflow):
+            packaged.update(shlex.split(loop))
+        self.assertEqual(packaged, supported)
+
     def test_installed_layout_uses_readonly_bundles_and_writable_user_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -39,7 +81,7 @@ class DistributionContractTests(unittest.TestCase):
                     self.assertEqual(runtime.bundled_plugins_dir, bundled)
                     self.assertEqual(runtime.plugins_dir, data / "plugins")
                     self.assertEqual(runtime.workspace_dir, data / "workspace")
-                    self.assertEqual(set(runtime.list_commands()), {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview", "office.convert", "office.inspect"})
+                    self.assertEqual(set(runtime.list_commands()), {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"})
                     self.assertFalse(runtime.can_uninstall_plugin("data-generator"))
                     self.assertFalse((package / "workspace").exists())
                 finally:

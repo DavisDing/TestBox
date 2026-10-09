@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import csv
 import io
-import importlib.util
-import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -26,7 +24,7 @@ class CiPortabilityTests(unittest.TestCase):
 sys.path[:0] = sys.argv[1:3]
 loader = unittest.TestLoader()
 suite = loader.loadTestsFromNames([
-    "test_gui_preview", "test_gui_office_convert", "test_gui_runtime"
+    "test_gui_preview", "test_gui_runtime"
 ])
 expected = suite.countTestCases()
 assert expected > 0, "GUI test discovery returned no tests"
@@ -66,40 +64,6 @@ assert len(result.skipped) == result.testsRun, result.skipped
                         parsed = read_dataset(output)
                         self.assertEqual(parsed["rows"], [{"value": cell}])
                         self.assertEqual(parsed["locations"][0]["row"], 2)
-
-    def test_office_package_fixture_closes_database_before_temporary_cleanup(self):
-        # Reproduce Windows' open-file cleanup prohibition on any platform;
-        # exercise the actual packaging test's lifecycle, not a mock success.
-        spec = importlib.util.spec_from_file_location(
-            "office_distribution_cleanup_regression", ROOT / "tests" / "test_office_distribution.py"
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        runtimes = []
-        original_cleanup = tempfile.TemporaryDirectory.cleanup
-
-        def tracked_runtime(root):
-            runtime = Runtime(root)
-            runtimes.append(runtime)
-            return runtime
-
-        def windows_cleanup(directory):
-            if Path(directory.name).name.startswith("testbox-office-package-"):
-                for runtime in runtimes:
-                    with self.assertRaises(sqlite3.ProgrammingError):
-                        runtime.history.connection.execute("SELECT 1")
-            return original_cleanup(directory)
-
-        case = module.OfficeDistributionTests(
-            "test_package_preview_install_inspect_without_system_dependency"
-        )
-        with patch.object(module, "Runtime", tracked_runtime), patch.object(
-            tempfile.TemporaryDirectory, "cleanup", windows_cleanup
-        ):
-            result = unittest.TestResult()
-            case.run(result)
-        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
-        self.assertEqual(len(runtimes), 1)
 
     def test_log_tail_normalizes_platform_newlines_before_character_limit(self):
         with tempfile.TemporaryDirectory() as directory:

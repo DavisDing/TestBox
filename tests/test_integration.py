@@ -23,7 +23,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
     def tearDown(self):
         self.runtime.close()
         shutil.rmtree(self.temp)
-    def test_discovers_bundled_commands(self): self.assertEqual(set(self.runtime.manager.available), {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview", "office.convert", "office.inspect"})
+    def test_discovers_bundled_commands(self): self.assertEqual(set(self.runtime.manager.available), {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"})
     def test_evidence_declares_non_concurrent_execution(self):
         self.assertFalse(self.runtime.manager.available["evidence.build"].capabilities["concurrency"])
     def test_plugin_execution_lock_serializes_callers(self):

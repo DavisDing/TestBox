@@ -129,7 +129,7 @@ TestBox-CLI-Updater.exe --manifest-url https://github.com/DavisDing/TestBox/rele
 TestBox-GUI-Updater.exe --manifest-url https://github.com/DavisDing/TestBox/releases/latest/download/TestBox-GUI-update-manifest.json
 ```
 
-发布的独立 `data-generator`、`sql-parser`、`sql-select`、`evidence-tool`、`data-preview`、`data-compare`、`schema-diff`、`data-check` 与 `office-convert` ZIP 是插件包，可额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。Windows 发行版使用 PyInstaller `onedir`，用户应运行 EXE 安装程序而不是直接解压绿色包。
+发布的独立 `data-generator`、`sql-parser`、`sql-select`、`evidence-tool`、`data-preview`、`data-compare`、`schema-diff` 与 `data-check` ZIP 是插件包，可额外安装或覆盖升级插件；它们不与 Windows 程序合并为同一个下载文件。Windows 发行版使用 PyInstaller `onedir`，用户应运行 EXE 安装程序而不是直接解压绿色包。
 
 GitHub Actions 发布规则：每次推送到 `main` 或 `master`，都会自动创建一个正式 Release。工作流以最新 `vX.Y.Z` 标签为基准将补丁版本加 `0.0.1`，自动同步 `pyproject.toml`、运行时版本和四个 Windows 安装器版本、创建对应标签并发布构建产物。首次自动发布使用仓库声明的版本号。Pull Request 只执行验证，不会发布 Release。
 
@@ -183,18 +183,6 @@ python -m testbox.cli run data.check --set input=actual.json --set 'rules=[{"typ
 
 Excel需要已有可选openpyxl（evidence extra）；不重新计算公式，缓存值缺失会告警。旧XLS、固定宽TXT、目录/多Sheet批量、任意日期格式、完整复杂SQL/跨方言语义等价尚未支持。完整参数、规则和边界见各插件README。
 
-## 旧版 Office 格式转换
+## 暂停提供的功能
 
-独立插件 `office-convert`：`.xls → .xlsx`、`.doc → .docx`、`.ppt → .pptx`。GUI选择 `office.convert`，在“单文件”或“批量文件”中选一种，混合旧格式可以放在同一批任务。输出写入任务 `output/converted/`，编号避免同名来源覆盖；原文件不变，需通过任务导出保存到目标位置。
-
-```sh
-python -m testbox.cli --json run office.inspect
-python -m testbox.cli --json run office.convert --set input=legacy.xls
-python -m testbox.cli --json run office.convert --set 'inputs=["legacy.xls","legacy.doc","slides.ppt"]' --set continue_on_error=true
-```
-
-需要本机已有可用 LibreOffice/soffice，不随TestBox打包、不自动安装。先运行 `office.inspect` 检查。找不到引擎时可在项目/用户 `config.yaml` 设置可信的 `soffice_path`，或环境变量 `TESTBOX_OFFICE_CONVERT_SOFFICE_PATH`；不通过CLI输入任意外部命令或参数。
-
-每文件默认60秒、批次总时限240秒；最多100个文件，单文件50MiB、累计输入100MiB；单产物100MiB、整批转换产物400MiB。默认遇错继续，关闭后未处理项标为skipped。部分成功保留成功产物并报告不完整；查看 `data.summary` 的 complete、succeeded_count、failed_count、skipped_count（也保留data顶层摘要），不只看任务status。全部失败不会报告成功。
-
-仅接受旧Office容器，不靠改扩展名转换。输出验证相应OOXML结构。加密/损坏、不支持格式、引擎异常或未产出均明确失败。宏不迁移；公式、排版、字体、图形与嵌入对象可能因转换器而变化，关键文档仍需人工核验。不驱动用户正在运行的Microsoft Office，不修改用户Office配置；独立配置/禁宏外链措施不是恶意文档安全沙箱，请仅转换可信本地文件。详见插件README。
+旧版 Office 格式转换插件已按用户决定移除，不再随发行包提供或参与构建检查。现有插件不依赖 LibreOffice；旧 `.xls`、`.doc`、`.ppt` 转换暂不支持。

@@ -493,15 +493,98 @@ CLI/GUI 面向用户显示可理解摘要；完整堆栈只放任务日志或受
 - 先完成有验收覆盖的基础闭环；结构unknown不能当missing/equal，复杂语法明确警告/inconclusive。后续支持完整SQL需要重新评估解析器依赖，不继续无限扩展正则。
 - 所有报告在任务output目录，CSV保护公式前缀，默认不打印输入数据到日志。JSON/明细产物可能含用户数据，脱敏日志不等于自动脱敏产物。
 
-## 16. 旧版Office转换插件方案
+## 16. 旧版 Office 转换插件（已撤除）
 
-- 独立 `office-convert` 官方插件，命令 `office.convert` 与无文件的 `office.inspect`。Schema使用顶层file-path `input` 或array file-path `inputs`，Runtime沿用既有文件暂存、额度、Host、结果和导出契约；无需新增后端或数据库。
-- GUI复用Schema表单和现有SingleFilePicker/MultiFilesPicker，添加旧Office过滤器与二选一说明；不在GUI执行转换。转换器不可用通过真实inspect/失败结果展示，不造可用状态。
-- 可信配置 `soffice_path` 或PATH/常见安装路径定位引擎，不允许CLI提交任意命令参数。每个文件用固定headless参数和指定OOXML过滤器；临时UserInstallation仅在本任务的私有工作目录，清理不触碰用户配置。
-- 所有输出命名 `converted/{四位序号}-{源stem}.{固定目标扩展}`，多来源同名不覆盖，以同文件系统no-clobber发布。单文件输入50MiB、累计100MiB；单输出100MiB、整批400MiB、ZIP解压总量200MiB/10000条目。输出OOXML校验ZIP路径、CRC、重复条目、宏/实体、必要XML根与namespace及精确内容类型，不接受退出0无文件；报告仅登记确认成功的产物。
-- `continue_on_error` 默认true；逐文件时限60秒、批次总时限240秒，在Core默认300秒内给清理/报告留时间。双pipe各64KiB有界读取，不持久化引擎正文诊断；过程资源监测不是内核quota。超时清理本插件创建进程，不杀全局Office；报告指出失败/跳过。批次partial与执行失败分开，全部失败返回failed并保留报告。
-- 本次是用户明确请求的外部程序转换例外：仅固定Office引擎、不执行输入中的SQL、宏或脚本、不开放任意shell，不把原先禁止静默外部命令的规则改为普遍许可。系统依赖不加入pip、不自动安装，保真依赖转换器版本及文档特点。
+此前转换方案已被 2026-10-09 用户“暂时弃用，代码删除”的决定取代；当前不实施或发行该插件。撤除范围与兼容边界见第 21 节。
 
-- 原始输入策略由Schema字段显式 `x-input-policy` opt-in，在Workspace暂存前拒绝选中符号链接、重复原始canonical来源及文件数超限；Host继续校验快照内容。避免将内容相同的两个合法不同来源按hash判重，不改变既有插件链接输入契约。
+## 20. Windows CI Office 缺失引擎测试修复设计（历史诊断，已取代）
 
-- 转换结果 `data.summary` 与JSON报告summary一致，同时保留顶层小摘要；逐项状态为succeeded/failed/skipped，summary状态为succeeded/partial/failed，均不替换Core任务状态。失败报告仍可从任务详情读取；全部失败的产物导出遵循既有Runtime仅成功任务可导出的规则。
+状态：`SUPERSEDED`。保留此前对 run #46 的诊断记录；用户随后决定撤除插件，以下夹具修复方案不再实施，也不是当前代码说明。当前方案见第 21 节。
+
+### 20.1 目标、证据与范围
+
+- 目标：解除 Windows `Run tests` 对打包的阻塞，保持“合法配置但引擎不存在”与“配置非法”两种结果的区分，不通过跳过测试、安装 LibreOffice 或放松执行限制制造成功。
+- GitHub 核验对象：`DavisDing/TestBox` 的 `Build and release #46`，run `37614679742`，触发于 2026-10-07 19:31:39（Asia/Shanghai）。触发提交为 `ffd022c84ecf63b1cfdc89256b7eec10e7054f20`，实际 checkout 为自动版本提交 `bc9d62b9a5b9b5bc324d5dcd8abe3a2aaeb39fd5`；compare 显示后者仅修改六个版本相关文件，不修改 Office 业务或测试代码。
+- Python 发行包/插件包 job `112770097704` 的测试、发行包与插件 ZIP 构建、clean wheel smoke、产物上传均已成功。Windows job `112770097647` 在测试阶段失败：614 项，3 failures，27 skipped；Windows wheel smoke、EXE 构建、安装器构建和 Release 发布尚未执行，不是已观察到的 PyInstaller/Inno 打包错误。
+- 可见日志明确确认 `OfficeDistributionTests.test_package_preview_install_inspect_without_system_dependency` 返回 `CONFIG_INVALID`，消息为“Windows 引擎仅允许 native exe/com，不接受 batch 脚本”，而测试期待 `success`。
+- 日志连接器的中段输出被截断，不能声称已逐条读到三项失败的完整堆栈。另两条关联路径由代码确认：GUI 缺失引擎用例同样使用无后缀路径；`CiPortabilityTests.test_office_package_fixture_closes_database_before_temporary_cleanup` 内部再次运行上述发行测试。它们与剩余两项失败相符，但完整远端失败列表仍为 `NEEDS_CONFIRMATION`。
+- 本阶段仅输出设计；下一实现阶段拟修改测试夹具与新增契约回归。范围外：业务功能扩展、Core/Host 协议、GUI 视觉、依赖安装、自动版本策略、Windows 原生安装/增量/回滚验收，以及提交、推送、重跑与发布操作。
+
+### 20.2 原因与必须保留的规则
+
+`plugins/office-convert/src/main.py::find_engine` 的当前数据流：
+
+```text
+可信 config / TESTBOX_OFFICE_CONVERT_SOFFICE_PATH
+  → 候选路径
+  → Windows 后缀检查（只允许 .exe/.com，大小写不敏感）
+  → resolve(strict=True) / 文件与执行权限检查
+  → 返回引擎路径或 None
+  → office.inspect 返回可用性；office.convert 另按缺失依赖失败
+```
+
+- Windows 后缀检查先于存在性检查，因此无后缀的 `missing-engine` / `engine-not-installed` 不是有效的“缺少引擎”夹具，而是非法配置夹具。POSIX 不走此限制，故本地测试与仅模拟换行符的回归均不能发现该差异。
+- 合法 `.exe/.com` 路径不存在时：`office.inspect` 为 `success`，`available=false`，警告含 `DEPENDENCY_MISSING`；这表示诊断成功，不表示具备转换能力。`office.convert` 应以 `DEPENDENCY_MISSING` 失败。
+- 非法配置（空白、非字符串、含 NUL，或 Windows 非 `.exe/.com` 后缀）应保持 `CONFIG_INVALID`，不自动降级成缺少依赖。
+- 显式配置不可用时不回退到 PATH 中另一引擎。不得允许 batch 脚本、引入 shell 执行、伪造可用结果，或仅因路径尚不存在而绕过类型校验。
+
+### 20.3 最小修改入口与职责
+
+| 入口 | 拟修改 | 不改变的行为 |
+| --- | --- | --- |
+| `tests/test_office_distribution.py` | 将临时根目录下的缺失引擎夹具命名为 `missing-engine.exe`；不创建该文件 | 真实打包→安装→Runtime→Host→诊断，全部原有断言和先关闭 SQLite 的清理顺序 |
+| `tests/test_gui_office_convert.py` | 将 GUI 缺失引擎夹具命名为 `engine-not-installed.exe`；不创建该文件 | 真实异步 Host、SUCCEEDED、available=false、警告/历史/报告展示；非法配置用例仍验证失败 |
+| `tests/test_ci_portability.py` | 保留嵌套发行测试的清理回归；补充不依赖 Qt/LibreOffice 的引擎发现契约矩阵 | 不删除嵌套回归、不弱化结果断言，不引入业务模块或依赖 |
+| `plugins/office-convert/src/main.py::find_engine` | 本问题不需要业务修改 | 后缀限制、存在性检查、显式配置优先级全部保留 |
+| `.github/workflows/build.yml` | 本修复不需要修改 | Linux CLI job 不强装 Qt；Windows desktop job 继续运行 GUI；失败仍阻断发布 |
+
+统一使用临时目录下不存在的 `.exe` 路径即可同时适配 POSIX 和 Windows；不需要按平台添加命名分支或引入共享夹具框架。临时根目录隔离确保不受 runner 上是否安装 LibreOffice 影响。
+
+### 20.4 回归与验收
+
+新增契约回归应独立于 `SyntheticConverterTests` 的 POSIX-only skip；不得因整个类跳过而漏测 Windows 配置语义。
+
+| 场景 | 预期 |
+| --- | --- |
+| 不存在的 `.exe` / `.com` / `.EXE` 显式路径 | `find_engine` 为 None；inspect success + available=false + DEPENDENCY_MISSING；不探测、不启动转换器、不回退 PATH |
+| Windows 无后缀 / `.cmd` / `.bat` 显式路径 | CONFIG_INVALID；不能因文件不存在而静默变为 DEPENDENCY_MISSING |
+| Windows 存在的 `.cmd` / `.bat` 文件 | 同样 CONFIG_INVALID，不执行文件；用临时夹具，不调用 shell |
+| 空白 / 非字符串 / NUL 配置 | CONFIG_INVALID，保持已有非法配置 GUI 反馈 |
+| 真实发行测试与其清理回归 | 包装、安装、Host、结果历史/报告断言通过，数据库先关闭后删目录 |
+| GUI 缺失引擎用例 | 原有状态/警告/结果/历史断言全部通过，不 mock 成功结果 |
+
+跨平台逻辑探针可对**插件模块绑定的 os 引用**使用最小 Windows facade，只模拟后缀分支；不得全局 patch `os.name`，避免改变 `pathlib` 或其他模块行为。这类探针必须标注“分支模拟”，不能冒充原生 Windows 测试。
+
+下一实现阶段使用已核实入口：
+
+```text
+.venv/bin/python -m unittest discover -s tests -p test_office_distribution.py -v
+.venv/bin/python -m unittest discover -s tests -p test_ci_portability.py -v
+.venv/bin/python -m unittest discover -s tests -p test_gui_office_convert.py -v
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s plugins/data-generator/tests -v
+git diff --check
+```
+
+Windows CI 的 `python -m unittest discover -s tests -v` 必须通过；然后分别确认 Windows clean wheel smoke 与构建步骤是否实际成功。若出现下一阶段错误，以其新日志另行诊断，不能预先宣称安装器或发布已经恢复。
+
+### 20.5 风险、未决项与下一阶段入口
+
+- 当前架构诊断已执行 14 个 POSIX/Windows 后缀分支探针：原始无后缀路径在模拟 Windows 分支返回 CONFIG_INVALID，合法不存在的 `.exe/.com/.EXE` 返回缺少依赖；显式配置不回退 PATH、不执行引擎。另在本机执行发行测试 1 项、CI 可移植性 4 项、Office GUI 13 项，均通过。这些是**未修改代码时的诊断结果**，不是方案实施后的验收，也不是 Windows 原生结果。
+- `NEEDS_CONFIRMATION`：完整远端三项失败的堆栈；本节已区分已见日志与代码关联，实施后仍须以新一次 Windows job 结果验收。
+- `NEEDS_CONFIRMATION`：用户此前要求跳过原生安装/增量/回滚工作，但当前 workflow 仍含原生生命周期步骤。是否要停用或拆分这些步骤是独立的流水线范围决定；本次不擅自改变。
+- 原 run 重跑仍使用旧提交，不能验证尚未提交的夹具修复。下一阶段先按本节完成最小实现并本地验证，再经用户授权选择 PR 或推送方式；主分支 push 会进入现有自动版本/标签/发布流程。
+- AI_CONTEXT 更新建议：若长期维护平台测试规则，可加入“缺失外部引擎夹具须满足目标平台的配置语法；分支/换行模拟不能替代原生平台”。本阶段不将未实施方案写入长期现状，也不改需求文档。
+- 设计交付后停止；全栈实现入口为 20.3 的两个夹具修改与 20.4 的契约回归，不需要先重构 Office 插件或安装新依赖。
+
+## 21. 撤除旧版 Office 转换插件（2026-10-09）
+
+用户明确要求删除代码，当前撤除范围如下：
+
+- 删除 `plugins/office-convert` 的清单、Schema、入口和 README；删除插件专属转换、发行与 GUI 测试。动态构建 hook 继续从有效官方目录收集资源，无需新增排除名单。
+- 删除 GUI 中该命令专属的提示、文件筛选、主参数分类和二选一校验；保留通用 Schema 表单、SingleFilePicker/MultiFilesPicker、解析预览与 Evidence 行为。不重新设计其他界面。
+- 从 CI 独立插件 ZIP 列表、安装后 smoke、Windows installer smoke 的命令集合删除两个 Office 命令；其余构建流程和原生安装/增量/回滚策略不变。
+- 发行物支持集合为 8 个官方插件、9 个命令。源码与模拟安装布局、两个 smoke 入口、CI 打包名单需一致；用专门契约回归防止遗漏。
+- 保留 Runtime 通用 `x-input-policy` 安全能力，将输入策略测试改为临时独立测试插件；保留 SDK 换行符、日志尾部与缺少可选 Qt 的回归。删除 CI 可移植性测试中对被撤除发行测试的嵌套调用，不屏蔽其余真实错误。
+- 不新增依赖、不改存储结构、不删除旧任务/产物，不自动删除用户数据目录的插件或卸载 LibreOffice；用户已安装插件仍遵循现有插件管理机制。停止官方发行不等于全局禁用或强制卸载。
+- 验收入口为完整 unittest、数据生成独立测试、编译检查、插件 ZIP 打包校验、发行集合契约和 diff 检查。实际 wheel/EXE/安装器构建与远端 Actions 状态另行报告，不能用本机源码测试代替。

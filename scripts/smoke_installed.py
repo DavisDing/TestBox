@@ -16,7 +16,7 @@ import tempfile
 import zipfile
 
 
-COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview", "office.convert", "office.inspect"}
+COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
 
 
 def verify_installed(python: Path, *, gui: bool = False, evidence: bool = False) -> dict:
@@ -105,12 +105,6 @@ finally: r.close()
             if schema.get("type") != "object":
                 raise AssertionError(f"Missing installed schema: {command}")
 
-        # Office tooling is an optional system dependency. Diagnose it without
-        # installing software or requiring conversion during package smoke.
-        office_inspection = cli("run", "office.inspect")
-        if office_inspection.get("status") != "success" or not isinstance(office_inspection.get("data", {}).get("available"), bool):
-            raise AssertionError("Installed Office engine diagnostics contract failed")
-
         # Use the real built-in customer template to exercise fixed data/config.
         params = {"count": 3, "format": "json", "seed": 17, "template": "retail_customer"}
 
@@ -180,7 +174,7 @@ finally: r.close()
         summary = {"cli": "passed", "resources": "passed", "sql_handoff": "passed",
                    "reproducibility": "passed", "export": "passed", "plugin_override": "passed",
                    "gui": "not_requested", "evidence": "not_requested",
-                   "data_preview": "passed", "data_compare": "passed", "data_check": "passed", "sql_diff": "passed", "office_inspect": "passed"}
+                   "data_preview": "passed", "data_compare": "passed", "data_check": "passed", "sql_diff": "passed"}
         if evidence:
             fixtures = code('''import json
 from pathlib import Path
