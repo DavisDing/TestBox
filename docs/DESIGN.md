@@ -616,3 +616,27 @@ Windows CI 的 `python -m unittest discover -s tests -v` 必须通过；然后�
 - `NEEDS_CONFIRMATION`：含本次修复的新提交的四个安装器编译及原生生命周期结果。重跑旧 run 使用旧代码，不能验证未提交修复。本机不具备 Windows/Inno 执行环境，不宣称远端已恢复。
 - 下一阶段须先经用户授权选择提交/推送方式，再核验对应新提交的 Actions；默认分支推送会触发现有正式发布，不在本次本地修复中执行。
 - AI_CONTEXT 更新建议：验收通过后在 9.1 补充“安装目录非法字符检查使用 Unicode 字符扫描；静默安装失败摘要包含 Inno 具体诊断”，无需改动需求基线或大规模改写长期事实。
+
+## 23. Windows 卸载空注册表项修复（2026-10-10）
+
+### 23.1 已核实故障与范围
+
+- 用户本次明确要求修复 Actions，允许实施与失败原因直接相关的最小安装器修复；不进入业务功能或 UI 实现。
+- 核验 [Build and release #48](https://github.com/DavisDing/TestBox/actions/runs/38012967847)，触发提交 `3c33a07284a22d546aa42f1a8a4439e2184c9dd7`，Windows job `114096935435` 实际 checkout 为 `07732040869a9de0f4a65212bf7726d9cc68b737`，自动版本 `1.0.21`。Python 发行成功；Windows 四个安装器编译成功，失败位于原生生命周期验收，Release 发布跳过。
+- 保存的 `testbox-windows-installer-smoke` 诊断产物 `11655486862` 中，16 项检查通过，包含中文路径安装、CLI/GUI Host、拒绝非法更新、锁文件回滚、两组件合成增量、重放拒绝及完整重装。CLI 卸载退出 0，Inno 日志记录卸载成功；随后 summary 报 `Existing cli registration is missing InstallDir`，清理阶段 GUI 卸载退出 0 后也报同类错误。这不是第 22 节中文路径问题复发。
+- 当前两个完整安装器的 `[Registry]` 仅声明 `uninsdeletevalue`，卸载删除 `InstallDir` 后留下空组件项；验收脚本对存在但缺少安装路径的注册表项保持 fail-closed，导致验收失败。
+
+### 23.2 最小方案与修改入口
+
+- `installer/TestBoxCLI.iss` 与 `installer/TestBox.iss`：仅为现有 HKCU 组件安装路径条目添加 `uninsdeletekeyifempty`，组合为 `uninsdeletevalue uninsdeletekeyifempty`。先删除本安装器登记的路径值，仅当组件项为空才删除该项；不会递归删除父项、另一组件、额外值或子项。依据 [Inno Registry 官方文档](https://jrsoftware.org/ishelp/topic_registrysection.htm)。
+- `tests/test_windows_release_contract.py`：新增两完整安装器的精确注册表条目契约，将禁止递归 `uninsdeletekey` 的旧子串断言改为完整 flag 判断，明确允许安全的 `uninsdeletekeyifempty`，仍禁止无条件删项。
+- 保留 `scripts/smoke_windows_installers.py` 的注册表异常拒绝、卸载后注册检查与仅清理本次自有安装的守卫；不把缺失 `InstallDir` 一律解释为未安装，不降低 Actions 门禁。
+- 不改增量安装器、共享用户数据、组件身份、版本策略或工作流，不清理用户额外注册表内容。存在额外值/子项时保留组件项是预期安全行为，不承诺适用于任意残留的自动清理。
+
+### 23.3 验收、风险与下一阶段
+
+- 本地执行 Windows release 契约、smoke runner 回归与完整测试；这些是源码/模拟契约，不代表 Inno 原生卸载已通过。
+- 新提交在 Windows Actions 上须完成原有全部生命周期验收，尤其 `uninstall-cli-preserves-gui-and-data`、`uninstall-gui-preserves-data-and-unregistered-files`，summary 为 `passed` 且无 cleanup_errors；继续保持用户数据/未登记文件和另一组件保护。合成增量仍不代表相邻正式发行兼容性。
+- **NEEDS_CONFIRMATION**：修复提交在 Windows 的真实编译、安装、升级、卸载及发布结果；本机 macOS 不提供这些平台证据。未提交补丁不能通过重跑旧 run 验证。
+- 本次不自动推送默认分支（该操作会创建正式版本）；下一阶段经用户确认提交/推送方式后核验新提交的 Actions。
+- AI_CONTEXT 更新建议：待 Windows 验收通过后，在 9.1 的卸载边界补充“删除自有 InstallDir 值并仅移除空组件注册表项”，不改需求和其他长期事实。

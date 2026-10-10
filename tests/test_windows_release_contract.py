@@ -39,6 +39,17 @@ class WindowsReleaseContractTests(unittest.TestCase):
             app_ids.extend(re.findall(r'^AppId=(.+)$', setup, re.M))
         self.assertEqual(len(set(app_ids)), 2)
 
+    def test_uninstall_removes_only_install_dir_and_empty_component_key(self):
+        for channel, name in [('CLI', 'TestBoxCLI.iss'), ('GUI', 'TestBox.iss')]:
+            with self.subTest(channel=channel):
+                source = (ROOT / 'installer' / name).read_text(encoding='utf-8')
+                entries = [line.strip() for line in section(source, 'Registry').splitlines()
+                           if line.strip() and not line.lstrip().startswith(';')]
+                self.assertEqual(entries, [
+                    f'Root: HKCU; Subkey: "Software\\TestBox\\{channel}"; '
+                    'ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; '
+                    'Flags: uninsdeletevalue uninsdeletekeyifempty'])
+
     def test_inno_pascal_cross_component_paths_have_closed_string_literals(self):
         expected = {
             "TestBoxCLI.iss": "    OtherDir := ExpandConstant('{localappdata}\\Programs\\TestBox GUI');",
@@ -60,7 +71,10 @@ class WindowsReleaseContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(section(source, 'InstallDelete').strip(), '')
                 self.assertEqual(section(source, 'UninstallDelete').strip(), '')
-                self.assertNotIn('uninsdeletekey', section(source, 'Registry'))
+                registry = section(source, 'Registry')
+                flags = set(re.findall(r'Flags:\s*([^;\n]+)', registry)[0].split())
+                self.assertEqual(flags, {'uninsdeletevalue', 'uninsdeletekeyifempty'})
+                self.assertNotIn('uninsdeletekey', flags)
                 code = section(source, 'Code')
                 self.assertIn('UninstallLogMode=overwrite', section(source, 'Setup'))
                 self.assertIn('PathsOverlap', code)

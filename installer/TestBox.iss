@@ -27,7 +27,7 @@ DisableProgramGroupPage=yes
 UninstallLogMode=overwrite
 
 [Registry]
-Root: HKCU; Subkey: "Software\TestBox\GUI"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\TestBox\GUI"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletevalue uninsdeletekeyifempty
 
 [Files]
 Source: "..\dist\windows\gui\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
