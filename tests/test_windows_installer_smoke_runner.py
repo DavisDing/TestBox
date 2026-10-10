@@ -302,6 +302,93 @@ class WindowsInstallerSmokeRunnerTests(unittest.TestCase):
         with patch.object(smoke, "run"), self.assertRaisesRegex(AssertionError, "preserve its log"):
             smoke.setup(executable, "missing-log")
 
+    def test_setup_failure_surfaces_encoded_inno_diagnostic(self):
+        smoke = self.smoke()
+        for encoding in ('utf-8', 'utf-8-sig', 'utf-16', 'utf-16-be'):
+            with self.subTest(encoding=encoding):
+                name = f"synthetic-failure-{encoding}"
+                log = smoke.logs / f"{name}-inno.log"
+                def failing_run(*args, **kwargs):
+                    data = "PrepareToInstall failed: 安装目录包含无效字符。".encode(encoding)
+                    log.write_bytes((b"\xfe\xff" if encoding == 'utf-16-be' else b"") + data)
+                    raise RuntimeError("Unexpected exit 7; empty stdout")
+                with patch.object(smoke, "run", side_effect=failing_run):
+                    with self.assertRaisesRegex(RuntimeError, "Unexpected exit 7") as caught:
+                        smoke.setup(self.root / "not-executed.exe", name)
+                self.assertIn("PrepareToInstall failed: 安装目录包含无效字符。", str(caught.exception))
+                self.assertIn(str(log), str(caught.exception))
+                self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+                self.assertEqual(smoke.summary["checks"], [])
+
+    def test_setup_failure_bounds_diagnostic_tail(self):
+        smoke = self.smoke()
+        log = smoke.logs / "bounded-inno.log"
+        def failing_run(*args, **kwargs):
+            log.write_text("OLD LOG CONTENT\n" + "x" * 5000 + "\n安装失败", encoding="utf-8")
+            raise RuntimeError("Unexpected exit 7")
+        with patch.object(smoke, "run", side_effect=failing_run):
+            with self.assertRaisesRegex(RuntimeError, "Unexpected exit 7") as caught:
+                smoke.setup(self.root / "not-executed.exe", "bounded")
+        message = str(caught.exception)
+        self.assertNotIn("OLD LOG CONTENT", message)
+        self.assertTrue(message.endswith("安装失败"))
+        self.assertLess(len(message), 4300)
+
+    def test_setup_failure_handles_missing_empty_and_unreadable_inno_logs(self):
+        smoke = self.smoke()
+        for kind in ('missing', 'empty', 'unreadable'):
+            with self.subTest(kind=kind):
+                name = f"synthetic-{kind}"
+                log = smoke.logs / f"{name}-inno.log"
+                if kind != 'missing':
+                    log.write_bytes(b"")
+                error = RuntimeError("Unexpected exit 7")
+                with patch.object(smoke, "run", side_effect=error):
+                    if kind == 'unreadable':
+                        with patch.object(runner, "read_log", side_effect=PermissionError("cannot read log")):
+                            with self.assertRaisesRegex(RuntimeError, "Unexpected exit 7") as caught:
+                                smoke.setup(self.root / "not-executed.exe", name)
+                        self.assertIn("Cannot read Inno log", str(caught.exception))
+                        self.assertIs(caught.exception.__cause__, error)
+                    else:
+                        with self.assertRaises(RuntimeError) as caught:
+                            smoke.setup(self.root / "not-executed.exe", name)
+                        self.assertIs(caught.exception, error)
+
+    def test_setup_timeout_keeps_exception_type_and_inno_log(self):
+        smoke = self.smoke()
+        def timeout_run(*args, **kwargs):
+            (smoke.logs / "timeout-inno.log").write_text("安装超时诊断", encoding="utf-16")
+            raise TimeoutError("Native smoke process timed out")
+        with patch.object(smoke, "run", side_effect=timeout_run):
+            with self.assertRaisesRegex(TimeoutError, "timed out") as caught:
+                smoke.setup(self.root / "not-executed.exe", "timeout")
+        self.assertIn("安装超时诊断", str(caught.exception))
+        self.assertIsInstance(caught.exception.__cause__, TimeoutError)
+
+    def test_main_setup_failure_includes_real_child_inno_log_in_summary(self):
+        # Use a real Python child for exit/log handling, not a Windows installer.
+        original_run = runner.NativeSmoke.run
+        def child_run(smoke, executable, arguments, name, *, expected=(0,), timeout=300):
+            log = smoke.logs / f"{name}-inno.log"
+            program = ("from pathlib import Path; import sys; "
+                       f"Path({str(log)!r}).write_text('PrepareToInstall failed: 安装目录包含无效字符。', encoding='utf-16'); "
+                       "sys.exit(7)")
+            return original_run(smoke, Path(sys.executable), ['-c', program], name,
+                                expected=expected, timeout=30)
+        def execute(smoke):
+            smoke.setup(self.root / "not-executed.exe", "install-cli")
+        with patch.object(runner.NativeSmoke, "run", new=child_run):
+            code, summary, executed, cleaned = self.invoke_main(execute=execute)
+        self.assertEqual(code, 1)
+        self.assertEqual(summary["status"], "failed")
+        self.assertIn("Unexpected exit 7", summary["message"])
+        self.assertIn("PrepareToInstall failed: 安装目录包含无效字符。", summary["message"])
+        self.assertEqual(summary["processes"][0]["exit_code"], 7)
+        self.assertEqual(json.loads((self.output / "summary.json").read_text(encoding='utf-8')), summary)
+        self.assertEqual(executed.call_count, 1)
+        cleaned.assert_called_once_with(executed.call_args.args[0])
+
     def test_compile_delta_uses_component_source_and_output_compiled_not_release_dist(self):
         smoke = self.smoke()
         package = self.root / "dist" / "installer-smoke-test.zip"

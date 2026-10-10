@@ -588,3 +588,31 @@ Windows CI 的 `python -m unittest discover -s tests -v` 必须通过；然后�
 - 保留 Runtime 通用 `x-input-policy` 安全能力，将输入策略测试改为临时独立测试插件；保留 SDK 换行符、日志尾部与缺少可选 Qt 的回归。删除 CI 可移植性测试中对被撤除发行测试的嵌套调用，不屏蔽其余真实错误。
 - 不新增依赖、不改存储结构、不删除旧任务/产物，不自动删除用户数据目录的插件或卸载 LibreOffice；用户已安装插件仍遵循现有插件管理机制。停止官方发行不等于全局禁用或强制卸载。
 - 验收入口为完整 unittest、数据生成独立测试、编译检查、插件 ZIP 打包校验、发行集合契约和 diff 检查。实际 wheel/EXE/安装器构建与远端 Actions 状态另行报告，不能用本机源码测试代替。
+
+## 22. Windows Unicode 安装路径修复（2026-10-10）
+
+### 22.1 目标与已核实证据
+
+- 本次按用户“打包报错修复”的明确请求实施最小修复，不改变第 21 节的插件撤除决定。
+- 核验对象：[Build and release #47](https://github.com/DavisDing/TestBox/actions/runs/37912471789)，触发提交 `4d48ace604c6f710fb83c3370305310cc0e9c0b1`，实际构建提交 `f92049137dbb75cb15764d63bbf03443b39881af`（自动版本 1.0.20）。Linux 发行 job 成功；Windows job `113760699823` 的 577 项测试、安装后 wheel smoke、EXE 构建及冻结 Host smoke 均成功，四个安装器也已用 Inno Setup 6.7.1 编译成功。
+- 失败发生在原生生命周期验收的 `install-cli`，不是编译或缺少 Office 引擎。[诊断产物](https://github.com/DavisDing/TestBox/actions/runs/37912471789/artifacts/11606823980) 中 `install-cli-inno.log` 明确记录：安装目标为 `D:\a\_temp\testbox-windows-installer-smoke\installations\CLI 安装`，`PrepareToInstall failed: TestBox 安装目录包含无效字符。`；退出码为 7。此前两项受保护目录拒绝检查已通过，后续生命周期检查未执行，Release 发布被跳过。
+
+### 22.2 原因、修改入口与边界
+
+[Inno Unicode 文档](https://jrsoftware.org/ishelp/topic_unicode.htm) 明确脚本 `String` / `Char` 使用 Unicode；[脚本函数文档](https://jrsoftware.org/ishelp/topic_scriptfunctions.htm) 的 `Pos` 参数为 `AnyString`。官方 [Pascal Script runtime 源码](https://github.com/jrsoftware/issrc/blob/main/Components/UniPs/Source/uPSRuntime.pas) 按第一个参数的字符串类型选择 Unicode、Wide 或 ANSI 分支。因此 `Pos('?', InstallDir)` 等以 ASCII 字面量为首参数的检查存在 ANSI 转换风险，无法表示的路径字符可能变为问号，误判正常中文路径。源码核验使用上游 main，并非本机执行 run #47 的编译器二进制；完整修复效果仍须原生 Windows 验证。
+
+| 入口 | 本次修改 | 保持不变 |
+| --- | --- | --- |
+| 四个 `installer/TestBox*.iss` 的 `InstallationPathError` | 用 `for I := 1 to Length(InstallDir)` 逐个检查 Unicode 字符，只拒绝实际 `*`、`?`、`"`；四份守卫保持一致 | 空路径/根目录拒绝，规范化、短路径、链接/junction、用户数据与另一组件目录保护，增量执行前再次校验 |
+| `scripts/smoke_windows_installers.py::NativeSmoke.setup` | 运行失败或超时时，将已有 Inno 日志解码后的末尾至多 4000 个字符带入异常及失败摘要 | 非预期退出仍失败，超时仍为 TimeoutError；缺失/空日志保留原错误，读取失败附加诊断；原有清理和日志上传不变 |
+| 两个 Windows 测试模块 | 新增 Unicode 守卫源码契约、多编码诊断、截尾、缺失/读取失败、超时、真实子进程失败摘要回归 | 保留所有路径保护与四份守卫一致性断言，不 mock 出安装成功 |
+
+不新增模块或依赖，不改产品 UI、用户数据、manifest、组件身份、自动版本或发布策略；不把中文 CI 目录改成 ASCII 来绕过问题，不关闭验收门禁。`PathsOverlap` 仍使用类型明确的 String 变量，不属于此次字面量检查修改。日志截尾只限制展示长度，现有解码函数仍读取整个文件。
+
+### 22.3 验收与下一阶段
+
+- 本机回归入口：两个 Windows 契约/runner 测试、完整 `unittest discover -s tests -v`、数据生成独立测试、compileall 与 diff 检查。字符谓词探针是源码关联测试，不是 Pascal 执行；真实 Python 子进程只验证退出码和日志/摘要处理，不是 Windows 安装器验收。
+- 原生 Windows 必须允许既有 `CLI 安装` / `GUI 安装` 目录完成安装、Host 和受管文件验证，并继续通过受保护目录拒绝、合成增量、失败回滚和卸载保留检查。合成增量通过也不能替代相邻正式发行版本兼容性验收。
+- `NEEDS_CONFIRMATION`：含本次修复的新提交的四个安装器编译及原生生命周期结果。重跑旧 run 使用旧代码，不能验证未提交修复。本机不具备 Windows/Inno 执行环境，不宣称远端已恢复。
+- 下一阶段须先经用户授权选择提交/推送方式，再核验对应新提交的 Actions；默认分支推送会触发现有正式发布，不在本次本地修复中执行。
+- AI_CONTEXT 更新建议：验收通过后在 9.1 补充“安装目录非法字符检查使用 Unicode 字符扫描；静默安装失败摘要包含 Inno 具体诊断”，无需改动需求基线或大规模改写长期事实。

@@ -78,14 +78,18 @@ end;
 function InstallationPathError(InstallDir: String): String;
 var
   OtherDir, RegisteredOtherDir: String;
+  I: Integer;
 begin
   Result := '';
   try
     if Trim(InstallDir) = '' then
       RaiseException('TestBox 安装目录为空，请运行对应组件的完整安装器。');
-    if (Pos('*', InstallDir) <> 0) or (Pos('?', InstallDir) <> 0) or
-       (Pos('"', InstallDir) <> 0) then
-      RaiseException('TestBox 安装目录包含无效字符。');
+    { Check Unicode characters directly. An ASCII first argument to Pos may
+      select Pascal Script's ANSI branch and replace Chinese text with '?'. }
+    for I := 1 to Length(InstallDir) do
+      if (InstallDir[I] = '*') or (InstallDir[I] = '?') or
+         (InstallDir[I] = '"') then
+        RaiseException('TestBox 安装目录包含无效字符。');
     InstallDir := CanonicalPath(InstallDir);
     if RemoveBackslashUnlessRoot(ExtractFileDir(InstallDir)) = InstallDir then
       RaiseException('TestBox 不能安装到磁盘或共享根目录。');

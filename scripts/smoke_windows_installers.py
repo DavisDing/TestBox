@@ -177,7 +177,18 @@ class NativeSmoke:
             arguments += ["/SP-", "/NOCANCEL", "/NOCLOSEAPPLICATIONS", "/NORESTARTAPPLICATIONS", "/RESTARTEXITCODE=3010"]
         if directory is not None:
             arguments.append(f"/DIR={directory}")
-        self.run(executable, arguments, name, expected=expected)
+        try:
+            self.run(executable, arguments, name, expected=expected)
+        except (RuntimeError, TimeoutError) as error:
+            # Silent Inno failures often have no stdout. Surface the actual
+            # /LOG diagnostic in summary.json while preserving the failure.
+            try:
+                diagnostic = read_log(log)[-4000:] if log.is_file() else ""
+            except OSError as log_error:
+                diagnostic = f"Cannot read Inno log: {log_error}"
+            if diagnostic.strip():
+                raise type(error)(f"{error}\nInno log ({log}):\n{diagnostic}") from error
+            raise
         if not log.is_file():
             raise AssertionError(f"Installer did not preserve its log: {name}")
         return log

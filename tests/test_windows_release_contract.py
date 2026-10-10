@@ -161,6 +161,35 @@ class WindowsReleaseContractTests(unittest.TestCase):
                                 guard.index('RegQueryStringValue'))
         self.assertEqual(len(set(guards)), 1, 'Guard drift between full/incremental and CLI/GUI')
 
+    def test_unicode_character_guard_source_contract(self):
+        # Source-linked predicate probes, not native Inno/Pascal execution.
+        # The native CI already installs into both "CLI 安装" and "GUI 安装".
+        valid = [r'D:\a\_temp\CLI 安装', r'D:\独立目录\GUI 安装',
+                 r'C:\用户\工具箱', r'C:\安装\Ελληνικά\العربية\😀',
+                 r'C:\Users\runneradmin\Programs\TestBox CLI']
+        invalid = [path + character for path in valid for character in ('*', '?', '"')]
+        for filename in ('TestBoxCLI.iss', 'TestBoxCLIUpdate.iss', 'TestBox.iss', 'TestBoxUpdate.iss'):
+            with self.subTest(filename=filename):
+                code = section((ROOT / 'installer' / filename).read_text(encoding='utf-8'), 'Code')
+                guard = code[code.index('function InstallationPathError'):]
+                guard = guard[:guard.index('function Initialize') if 'Update' in filename
+                              else guard.index('function PrepareToInstall')]
+                self.assertIn('I: Integer;', guard)
+                self.assertNotRegex(guard, r"\bPos\s*\(\s*'")
+                match = re.search(r"for I := 1 to Length\(InstallDir\) do\s+if (.*?) then\s+"
+                                  r"RaiseException\('TestBox 安装目录包含无效字符。'\);", guard, re.S)
+                self.assertIsNotNone(match)
+                comparisons = re.findall(r"\(InstallDir\[I\] = '([^']+)'\)", match.group(1))
+                self.assertEqual(comparisons, ['*', '?', '"'])
+                self.assertEqual(re.sub(r"\(InstallDir\[I\] = '[^']+'\)", 'CHECK',
+                                       re.sub(r'\s+', ' ', match.group(1))), 'CHECK or CHECK or CHECK')
+                for path in valid:
+                    with self.subTest(path=path):
+                        self.assertFalse(any(char in comparisons for char in path))
+                for path in invalid:
+                    with self.subTest(path=path):
+                        self.assertTrue(any(char in comparisons for char in path))
+
     def test_incremental_path_revalidation_happens_before_extraction_and_exec(self):
         for filename in ('TestBoxCLIUpdate.iss', 'TestBoxUpdate.iss'):
             with self.subTest(filename=filename):
