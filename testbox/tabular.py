@@ -21,9 +21,9 @@ OPTION_KEYS = {
     "format", "encoding", "delimiter", "quotechar", "escapechar", "record_separator",
     "has_header", "header_row", "start_row", "sheet", "json_path", "columns",
     "skip_empty_rows", "formula_mode", "max_rows", "max_columns", "max_bytes",
-    "max_cells", "max_cell_length",
+    "max_cells", "max_cell_length", "widths", "width_unit",
 }
-FORMATS = {"auto", "csv", "tsv", "txt", "json", "jsonl", "ndjson", "xlsx", "xlsm", "sql"}
+FORMATS = {"auto", "csv", "tsv", "txt", "json", "jsonl", "ndjson", "xlsx", "xlsm", "sql", "fixed"}
 
 
 def _error(message: str, code: str = "INPUT_INVALID") -> PluginError:
@@ -239,7 +239,7 @@ def read_dataset(path: str | Path, options: dict | None = None) -> dict:
         rows.append(row)
         locations.append({"source": str(source), **location})
 
-    if fmt in {"json", "jsonl", "ndjson", "sql", "csv", "tsv", "txt"}:
+    if fmt in {"json", "jsonl", "ndjson", "sql", "csv", "tsv", "txt", "fixed"}:
         encoding = options.get("encoding", "utf-8-sig")
         if not isinstance(encoding, str):
             raise _error("encoding 必须为字符串", "INVALID_PARAMS")
@@ -251,7 +251,64 @@ def read_dataset(path: str | Path, options: dict | None = None) -> dict:
             text = payload.decode(encoding)
         except (UnicodeError, LookupError):
             raise _error("输入编码无效或与文件不匹配，请调整 encoding") from None
-        if fmt == "sql":
+        if fmt == "fixed":
+            widths = options.get("widths")
+            unit = options.get("width_unit", "characters")
+            if (not isinstance(widths, list) or not widths or len(widths) > max_columns
+                    or any(type(w) is not int or not 1 <= w <= max_length for w in widths)
+                    or sum(widths) > max_length * max_columns):
+                raise _error("widths 必须为有界正整数宽度列表", "INVALID_PARAMS")
+            if not isinstance(unit, str) or unit not in {"characters", "bytes"}:
+                raise _error("width_unit 必须为 characters 或 bytes", "INVALID_PARAMS")
+            if unit == "bytes" and encoding.lower().replace("_", "-") not in {"utf-8", "utf-8-sig", "ascii", "gbk", "gb2312", "gb18030", "big5", "latin-1", "latin1", "cp1252"}:
+                raise _error("字节定宽仅支持 UTF-8、GBK/GB18030、Big5 或单字节编码", "INVALID_PARAMS")
+            codec = encoding.lower().replace("_", "-").replace("-sig", "")
+            separator = _escaped(options.get("record_separator", "auto"), "record_separator")
+            if not separator:
+                raise _error("record_separator 不得为空", "INVALID_PARAMS")
+            # Split only physical CR/LF records by default; other characters are data.
+            import re
+            raw = payload.removeprefix(b"\xef\xbb\xbf") if encoding.lower().replace("_", "-") == "utf-8-sig" else payload
+            value = raw if unit == "bytes" else text
+            if separator == "auto":
+                records_raw = re.split(b"\r\n|\r|\n" if unit == "bytes" else r"\r\n|\r|\n", value)
+            else:
+                records_raw = value.split(separator.encode(codec) if unit == "bytes" else separator)
+            if records_raw and not records_raw[-1]:
+                records_raw.pop()  # Final terminator is not an extra empty record.
+            records = []
+            line = 1
+            for number, record in enumerate(records_raw, 1):
+                location = line
+                line += record.count(b"\n" if unit == "bytes" else "\n") + (1 if separator == "auto" else separator.count("\n"))
+                if not record and options.get("skip_empty_rows", True):
+                    continue
+                if len(record) != sum(widths):
+                    raise _error(f"第 {number} 条记录宽度为 {len(record)}，预期 {sum(widths)}；拒绝截断或补齐")
+                cells, offset = [], 0
+                for width in widths:
+                    cell = record[offset:offset + width]
+                    offset += width
+                    if unit == "bytes":
+                        try:
+                            cell = cell.decode(codec)
+                        except UnicodeError:
+                            raise _error(f"第 {number} 条记录字段边界切断编码字符") from None
+                    cells.append(cell)
+                records.append((cells, location))
+                if len(records) > maximum + header_row + start_row:
+                    raise _error("输入记录数超过限制", "INPUT_LIMIT_EXCEEDED")
+            field_ranges = None
+            def add_fixed(row, location):
+                nonlocal field_ranges
+                if field_ranges is None:
+                    field_ranges, offset = {}, 1
+                    for name, width in zip(columns, widths):
+                        field_ranges[name] = {"start": offset, "width": width}
+                        offset += width
+                add_row(row, {**location, "width_unit": unit, "field_ranges": field_ranges})
+            _read_matrix(records, options, header_row, start_row, columns, add_fixed, max_columns)
+        elif fmt == "sql":
             # SQL text is not a spreadsheet cell; allow bounded full source here.
             columns, rows = ["sql"], [{"sql": text}]
             locations = [{"source": str(source), "row": 1}]

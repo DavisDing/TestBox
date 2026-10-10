@@ -84,3 +84,9 @@ def normalize_dataset(dataset: dict[str, Any], rules: dict[str, Any] | None = No
     """Return independent explicitly normalized records without rewriting sources."""
     from testbox.tabular import normalize_dataset as normalize
     return normalize(dataset, rules)
+
+
+def run_dataset_batch(plugin: Any, command: str, params: dict[str, Any]) -> Result | None:
+    """Execute independent file/Sheet units using the plugin's single-item path."""
+    from testbox.dataset_batch import run_batch
+    return run_batch(plugin, command, params)

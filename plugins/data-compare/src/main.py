@@ -9,7 +9,7 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
-from testbox.sdk import PluginError, Result, normalize_dataset, read_dataset
+from testbox.sdk import PluginError, Result, normalize_dataset, read_dataset, run_dataset_batch
 
 MISSING = object()
 # Tolerance is not an equivalence relation: multiset requires maximum matching,
@@ -378,7 +378,14 @@ class Plugin:
     def init(self, context: Any) -> None:
         self.context = context
 
-    def execute(self, command: str, params: dict) -> Result:
+    def execute(self, command, params):
+        batch_result = run_dataset_batch(self, command, params)
+        if batch_result is not None:
+            return batch_result
+        return self.execute_one(command, {k: v for k, v in params.items()
+                                         if k not in {"inputs", "left_inputs", "right_inputs", "batch"}})
+
+    def execute_one(self, command: str, params: dict) -> Result:
         if command != "data.compare":
             raise _invalid("不支持的命令")
         left = _read(params.get("left"), params.get("left_options", {}), params.get("left_normalize", {}))

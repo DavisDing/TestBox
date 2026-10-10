@@ -66,3 +66,14 @@ python -m testbox.cli run data.compare \
 ```
 
 Excel 测试在已有 openpyxl 时执行；不可用时明确 skip，不安装依赖。覆盖跨 CSV/JSON/Excel、预览选项与空记录一致性、主键异常、多重集重复次数与容差最大匹配、报告截断、公式注入、严格 JSON、输入上限、源文件不变与无 NaN 输出。
+
+
+## 固定宽度与批量处理（Core >= 1.0.23）
+
+- 定宽读取选项：`{"format":"fixed","widths":[3,2],"width_unit":"characters","has_header":false,"columns":["id","name"]}`。例如 `001张三` 为两个字段；按字符计数而非视觉宽度。字节格式使用 `width_unit:"bytes"` 并指定 encoding（UTF-8/GBK/GB18030等）；字段边界切断编码字符会失败。默认按物理 CR/LF 分记录，可指定 record_separator；每条记录必须精确等于字段宽度总和，不截断或补空格。空格/前导零默认保留，trim须显式启用。
+- 原单文件参数继续可用。预览/质量检查/SQL预览用 `inputs:["/absolute/a.csv","/absolute/b.csv"]`；数据/结构比对用 `left_inputs` / `right_inputs` 数组。与对应 `input/left/right` 单文件互斥；SQL直接文本不与批量文件混用。所有文件经 Runtime 暂存并哈希，不直接批量读取原目录。
+- Excel配置 `options:{"sheets":"all"}` 或 `{"sheets":["客户","订单"]}`；两侧分别用 left_options/right_options。与 sheet 互斥。非Excel不使用sheets；混合文件批次应分别执行。各Sheet独立处理，不合并、不执行公式或宏。
+- 两侧默认精确匹配去扩展名后的文件名及Sheet名；单文件对允许文件名不同。`batch:{"pairing":"position"}` 显式按顺序配对；`batch:{"sheet_mapping":{"客户":"Customers"}}` 映射Sheet名（必须一对一、name配对）。重名冲突不随机配对，缺失项报告UNMATCHED。
+- 每侧最多100个文件，展开后的文件×Sheet以及最终配对最多100项；仍受每文件读取上限、整个任务累计输入/输出配额及超时限制。单项异常继续其他项；有执行失败/未配对时父任务failed，保留已生成报告和history。业务差异/质量违规不等于执行失败；整批equal/passed不得只看成功子集。SQL未知语法仍inconclusive。
+- 输出各项原有报告，加 `<task>-batch.json` 和防公式注入的 `<task>-batch.csv` 汇总。预览额外生成各项display.json，GUI下拉选择文件/Sheet显示；修改输入/配置后旧预览失效。完整数据与样本以登记产物为准，不将全部批次样本塞进Host响应。
+- GUI批量控件支持多选文件和“添加文件夹内数据文件”，仅当前层、按名称排序、不递归、不跟随符号链接；CLI通过明确文件路径数组批量运行，没有目录路径参数。定宽宽度、字段名、Sheet数组在预览配置中填写JSON数组。

@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from testbox.sdk import PluginError, Result, read_dataset
+from testbox.sdk import PluginError, Result, read_dataset, run_dataset_batch
 
 ATTRS = ("type", "length", "precision", "scale", "nullable", "default",
          "primary_key", "unique", "auto_increment", "comment", "foreign_table", "foreign_field")
@@ -957,7 +957,14 @@ class Plugin:
     def init(self, context):
         self.context = context
 
-    def execute(self, command: str, params: dict) -> Result:
+    def execute(self, command, params):
+        batch_result = run_dataset_batch(self, command, params)
+        if batch_result is not None:
+            return batch_result
+        return self.execute_one(command, {k: v for k, v in params.items()
+                                         if k not in {"inputs", "left_inputs", "right_inputs", "batch"}})
+
+    def execute_one(self, command: str, params: dict) -> Result:
         column = params.get("sql_column", "sql")
         if not isinstance(column, str) or not column.strip():
             raise PluginError("INVALID_PARAMS", "sql_column 必须是非空字符串")

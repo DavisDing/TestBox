@@ -640,3 +640,38 @@ Windows CI 的 `python -m unittest discover -s tests -v` 必须通过；然后�
 - **NEEDS_CONFIRMATION**：修复提交在 Windows 的真实编译、安装、升级、卸载及发布结果；本机 macOS 不提供这些平台证据。未提交补丁不能通过重跑旧 run 验证。
 - 本次不自动推送默认分支（该操作会创建正式版本）；下一阶段经用户确认提交/推送方式后核验新提交的 Actions。
 - AI_CONTEXT 更新建议：待 Windows 验收通过后，在 9.1 的卸载边界补充“删除自有 InstallDir 值并仅移除空组件注册表项”，不改需求和其他长期事实。
+
+## 24. 固定宽度与文件/Sheet批量处理（2026-10-10）
+
+### 24.1 范围与职责
+
+用户已授权实施 REQUIREMENT 第14节，不替换当前页面视觉，不新增插件命令、后台服务、数据库或外部依赖。复用 Schema 多文件控件、WorkspaceManager 文件数组暂存/哈希、Runtime/Host 任务及已有插件业务算法。
+
+- `testbox/tabular.py::read_dataset` 新增 `format=fixed`，`widths` 为连续字段宽度正整数数组，`width_unit=characters|bytes`（默认 characters）。复用编码、记录分隔符、表头/起始记录、columns及标准化；长度必须精确匹配。字节模式支持 UTF-8（可带BOM）、GBK/GB18030/GB2312、Big5及列明的单字节编码，拒绝 UTF-16 等不支持的字节布局。位置包含记录/物理行、字段起始位置与宽度；不解析填充为空值。
+- `testbox/dataset_batch.py` 经 SDK `run_dataset_batch` 组织独立单项：解析文件/Sheet选择→有界Excel元数据读取→配对计划→逐项执行插件原有 `execute_one`→独立报告及批次JSON/CSV。单项不是额外 Runtime 子任务，而是同一任务内编号单元，使用派生报告文件名，输入/日志/历史归属同一父任务。
+- data-preview/data-compare/data-check/schema-diff 在原命令中增加批量入口，不导入另一插件；SQL仍由原算法保留 equal/different/inconclusive，批次不会把 unknown 升级为 equal。
+
+### 24.2 参数、状态和数据流
+
+- 单侧命令：`input` 或 `inputs`（文件路径数组）；两侧命令：`left/right` 或 `left_inputs/right_inputs`。单/多输入互斥，SQL批次不得混用直接文本。数组复用 `file-path` 暂存，最多100项、拒绝符号链接和重复来源。
+- 读取配置使用 `options.sheets="all"` 或名称数组；两侧各用 `left_options/right_options`。`sheet` 与非空 `sheets` 互斥。对混合格式批次不应用 sheets；需分别执行。未指定 sheets 保持单 Sheet行为。
+- `batch.pairing=name|position` 默认name；`batch.sheet_mapping={左Sheet:右Sheet}`必须一对一并使用name。文件名/Sheet名大小写精确匹配；去扩展名重名记AMBIGUOUS_PAIR，缺失记UNMATCHED。单文件对省略文件名匹配，便于比较不同文件名的两个工作簿。
+- 可恢复单项异常记failed并继续，未配对记unmatched。全部单项执行成功才返回success；有执行异常/未配对返回failed并登记所有已生成文件。data.compare/data.check分别提供整批equal/passed，失败时为false；sql.diff失败时inconclusive，完整执行时依据所有项归纳。各子报告保留具体业务结果。
+- 批次不同时保留全部完整数据集。逐项读取/处理，Host响应只返回轻量摘要和产物列表；预览显示数据存为独立display.json，完整样本继续存原预览产物。最终配对和展开都超过100项即拒绝；仍受现有进程超时和任务配额约束。
+- GUI复用现有布局：多文件控件可添加目录当前层支持的文件；预览面板增加定宽配置/Sheet选择，批次结果下拉按文件/Sheet切换。输入或配置变化使旧预览失效，执行期间变更会丢弃过期响应。坏项目显示失败详情，不显示旧表格。
+- Runtime新增只读 `get_task_artifact_path`，允许读取已结束成功/失败任务声明的产物，以查看部分成功预览；原 `get_task_output_path` 继续只允许成功任务用于后续输入，不降低此契约。
+
+### 24.3 兼容、验证与交付边界
+
+新增SDK入口要求新Core，四个更新插件将兼容下限设为1.0.23，不能把新ZIP装到1.0.22或更老Core并宣称可用。本地候选版本用既有release_version脚本统一为1.0.23，四插件源码版本1.1.0；正式版本仍以自动发布流程实际分配为准，不自行发布标签/Release。
+
+验证入口：新增 `test_dataset_batch.py`（真实Runtime/Host和读取器）、`test_gui_preview.py`（offscreen真实Host）、完整unittest、数据生成独立回归、compileall及diff检查。模拟文件夹选择只证明选择/过滤逻辑，不代表原生文件对话框验收；GUI offscreen不代表Windows实机操作。CLI文件夹处理通过显式文件数组，不提供Core目录路径暂存或递归扫描，以保护输入快照边界。
+
+**NEEDS_CONFIRMATION / 未验证**：新提交的远端发行构建、Windows原生GUI及大批真实文件耗时；本机测试通过不等于新发行已发布。批次没有实时逐项进度/取消协议，不扩展既有一次Host响应。AI_CONTEXT更新建议：验收后将公共读取格式与批次能力、SDK兼容下限更新至实际事实；本次不改写长期上下文。
+
+### 24.4 本地验证记录（不是远端验收）
+
+- 汇合后的完整测试：603项通过（Python 3.14.8、本机macOS），含15项定宽/批次契约和10项offscreen预览交互回归。数据生成插件独立3项通过；compileall和diff检查通过。
+- wheel与sdist构建成功，四个更新插件ZIP打包成功。将1.0.23候选wheel安装至独立临时虚拟环境，从空工作目录用隔离导入执行既有installed smoke（evidence及所有新插件命令）通过。
+- 安装后另行真实Runtime/Host验证字符定宽预览、全部Sheet预览、Sheet批量质量检查和定宽批量比对，均通过；导入路径确认为独立环境site-packages，不是源码checkout。
+- 未提交/推送本批变更；未构建或执行该候选版本Windows EXE/安装器。既有1.0.22远端绿色结果不作为本次新增能力的发行验收。

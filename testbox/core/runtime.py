@@ -593,6 +593,17 @@ class Runtime:
             raise ValueError("只能使用成功任务声明的输出文件")
         return self.workspace.resolve_output(Path(record["workspace_path"]), relative_path)
 
+    def get_task_artifact_path(self, task_id: str, relative_path: str) -> Path:
+        """Inspect declared reports from terminal tasks, including partial batch failures.
+
+        Does not authorize reuse as a successful downstream input.
+        """
+        record = self.get_task(task_id)
+        result = self.get_task_result(task_id) if record else None
+        if not record or not result or result.get("status") not in {"success", "failed"} or relative_path not in result.get("files", []):
+            raise ValueError("只能读取已结束任务声明的报告")
+        return self.workspace.resolve_output(Path(record["workspace_path"]), relative_path)
+
     def commit_output(self, task_id: str, relative_path: str, destination: Path) -> Path:
         self.get_task_output_path(task_id, relative_path)
         record = self.get_task(task_id)

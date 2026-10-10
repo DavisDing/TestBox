@@ -63,7 +63,7 @@ class DataCheckTests(unittest.TestCase):
         self.assertEqual(set(self.runtime.list_commands()), {"data.check"})
         schema = self.runtime.get_command_schema("data.check")
         self.assertEqual(schema["x-preview"], {"command": "data.preview", "sources": [
-            {"input": "input", "options": "options", "normalize": "normalize", "label": "输入数据"}]})
+            {"input": "input", "inputs": "inputs", "options": "options", "normalize": "normalize", "label": "输入数据"}]})
         params = self.runtime.validate_params("data.check", {"input": "any.csv", "rules": [{"type": "row_count", "min": 0}]})
         self.assertEqual(params["options"], {})
         self.assertEqual(params["normalize"], {})

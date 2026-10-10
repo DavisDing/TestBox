@@ -1,7 +1,7 @@
 """Use exactly the same adapters as comparison/checks; preview is a real task."""
 import json
 
-from testbox.sdk import Result, normalize_dataset, read_dataset
+from testbox.sdk import Result, normalize_dataset, read_dataset, run_dataset_batch
 
 
 def display_value(value):
@@ -16,6 +16,16 @@ class Plugin:
         self.context = context
 
     def execute(self, command, params):
+        batch_result = run_dataset_batch(self, command, params)
+        if batch_result is not None:
+            return batch_result
+        return self.execute_one(command, {k: v for k, v in params.items()
+                                         if k not in {"inputs", "left_inputs", "right_inputs", "batch"}})
+
+    def execute_one(self, command, params):
+        if not params.get("input"):
+            from testbox.sdk import PluginError
+            raise PluginError("INVALID_PARAMS", "请选择单文件或批量文件")
         dataset = read_dataset(params["input"], params.get("options"))
         normalized = normalize_dataset(dataset, params.get("normalize"))
         sample = params.get("sample_rows", 20)

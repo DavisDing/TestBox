@@ -156,6 +156,76 @@ class GuiPreviewTests(unittest.TestCase):
         self.assertTrue(result["data"]["equal"])
         self.assertEqual(self.window.runtime.get_task(task)["params"]["left_options"]["delimiter"],"||")
 
+    def test_batch_preview_switches_items_and_partial_failure_is_visible(self):
+        bad=self.root/'bad.csv';bad.write_text('id,id\n1,2\n')
+        good=self.root/'good.csv';good.write_text('id,v\n001,A\n')
+        self.window.navigate_to_command('data.preview', {'inputs':[str(bad),str(good)]})
+        panel=self.window.page_form.preview_panel
+        source,editors,_button=panel.editors[0]
+        panel.preview(source,editors);self.await_preview(panel)
+        self.assertEqual(panel.item_selector.count(),2)
+        self.assertIn('失败',panel.status.text())
+        self.assertEqual(panel.table.rowCount(),0)
+        panel.item_selector.setCurrentIndex(1);self.app.processEvents()
+        self.assertEqual(panel.table.item(0,0).text(),'001')
+        picker=self.window.page_form.form_widget.fields['inputs'][1]
+        picker.set_paths([str(good)]);self.app.processEvents()
+        self.assertEqual(panel.table.rowCount(),0)
+        self.assertIn('失效',panel.status.text())
+        panel.preview(source,editors);self.await_preview(panel)
+        self.assertEqual(panel.item_selector.count(),1)
+        self.assertEqual(panel.table.item(0,0).text(),'001')
+
+    def test_fixed_width_editor_round_trip_and_real_host(self):
+        path=self.root/'fixed.txt';path.write_text('001张三\n002李四\n')
+        options={'format':'fixed','widths':[3,2],'width_unit':'characters','has_header':False,'columns':['id','name']}
+        self.window.navigate_to_command('data.preview',{'input':str(path),'options':options})
+        panel=self.window.page_form.preview_panel
+        source,editors,_button=panel.editors[0]
+        self.assertEqual(json.loads(editors['widths'].text()),[3,2])
+        panel.preview(source,editors);self.await_preview(panel)
+        self.assertEqual(panel.table.item(0,1).text(),'张三')
+        self.assertEqual(self.window.page_form.form_widget.get_values()['options']['widths'],[3,2])
+        editors['widths'].setText('[3,1]')
+        panel.preview(source,editors);self.await_preview(panel)
+        self.assertIn('失败',panel.status.text());self.assertEqual(panel.table.rowCount(),0)
+
+    def test_excel_batch_sheet_preview_can_switch(self):
+        try:
+            import openpyxl
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl not installed")
+        path=self.root/'book.xlsx';book=openpyxl.Workbook();book.active.title='客户'
+        book.active.append(['id']);book.active.append(['001'])
+        sheet=book.create_sheet('订单');sheet.append(['order']);sheet.append(['A'])
+        book.save(path);book.close()
+        self.window.navigate_to_command('data.preview',{'input':str(path),'options':{'sheets':'all'}})
+        panel=self.window.page_form.preview_panel
+        source,editors,_button=panel.editors[0]
+        panel.preview(source,editors);self.await_preview(panel)
+        self.assertEqual(panel.item_selector.count(),2)
+        self.assertEqual(panel.table.item(0,0).text(),'001')
+        panel.item_selector.setCurrentIndex(1);self.app.processEvents()
+        self.assertEqual(panel.table.item(0,0).text(),'A')
+
+    def test_directory_picker_is_nonrecursive_sorted_and_invalidates(self):
+        from unittest.mock import patch
+        directory=self.root/'inputs';directory.mkdir()
+        (directory/'b.csv').write_text('id\n2\n')
+        (directory/'a.json').write_text('[{"id":"1"}]')
+        (directory/'ignore.xml').write_text('<a/>')
+        sub=directory/'sub';sub.mkdir();(sub/'c.csv').write_text('id\n3\n')
+        try:
+            (directory/'link.csv').symlink_to(directory/'b.csv')
+        except OSError:
+            pass
+        self.window.navigate_to_command('data.preview')
+        picker=self.window.page_form.form_widget.fields['inputs'][1]
+        with patch.object(QtWidgets.QFileDialog,'getExistingDirectory',return_value=str(directory)):
+            picker._add_directory()
+        self.assertEqual([Path(p).name for p in picker.get_paths()],['a.json','b.csv'])
+        self.assertIn('失效',self.window.page_form.preview_panel.status.text())
+
 
 if __name__ == "__main__":
     unittest.main()

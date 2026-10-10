@@ -267,16 +267,17 @@ class RuntimeHostTests(unittest.TestCase):
         self.assertEqual(self.runtime.list_unavailable_plugins(), [])
         schema = self.runtime.get_command_schema("data.compare")
         for name in ("left", "right"):
-            self.assertIn(name, schema["required"])
+            self.assertNotIn(name, schema["required"])
+            self.assertEqual(schema["properties"][name + "_inputs"]["items"]["format"], "file-path")
             self.assertEqual(schema["properties"][name]["format"], "file-path")
         for name in ("left_options", "right_options", "left_normalize", "right_normalize"):
             self.assertTrue(schema["properties"][name]["additionalProperties"])
             self.assertEqual(schema["properties"][name]["default"], {})
         self.assertEqual(schema["x-preview"], {"command": "data.preview", "sources": [
-            {"input": "left", "options": "left_options", "normalize": "left_normalize", "label": "左侧"},
-            {"input": "right", "options": "right_options", "normalize": "right_normalize", "label": "右侧"}]})
+            {"input": "left", "inputs": "left_inputs", "options": "left_options", "normalize": "left_normalize", "label": "左侧"},
+            {"input": "right", "inputs": "right_inputs", "options": "right_options", "normalize": "right_normalize", "label": "右侧"}]})
         manifest = (PLUGIN / "manifest.yaml").read_text(encoding="utf-8")
-        self.assertIn('core_compatibility: ">=1.0.16,<2.0"', manifest)
+        self.assertIn('core_compatibility: ">=1.0.23,<2.0"', manifest)
         self.assertIn("network: false", manifest)
 
     def test_cross_csv_json_full_runtime_trace_and_original_unchanged(self):

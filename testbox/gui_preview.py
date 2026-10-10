@@ -54,7 +54,7 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
             options = initial.get(source.get("options", ""), {}) or {}
             editors = {}
             formats = QtWidgets.QComboBox()
-            formats.addItems(["auto", "csv", "tsv", "txt", "json", "jsonl", "ndjson", "xlsx", "xlsm", "sql"])
+            formats.addItems(["auto", "csv", "tsv", "txt", "json", "jsonl", "ndjson", "xlsx", "xlsm", "sql", "fixed"])
             formats.setCurrentText(options.get("format", "auto"))
             editors["format"] = formats
             fields.addRow("文件格式", formats)
@@ -63,10 +63,14 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
                     ("record_separator", "记录换行/分隔符", r"auto / \n / \r\n / 自定义"),
                     ("quotechar", "引用符", '默认 "；可设空'),
                     ("sheet", "Excel 工作表", "留空使用活动工作表"),
+                    ("sheets", "批量工作表", 'all 或 JSON 数组，如 ["客户","订单"]；与单Sheet互斥'),
+                    ("widths", "定宽字段宽度", "JSON 数组，如 [10,20,12]"),
+                    ("width_unit", "定宽计量", "characters 或 bytes"),
+                    ("columns", "无表头字段名", 'JSON 数组，如 ["编号","姓名","金额"]'),
                     ("json_path", "JSON 数据路径", "data.rows，留空使用根对象")):
                 default = {"encoding":"utf-8-sig", "record_separator":"auto", "quotechar":'"'}.get(key, "")
                 value = options.get(key, default)
-                editor = QtWidgets.QLineEdit(str(value).replace("\r",r"\r").replace("\n",r"\n").replace("\t",r"\t"))
+                editor = QtWidgets.QLineEdit((json.dumps(value, ensure_ascii=False) if isinstance(value, list) else str(value)).replace("\r",r"\r").replace("\n",r"\n").replace("\t",r"\t"))
                 editor.setPlaceholderText(placeholder)
                 editors[key] = editor
                 fields.addRow(label, editor)
@@ -91,6 +95,11 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
         self.status = QtWidgets.QLabel("尚未预览")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.batch_items = []
+        self.item_selector = QtWidgets.QComboBox()
+        self.item_selector.setVisible(False)
+        self.item_selector.currentIndexChanged.connect(self._select_batch_item)
+        layout.addWidget(self.item_selector)
         self.table = QtWidgets.QTableWidget()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setMinimumHeight(160)
@@ -130,7 +139,7 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
             if isinstance(editor, QtWidgets.QComboBox):
                 editor.setCurrentText(str(value))
             elif isinstance(editor, QtWidgets.QLineEdit):
-                editor.setText(str(value).replace("\r",r"\r").replace("\n",r"\n").replace("\t",r"\t"))
+                editor.setText((json.dumps(value, ensure_ascii=False) if isinstance(value, list) else str(value)).replace("\r",r"\r").replace("\n",r"\n").replace("\t",r"\t"))
             elif isinstance(editor, QtWidgets.QSpinBox) and isinstance(value, int):
                 editor.setValue(value)
             elif isinstance(editor, QtWidgets.QCheckBox):
@@ -142,6 +151,9 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
         self.status.setText("配置或输入已改变，旧预览已失效，请重新预览")
         self.table.setRowCount(0)
         self.raw.clear()
+        self.batch_items = []
+        self.item_selector.clear()
+        self.item_selector.setVisible(False)
 
     def apply_options(self):
         values = self.form.get_values()
@@ -156,9 +168,14 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
                 if direct_text and name != "format":
                     continue
                 value = editor.currentText() if isinstance(editor, QtWidgets.QComboBox) else editor.text() if isinstance(editor, QtWidgets.QLineEdit) else editor.value() if isinstance(editor, QtWidgets.QSpinBox) else editor.isChecked()
-                if name in {"delimiter", "sheet", "json_path"} and value == "":
+                if name in {"delimiter", "sheet", "sheets", "widths", "width_unit", "columns", "json_path"} and value == "":
                     options.pop(name, None)
                 else:
+                    if name in {"widths", "columns"} or (name == "sheets" and value != "all"):
+                        try:
+                            value = json.loads(value)
+                        except ValueError:
+                            raise ValueError(f"{name} 必须为有效 JSON 数组") from None
                     options[name] = value
             updates[key] = options
         self.syncing = True
@@ -176,6 +193,10 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
             params = {"options": values.get(source.get("options", ""), {}), "sample_rows":20}
             if values.get(source.get("input", "")):
                 params["input"] = values[source["input"]]
+            plural_key = "inputs" if source.get("input") == "input" else source.get("input", "") + "_inputs"
+            plural = source.get("inputs") or plural_key
+            if plural and values.get(plural):
+                params[plural] = values[plural]
             if values.get(source.get("text", "")):
                 params["text"] = values[source["text"]]
             if source.get("normalize"):
@@ -186,6 +207,7 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
                 params["sql_column"] = values["sql_column"]
             command = self.metadata["command"]
             params = self.runtime.validate_params(command, params)
+            self._changed()  # Never retain a previous successful table on a new failure.
             self.worker = PreviewWorker(self.root, command, params)
             self.request_revision = self.revision
             self.worker.signals.finished.connect(self._finished)
@@ -205,11 +227,50 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
             self.status.setText("输入或配置在解析期间已改变，本次预览已失效（任务已记录），请重新预览")
             return
         self.last_task_id = task
-        if isinstance(result, dict) or result.status != "success":
+        if isinstance(result, dict) or (result.status != "success" and not result.data.get("batch")):
             message = result.get("error") if isinstance(result, dict) else result.message
             self.status.setText(f"解析失败：{message}；任务 {task or '未创建'}")
             return
         data = result.data
+        self.status.setText(f"{result.message}；任务 {task}")
+        if data.get("batch"):
+            self.batch_items = data["items"]
+            blocker = QtCore.QSignalBlocker(self.item_selector)
+            self.item_selector.clear()
+            for item in self.batch_items:
+                unit = item.get("input") or {}
+                label = {"success": "成功", "failed": "失败", "unmatched": "未配对"}.get(item["status"], item["status"])
+                self.item_selector.addItem(f"{item['index']}. {unit.get('name','')} / {unit.get('sheet','')} — {label}")
+            self.item_selector.setVisible(True)
+            del blocker
+            self._select_batch_item(0)
+            return
+        self.batch_items = []
+        self.item_selector.clear()
+        self.item_selector.setVisible(False)
+        self._render_data(data)
+        warnings = "；".join(result.warnings)
+        self.status.setText(f"{result.message}；任务 {task}" + (f"；注意：{warnings}" if warnings else ""))
+
+    def _select_batch_item(self, index):
+        self.table.setRowCount(0)
+        self.raw.clear()
+        if not 0 <= index < len(self.batch_items):
+            return
+        item = self.batch_items[index]
+        self.raw.setPlainText(json.dumps(item, ensure_ascii=False, indent=2)[:20000])
+        if not item.get("preview_file"):
+            return
+        try:
+            path = self.runtime.get_task_artifact_path(self.last_task_id, item["preview_file"])
+            if path.stat().st_size > 8 * 1024 * 1024:
+                raise ValueError("预览产物超过显示限制")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self._render_data(data)
+        except Exception as error:
+            self.raw.setPlainText(f"无法显示该项预览：{error}")
+
+    def _render_data(self, data):
         columns, rows = data.get("columns", []), data.get("rows", [])
         self.table.setColumnCount(len(columns))
         self.table.setHorizontalHeaderLabels([str(column) for column in columns])
@@ -222,7 +283,5 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
         self.table.resizeColumnsToContents()
         for index in range(self.table.columnCount()):
             self.table.setColumnWidth(index, min(self.table.columnWidth(index), 320))
-        warnings = "；".join(result.warnings)
-        self.status.setText(f"{result.message}；任务 {task}" + (f"；注意：{warnings}" if warnings else ""))
         self.raw.setPlainText(json.dumps({"raw_rows":data.get("raw_rows", []), "locations":data.get("locations", []),
                                          "complete":data.get("complete"), "sample_truncated":data.get("sample_truncated")}, ensure_ascii=False, indent=2)[:20000])

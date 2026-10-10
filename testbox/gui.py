@@ -45,6 +45,7 @@ QtCore, QtGui, QtWidgets = _qt()
 # Schema 字段与枚举值统一使用“中文说明 + 英文键名/原始值”的展示方式。
 # 英文键名仍保留，便于用户与 CLI、插件文档和任务结果对应。
 PARAMETER_LABELS = {
+    "inputs": "批量输入文件", "left_inputs": "左侧批量文件", "right_inputs": "右侧批量文件", "batch": "批次配对配置",
     "left": "左侧 / 预期文件", "right": "右侧 / 实际文件",
     "left_text": "左侧 SQL 文本", "right_text": "右侧 SQL 文本", "text": "SQL 文本",
     "left_options": "左侧解析配置", "right_options": "右侧解析配置", "options": "解析配置",
@@ -543,7 +544,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
     """多文件列表选择组件"""
     valueChanged = QtCore.Signal(list)
 
-    def __init__(self, filter_str: str = "所有文件 (*.*)", parent=None):
+    def __init__(self, filter_str: str = "所有文件 (*.*)", parent=None, *, allow_directory=False):
         super().__init__(parent)
         self.filter_str = filter_str
         self._paths: list[str] = []
@@ -571,6 +572,11 @@ class MultiFilesPicker(QtWidgets.QWidget):
         self.count_label.setObjectName("mutedText")
 
         btn_bar.addWidget(self.btn_add)
+        if allow_directory:
+            self.btn_directory = QtWidgets.QPushButton("添加文件夹内数据文件…")
+            self.btn_directory.setObjectName("secondaryButton")
+            self.btn_directory.clicked.connect(self._add_directory)
+            btn_bar.addWidget(self.btn_directory)
         btn_bar.addWidget(self.btn_remove)
         btn_bar.addWidget(self.btn_clear)
         btn_bar.addStretch()
@@ -590,6 +596,25 @@ class MultiFilesPicker(QtWidgets.QWidget):
                 if f not in self._paths:
                     self._paths.append(f)
             self._sync_list()
+
+    def _add_directory(self):
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "选择文件夹（仅当前层，不递归）", "", options=_file_dialog_options())
+        if not directory:
+            return
+        try:
+            supported = {".csv", ".tsv", ".txt", ".json", ".jsonl", ".ndjson", ".xlsx", ".xlsm", ".sql", ".ddl"}
+            candidates = []
+            for path in Path(directory).iterdir():
+                if path.suffix.lower() in supported and path.is_file() and not path.is_symlink():
+                    candidates.append(str(path))
+                    if len(candidates) > 100:
+                        raise ValueError("文件夹中数据文件超过100个，请手动选择较小批次")
+            paths = list(dict.fromkeys([*self._paths, *sorted(candidates)]))
+            if len(paths) > 100:
+                raise ValueError("累计文件超过100个")
+            self.set_paths(paths)
+        except (OSError, ValueError) as error:
+            QtWidgets.QMessageBox.warning(self, "无法添加文件夹", str(error))
 
     def _remove_selected(self):
         selected_items = self.list_widget.selectedItems()
@@ -1160,7 +1185,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         for key, spec in properties.items():
             if (
                 key in required_keys
-                or key in ("count", "format", "input", "dialect", "template", "seed", "rules", "interactive")
+                or key in ("count", "format", "input", "inputs", "left", "right", "left_inputs", "right_inputs", "dialect", "template", "seed", "rules", "interactive")
             ):
                 basic_props[key] = spec
             else:
@@ -1335,7 +1360,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         elif type_str == "array":
             items_spec = spec.get("items", {})
             if items_spec.get("format") == "file-path" or key in ("screenshots", "existing_reports"):
-                ctrl = MultiFilesPicker(filter_str=self._file_filter(key, spec, multiple=True))
+                ctrl = MultiFilesPicker(filter_str=self._file_filter(key, spec, multiple=True), allow_directory=spec.get("x-directory-picker", False))
                 if default_val:
                     ctrl.set_paths(default_val)
                 self.fields[key] = ("array-files", ctrl)

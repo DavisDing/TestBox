@@ -54,6 +54,42 @@
       "default": "sql",
       "minLength": 1,
       "description": "表格 SQL 文本列名（format=sql 固定为 sql）"
+    },
+    "left_inputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "file-path"
+      },
+      "default": [],
+      "x-input-policy": {
+        "max_files": 100,
+        "reject_symlinks": true,
+        "unique_sources": true
+      },
+      "description": "批量文件（最多100个）；与对应单文件输入互斥，独立执行，不合并表格",
+      "x-directory-picker": true
+    },
+    "right_inputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "file-path"
+      },
+      "default": [],
+      "x-input-policy": {
+        "max_files": 100,
+        "reject_symlinks": true,
+        "unique_sources": true
+      },
+      "description": "批量文件（最多100个）；与对应单文件输入互斥，独立执行，不合并表格",
+      "x-directory-picker": true
+    },
+    "batch": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "批量配置：pairing=name（文件去扩展名+Sheet名称）或position（按文件/Sheet顺序）；sheet_mapping={左Sheet:右Sheet}。options.sheets=\"all\" 或工作表名称数组；与sheet互斥。每批最多100项。"
     }
   },
   "additionalProperties": false,
@@ -66,15 +102,18 @@
         "text": "left_text",
         "options": "left_options",
         "mode": "left_mode",
-        "label": "左侧"
+        "label": "左侧",
+        "inputs": "left_inputs"
       },
       {
         "input": "right",
         "text": "right_text",
         "options": "right_options",
         "mode": "right_mode",
-        "label": "右侧"
+        "label": "右侧",
+        "inputs": "right_inputs"
       }
     ]
-  }
+  },
+  "required": []
 }

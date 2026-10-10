@@ -52,7 +52,7 @@ class SchemaDiffHostTests(unittest.TestCase):
         schema = self.runtime.get_command_schema("sql.diff")
         self.assertEqual(schema["x-preview"]["command"], "sql.preview")
         self.assertEqual(schema["x-preview"]["sql_column"], "sql_column")
-        self.assertEqual(schema["x-preview"]["sources"][0], {"input": "left", "text": "left_text", "options": "left_options", "mode": "left_mode", "label": "左侧"})
+        self.assertEqual(schema["x-preview"]["sources"][0], {"input": "left", "inputs": "left_inputs", "text": "left_text", "options": "left_options", "mode": "left_mode", "label": "左侧"})
 
     def test_identical_ddl_equal_and_type_change_different(self):
         result, report = self.diff()

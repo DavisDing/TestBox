@@ -8,7 +8,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from testbox.sdk import PluginError, Result, normalize_dataset, read_dataset
+from testbox.sdk import PluginError, Result, normalize_dataset, read_dataset, run_dataset_batch
 
 RULE_KEYS = {
     "required": {"fields"}, "unique": {"fields"},
@@ -345,6 +345,13 @@ class Plugin:
         self.context = context
 
     def execute(self, command, params):
+        batch_result = run_dataset_batch(self, command, params)
+        if batch_result is not None:
+            return batch_result
+        return self.execute_one(command, {k: v for k, v in params.items()
+                                         if k not in {"inputs", "left_inputs", "right_inputs", "batch"}})
+
+    def execute_one(self, command, params):
         if command != "data.check":
             raise PluginError("COMMAND_NOT_FOUND", "数据质量插件不支持此命令")
         rules = validate_params(params)  # All rules validated before any file read.

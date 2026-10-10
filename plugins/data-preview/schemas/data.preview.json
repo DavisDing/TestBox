@@ -1,11 +1,62 @@
 {
   "type": "object",
-  "required": ["input"],
+  "required": [],
   "properties": {
-    "input": {"type":"string","format":"file-path","description":"数据文件；预览是可追溯任务，不修改原文件"},
-    "options": {"type":"object","additionalProperties":true,"default":{},"description":"解析配置：format、encoding、delimiter、record_separator、sheet、header_row、json_path 等"},
-    "normalize": {"type":"object","additionalProperties":true,"default":{},"description":"可选标准化：column_mapping、trim、casefold、null_values、types"},
-    "sample_rows": {"type":"integer","minimum":1,"maximum":100,"default":20}
+    "input": {
+      "type": "string",
+      "format": "file-path",
+      "description": "数据文件；预览是可追溯任务，不修改原文件"
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "解析配置：format、encoding、delimiter、record_separator、sheet、header_row、json_path 等"
+    },
+    "normalize": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "可选标准化：column_mapping、trim、casefold、null_values、types"
+    },
+    "sample_rows": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "file-path"
+      },
+      "default": [],
+      "x-input-policy": {
+        "max_files": 100,
+        "reject_symlinks": true,
+        "unique_sources": true
+      },
+      "description": "批量文件（最多100个）；与对应单文件输入互斥，独立执行，不合并表格",
+      "x-directory-picker": true
+    },
+    "batch": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true,
+      "description": "批量配置：pairing=name（文件去扩展名+Sheet名称）或position（按文件/Sheet顺序）；sheet_mapping={左Sheet:右Sheet}。options.sheets=\"all\" 或工作表名称数组；与sheet互斥。每批最多100项。"
+    }
   },
-  "x-preview": {"command":"data.preview","sources":[{"input":"input","options":"options","normalize":"normalize","label":"输入数据"}]}
+  "x-preview": {
+    "command": "data.preview",
+    "sources": [
+      {
+        "input": "input",
+        "options": "options",
+        "normalize": "normalize",
+        "label": "输入数据",
+        "inputs": "inputs"
+      }
+    ]
+  }
 }
