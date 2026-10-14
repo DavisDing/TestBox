@@ -151,6 +151,7 @@ TYPE_LABELS = {
 }
 
 PLUGIN_LABELS = {
+    "code-value-check": "码值转换校验 SQL",
     "data-preview": "解析预览", "data-compare": "数据比对",
     "data-check": "数据质量", "schema-diff": "结构比对",
     "data-generator": "测试数据生成器",
@@ -165,6 +166,31 @@ CATEGORY_LABELS = {
     "sql": "SQL",
     "evidence": "证据",
 }
+
+PARAMETER_LABELS.update({
+    "test_plan_input": "测试清单", "test_plan_options": "清单读取配置", "test_plan_columns": "清单表头映射",
+    "mapping_mode": "码值表来源", "mapping_source": "文件组织方式", "mapping_input": "码值映射文件",
+    "mapping_options": "码值表读取配置", "mapping_columns": "码值表字段映射", "code_table": "数据库码值表配置",
+    "defaults": "用例默认配置（关联键等）", "file_layout": "工作簿布局", "sql_engine": "SQL执行引擎",
+    "engine_version": "引擎版本", "output_mode": "输出方式", "statement_layout": "语句组织",
+    "union_batch_size": "每批组合用例数", "result_scope": "查询范围", "store_scope": "保存范围",
+    "include_summary": "附加全量汇总SQL", "include_reverse_check": "附加反向缺失检查",
+    "result_table": "结果表名", "result_columns": "结果列映射", "create_policy": "结果表建表策略",
+    "run_id": "批次标识", "duplicate_case_policy": "重复用例配置", "allow_mapping_null": "允许映射到NULL",
+    "null_token": "专用空值标记", "numeric_text_policy": "数字单元格转文本策略", "max_sql_bytes": "SQL最大字节数",
+})
+ENUM_LABELS.update({
+    "mapping_mode": {"database": "数据库码值表", "file": "文件码值表"},
+    "mapping_source": {"same_workbook": "同一工作簿", "separate_file": "独立文件"},
+    "file_layout": {"separate_relations": "独立Sheet或不重叠表块", "combined_rows": "同Sheet合并明细"},
+    "output_mode": {"select_only": "仅生成SELECT", "insert_only": "生成建表及INSERT", "select_and_insert": "落表后SELECT"},
+    "statement_layout": {"separate": "各用例独立SQL", "union_all": "分批UNION ALL组合"},
+    "result_scope": {"all": "全部明细", "errors_only": "仅异常明细"},
+    "store_scope": {"all": "全部明细", "errors_only": "仅异常明细"},
+    "create_policy": {"create_new": "新建结果表", "create_if_missing": "不存在才建（需核对结构）"},
+    "duplicate_case_policy": {"error": "重复配置报错", "merge_identical": "合并完全相同配置"},
+    "numeric_text_policy": {"reject": "拒绝数字单元格", "convert": "明确转换为文本"},
+})
 
 def _parameter_label(key: str) -> str:
     return PARAMETER_LABELS.get(key, key.replace("_", " ").capitalize())
@@ -1165,9 +1191,43 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         self.schema = schema or {}
         self.command_name = command_name
         self.fields: dict[str, Any] = {}
+        self.field_containers: dict[str, QtWidgets.QWidget] = {}
         self.error_labels: dict[str, QtWidgets.QLabel] = {}
         self.advanced_keys: set[str] = set()
         self._init_ui()
+        if self.command_name == "sql.codecheck":
+            for key in ("mapping_mode", "mapping_source", "file_layout", "output_mode", "statement_layout"):
+                self.fields[key][1].currentIndexChanged.connect(self._sync_codecheck_fields)
+            self.fields["mapping_source"][1].setCurrentIndex(self.fields["mapping_source"][1].findData("separate_file"))
+            self._sync_codecheck_fields()
+
+    def _codecheck_active_keys(self) -> set[str]:
+        active = set(self.fields)
+        if self.command_name != "sql.codecheck":
+            return active
+        current = lambda key: self.fields[key][1].currentData()
+        if current("mapping_mode") == "database":
+            active -= {"mapping_source", "mapping_input", "mapping_options", "mapping_columns", "file_layout"}
+        else:
+            active.discard("code_table")
+            if current("mapping_source") == "same_workbook":
+                active.discard("mapping_input")
+            else:
+                active.discard("file_layout")
+            if current("file_layout") == "combined_rows" and current("mapping_source") == "same_workbook":
+                active.discard("mapping_options")
+        if current("output_mode") == "select_only":
+            active -= {"store_scope", "result_table", "result_columns", "create_policy"}
+        elif current("output_mode") == "insert_only":
+            active.discard("result_scope")
+        if current("statement_layout") != "union_all":
+            active.discard("union_batch_size")
+        return active
+
+    def _sync_codecheck_fields(self):
+        active = self._codecheck_active_keys()
+        for key, container in self.field_containers.items():
+            container.setVisible(key in active)
 
     def _init_ui(self):
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -1185,6 +1245,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         for key, spec in properties.items():
             if (
                 key in required_keys
+                or (self.command_name == "sql.codecheck" and key in {"output_mode", "statement_layout", "defaults", "mapping_source", "mapping_input", "code_table"})
                 or key in ("count", "format", "input", "inputs", "left", "right", "left_inputs", "right_inputs", "dialect", "template", "seed", "rules", "interactive")
             ):
                 basic_props[key] = spec
@@ -1264,6 +1325,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
 
     def _create_field_widget(self, key: str, spec: dict[str, Any], is_required: bool) -> QtWidgets.QWidget:
         container = QtWidgets.QWidget()
+        self.field_containers[key] = container
         layout = QtWidgets.QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -1325,7 +1387,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
             for item in enum_values:
                 combo.addItem(_enum_label(key, item), item)
             if default_val is not None and default_val in enum_values:
-                combo.setCurrentText(str(default_val))
+                combo.setCurrentIndex(combo.findData(default_val))
             self.fields[key] = ("enum", combo)
             layout.addWidget(combo)
 
@@ -1348,6 +1410,8 @@ class DynamicSchemaForm(QtWidgets.QWidget):
                 spin.setSingleStep(0.001)
             if default_val is not None:
                 spin.setValue(default_val)
+            elif self.command_name == "sql.codecheck" and key == "union_batch_size":
+                spin.setValue(50)
             elif is_required and min_v > 0:
                 spin.setValue(int(min_v))
             elif key == "count":
@@ -1410,7 +1474,10 @@ class DynamicSchemaForm(QtWidgets.QWidget):
     def get_values(self) -> dict[str, Any]:
         """解析并返回当前表单填充的全部参数字典"""
         params = {}
+        active = self._codecheck_active_keys()
         for key, (ftype, widget) in self.fields.items():
+            if key not in active:
+                continue
             if ftype == "file-path":
                 val = widget.get_path().strip()
                 if val:
@@ -1538,6 +1605,8 @@ class DynamicSchemaForm(QtWidgets.QWidget):
                 return False, f"必填字段 [{required}] 不能为空"
 
         for key, (field_type, widget) in self.fields.items():
+            if key not in self._codecheck_active_keys():
+                continue
             paths: list[str] = []
             if field_type == "file-path":
                 # The picker rejects directories as a valid value but keeps the

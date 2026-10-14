@@ -139,6 +139,7 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - `data-generator`：命令 `data.mock`，生成可复现模拟数据，包含规则化输入和固定第三方行政区划资源。
 - `sql-parser`：命令 `sql.parse`，解析 SQL DDL 文本，不执行 SQL；输出文件名为 `<task-id>.<format>`。
 - `sql-select`：命令 `sql.select`，消费 `sql.parse` 生成的 JSON、CSV、XLSX 字段清单并生成 SELECT 文本。
+- `code-value-check`：命令 `sql.codecheck`，消费可映射的测试清单与数据库/文件码值映射，按域及附加条件生成校验 SQL；三种查询/落表模式与独立/UNION ALL组织，含候选计数、异常诊断、可选反向和汇总。只生成、不连接或执行数据库；SQLite有本地合成执行测试，其他RDB渲染与实验性Trino只读适配未实机验收，不能声称全市场RDB/NoSQL兼容。详见插件README和DESIGN25.16。
 - `evidence-tool`：命令 `evidence.build`，在一次任务内完成 Excel 识别、截图关联、Word 报告生成和 Excel 状态回写；支持批处理和桌面交互模式，依赖部分可选库。
 
 新增插件必须提供清单、入口、命令 Schema、README 和必要测试。插件命令使用小写点分格式。

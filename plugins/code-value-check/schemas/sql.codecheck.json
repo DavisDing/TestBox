@@ -1,0 +1,203 @@
+{
+  "type": "object",
+  "required": [
+    "test_plan_input",
+    "mapping_mode",
+    "sql_engine",
+    "engine_version"
+  ],
+  "properties": {
+    "test_plan_input": {
+      "type": "string",
+      "format": "file-path",
+      "x-input-policy": {"unique_sources": true},
+      "description": "测试清单文件；源/目标字段与码值域独立填写",
+      "x-file-filter": "配置数据 (*.xlsx *.xlsm *.csv *.tsv *.json);;所有文件 (*.*)"
+    },
+    "test_plan_options": {
+      "type": "object",
+      "description": "读取配置，如 {\"sheet\":\"清单\",\"excel_range\":\"A1:G20\"}",
+      "additionalProperties": true
+    },
+    "test_plan_columns": {
+      "type": "object",
+      "description": "测试清单逻辑字段→Excel表头，支持业务键、条件和类型列",
+      "additionalProperties": true
+    },
+    "mapping_mode": {
+      "type": "string",
+      "enum": [
+        "database",
+        "file"
+      ],
+      "description": "数据库码值表或文件码值表"
+    },
+    "mapping_source": {
+      "type": "string",
+      "enum": [
+        "same_workbook",
+        "separate_file"
+      ],
+      "description": "文件码值表来源"
+    },
+    "mapping_input": {
+      "type": "string",
+      "format": "file-path",
+      "x-input-policy": {"unique_sources": true},
+      "description": "独立码值映射文件",
+      "x-file-filter": "配置数据 (*.xlsx *.xlsm *.csv *.tsv *.json);;所有文件 (*.*)"
+    },
+    "mapping_options": {
+      "type": "object",
+      "description": "码值表 Sheet、区域、表头行等读取配置",
+      "additionalProperties": true
+    },
+    "mapping_columns": {
+      "type": "object",
+      "description": "码值表逻辑字段→表头；至少domain/source_code/target_code/code_label",
+      "additionalProperties": true
+    },
+    "file_layout": {
+      "type": "string",
+      "enum": [
+        "separate_relations",
+        "combined_rows"
+      ],
+      "description": "独立关系或同Sheet合并明细"
+    },
+    "code_table": {
+      "type": "object",
+      "description": "数据库映射对象，如 {\"table_parts\":[\"mapping\"],\"columns\":{\"domain\":\"domain\",\"source_code\":\"src\",\"target_code\":\"dst\",\"code_label\":\"label\"}}",
+      "additionalProperties": true
+    },
+    "defaults": {
+      "type": "object",
+      "description": "用例默认值，必需业务键，如 {\"source_keys\":[\"id\"],\"target_keys\":[\"id\"]}",
+      "additionalProperties": true
+    },
+    "sql_engine": {
+      "type": "string",
+      "enum": [
+        "sqlite",
+        "postgresql",
+        "mysql",
+        "mariadb",
+        "sqlserver",
+        "oracle",
+        "trino"
+      ],
+      "description": "SQL实际执行入口，不按底层数据库猜测方言"
+    },
+    "engine_version": {
+      "type": "string",
+      "description": "显式版本：SQLite3.35+、PostgreSQL12+、MySQL8+、MariaDB10.2+、SQLServer14+、Oracle12.2+；Trino483+查询试验适配"
+    },
+    "output_mode": {
+      "type": "string",
+      "enum": [
+        "select_only",
+        "insert_only",
+        "select_and_insert"
+      ],
+      "default": "select_only",
+      "description": "仅查询、仅落表、落表后查询"
+    },
+    "statement_layout": {
+      "type": "string",
+      "enum": [
+        "separate",
+        "union_all"
+      ],
+      "default": "separate",
+      "description": "各用例独立语句或分批UNION ALL"
+    },
+    "union_batch_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "description": "组合模式每批用例数，缺省50"
+    },
+    "result_scope": {
+      "type": "string",
+      "enum": [
+        "all",
+        "errors_only"
+      ],
+      "description": "SELECT展示范围"
+    },
+    "store_scope": {
+      "type": "string",
+      "enum": [
+        "all",
+        "errors_only"
+      ],
+      "description": "INSERT保存范围"
+    },
+    "include_summary": {
+      "type": "boolean",
+      "default": false,
+      "description": "生成全量汇总SQL；不是生成阶段的数据库结果"
+    },
+    "include_reverse_check": {
+      "type": "boolean",
+      "default": false,
+      "description": "另查源有目标无、源键无效或重复"
+    },
+    "result_table": {
+      "type": "string",
+      "description": "结果表名；缺省按批次生成独立名称"
+    },
+    "result_columns": {
+      "type": "object",
+      "description": "结果逻辑列→物理列，缺省同名",
+      "additionalProperties": true
+    },
+    "create_policy": {
+      "type": "string",
+      "enum": [
+        "create_new",
+        "create_if_missing"
+      ],
+      "description": "新建或不存在才建；后者需自行核对已有表结构"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "批次标识；缺省任务ID，重跑不会自动去重"
+    },
+    "duplicate_case_policy": {
+      "type": "string",
+      "enum": [
+        "error",
+        "merge_identical"
+      ],
+      "default": "error",
+      "description": "独立清单重复配置处理"
+    },
+    "allow_mapping_null": {
+      "type": "boolean",
+      "default": false,
+      "description": "显式允许映射到NULL；Excel/CSV需专用空值标记"
+    },
+    "null_token": {
+      "type": "string",
+      "description": "专用NULL文本标记；不会把普通空白自动当有效NULL映射"
+    },
+    "numeric_text_policy": {
+      "type": "string",
+      "enum": [
+        "reject",
+        "convert"
+      ],
+      "default": "reject",
+      "description": "声明text遇数字单元格：拒绝或显式转文本，不补前导零"
+    },
+    "max_sql_bytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 52428800,
+      "default": 52428800,
+      "description": "SQL脚本最大字节数"
+    }
+  },
+  "additionalProperties": false
+}

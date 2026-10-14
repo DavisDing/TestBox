@@ -26,9 +26,9 @@ class DistributionContractTests(unittest.TestCase):
         self.assertIn("recursive-include plugins", manifest)
 
     def test_official_archives_release_and_smoke_inventories_match(self):
-        supported = {"data-generator", "sql-parser", "sql-select", "evidence-tool",
+        supported = {"data-generator", "sql-parser", "sql-select", "code-value-check", "evidence-tool",
                      "data-preview", "data-compare", "schema-diff", "data-check"}
-        commands = {"data.mock", "sql.parse", "sql.select", "evidence.build",
+        commands = {"data.mock", "sql.parse", "sql.select", "sql.codecheck", "evidence.build",
                     "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
         sources = {path.name: path for path in (ROOT / "plugins").iterdir()
                    if path.is_dir() and (path / "manifest.yaml").is_file()}
@@ -81,9 +81,11 @@ class DistributionContractTests(unittest.TestCase):
                     self.assertEqual(runtime.bundled_plugins_dir, bundled)
                     self.assertEqual(runtime.plugins_dir, data / "plugins")
                     self.assertEqual(runtime.workspace_dir, data / "workspace")
-                    self.assertEqual(set(runtime.list_commands()), {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"})
+                    self.assertEqual(set(runtime.list_commands()), {"data.mock", "sql.parse", "sql.select", "sql.codecheck", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"})
                     self.assertFalse(runtime.can_uninstall_plugin("data-generator"))
                     self.assertFalse((package / "workspace").exists())
+                    for filename in ("config.json", "test-plan.json", "code-mapping.json"):
+                        self.assertTrue((bundled / "code-value-check" / "examples" / filename).is_file())
                 finally:
                     runtime.close()
 

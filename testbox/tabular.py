@@ -11,6 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ OPTION_KEYS = {
     "format", "encoding", "delimiter", "quotechar", "escapechar", "record_separator",
     "has_header", "header_row", "start_row", "sheet", "json_path", "columns",
     "skip_empty_rows", "formula_mode", "max_rows", "max_columns", "max_bytes",
-    "max_cells", "max_cell_length", "widths", "width_unit",
+    "max_cells", "max_cell_length", "widths", "width_unit", "excel_range",
 }
 FORMATS = {"auto", "csv", "tsv", "txt", "json", "jsonl", "ndjson", "xlsx", "xlsm", "sql", "fixed"}
 
@@ -216,6 +217,8 @@ def read_dataset(path: str | Path, options: dict | None = None) -> dict:
             raise _error("旧版 .xls 尚不支持，请转换为 .xlsx")
         if fmt not in FORMATS - {"auto"}:
             raise _error("无法根据扩展名确定输入格式，请明确设置 format")
+    if "excel_range" in options and fmt not in {"xlsx", "xlsm"}:
+        raise _error("excel_range 仅用于 Excel", "INVALID_PARAMS")
     rows: list[dict] = []
     locations: list[dict] = []
     columns: list[str] = []
@@ -267,7 +270,6 @@ def read_dataset(path: str | Path, options: dict | None = None) -> dict:
             if not separator:
                 raise _error("record_separator 不得为空", "INVALID_PARAMS")
             # Split only physical CR/LF records by default; other characters are data.
-            import re
             raw = payload.removeprefix(b"\xef\xbb\xbf") if encoding.lower().replace("_", "-") == "utf-8-sig" else payload
             value = raw if unit == "bytes" else text
             if separator == "auto":
@@ -370,14 +372,31 @@ def read_dataset(path: str | Path, options: dict | None = None) -> dict:
                     raise _error("指定工作表不存在")
                 sheet = workbook[selection] if selection else workbook.active
                 sheet_name = sheet.title
+                bounds = None
+                if "excel_range" in options:
+                    rectangle = options["excel_range"]
+                    if not isinstance(rectangle, str) or not re.fullmatch(r"[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*", rectangle):
+                        raise _error("excel_range 必须为有界 A1 矩形", "INVALID_PARAMS")
+                    from openpyxl.utils.cell import range_boundaries
+                    first_column, first_row, last_column, last_row = range_boundaries(rectangle)
+                    if (first_column > last_column or first_row > last_row
+                            or last_column > 16384 or last_row > 1048576):
+                        raise _error("excel_range 范围无效", "INVALID_PARAMS")
+                    header_row = _integer(options, "header_row", first_row, first_row, last_row)
+                    if start_row and not first_row <= start_row <= last_row:
+                        raise _error("start_row 超出 excel_range", "INVALID_PARAMS")
+                    if last_column - first_column + 1 > max_columns or last_row - first_row > maximum:
+                        raise _error("Excel 区域行列数超过限制", "INPUT_LIMIT_EXCEEDED")
+                    bounds = dict(min_row=first_row, max_row=last_row,
+                                  min_col=first_column, max_col=last_column)
                 if not selection and len(workbook.sheetnames) > 1:
                     warnings.append("仅读取活动工作表；多工作表请明确指定 sheet")
                 if options.get("formula_mode") == "cached":
                     warnings.append("使用公式缓存值，不重新计算；无缓存与空值无法仅凭此模式区分")
-                if (sheet.max_row or 0) > maximum + header_row + start_row or (sheet.max_column or 0) > max_columns:
+                if not bounds and ((sheet.max_row or 0) > maximum + header_row + start_row or (sheet.max_column or 0) > max_columns):
                     raise _error("Excel 行列数超过限制", "INPUT_LIMIT_EXCEEDED")
                 records = []
-                for index, cells in enumerate(sheet.iter_rows(values_only=True), 1):
+                for index, cells in enumerate(sheet.iter_rows(values_only=True, **(bounds or {})), bounds["min_row"] if bounds else 1):
                     converted = [_excel_value(value) for value in cells]
                     if options.get("skip_empty_rows", True) and all(value is None for value in converted):
                         continue
@@ -385,7 +404,8 @@ def read_dataset(path: str | Path, options: dict | None = None) -> dict:
                     if len(records) > maximum + header_row + start_row:
                         raise _error("Excel 行数超过限制", "INPUT_LIMIT_EXCEEDED")
                 _read_matrix(records, options, header_row, start_row, columns,
-                             lambda row, loc: add_row(row, {"sheet": sheet.title, **loc}), max_columns,
+                             lambda row, loc: add_row(row, {"sheet": sheet.title, **loc,
+                                 **({"first_column": bounds["min_col"], "excel_range": options["excel_range"]} if bounds else {})}), max_columns,
                              excel=True)
             finally:
                 workbook.close()

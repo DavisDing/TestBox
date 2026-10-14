@@ -1,0 +1,25 @@
+{
+  "test_plan_input":"plugins/code-value-check/examples/test-plan.json",
+  "test_plan_columns":{"source_table":"source_table","source_code_field":"source_code_field","target_table":"target_table","target_code_field":"target_code_field","domain_value":"domain_value"},
+  "mapping_mode":"file",
+  "mapping_source":"separate_file",
+  "mapping_input":"plugins/code-value-check/examples/code-mapping.json",
+  "mapping_columns":{"domain":"domain","source_code":"source_code","target_code":"target_code","code_label":"code_label","region":"region","enabled":"enabled"},
+  "defaults":{
+    "source_keys":["person_id"],
+    "target_keys":["customer_id"],
+    "mapping_conditions":[
+      {"mapping_field":"region","operator":"eq","value_source":"source_field","field":"region_id"},
+      {"mapping_field":"enabled","operator":"eq","value":"Y"}
+    ]
+  },
+  "sql_engine":"sqlite",
+  "engine_version":"3.35",
+  "output_mode":"select_and_insert",
+  "statement_layout":"union_all",
+  "union_batch_size":50,
+  "result_scope":"all",
+  "store_scope":"all",
+  "include_summary":true,
+  "include_reverse_check":true
+}

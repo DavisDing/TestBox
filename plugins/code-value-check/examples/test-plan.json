@@ -1,0 +1,4 @@
+[
+  {"source_table":"source_records","source_code_field":"gender","target_table":"target_records","target_code_field":"gender_code","domain_value":"GENDER"},
+  {"source_table":"source_records","source_code_field":"document_type","target_table":"target_records","target_code_field":"document_code","domain_value":"DOCUMENT"}
+]

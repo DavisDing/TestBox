@@ -1,0 +1,5 @@
+[
+  {"domain":"GENDER","source_code":"1","target_code":"a","code_label":"男","region":"NORTH","enabled":"Y"},
+  {"domain":"GENDER","source_code":"2","target_code":"b","code_label":"女","region":"NORTH","enabled":"Y"},
+  {"domain":"DOCUMENT","source_code":"1","target_code":"a","code_label":"身份证（测试数据）","region":"NORTH","enabled":"Y"}
+]

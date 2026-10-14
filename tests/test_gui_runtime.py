@@ -28,7 +28,7 @@ else:
 from testbox.core.schema_validator import SchemaValidationError, SchemaValidator
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
+COMMANDS = {"data.mock", "sql.parse", "sql.select", "sql.codecheck", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
 
 
 @unittest.skipUnless(QT_AVAILABLE, "PySide6 desktop dependency is not installed")
@@ -128,7 +128,7 @@ class GuiRuntimeTests(unittest.TestCase):
         self.window.nav_list.setCurrentRow(2)
         self.assertEqual(self.window.stack.currentIndex(), 5)
         diagnostics = self.window.page_diagnostics
-        self.assertEqual(diagnostics.plugins_table.rowCount(), 8)
+        self.assertEqual(diagnostics.plugins_table.rowCount(), 9)
         self.assertEqual(diagnostics.unavailable_table.rowCount(), 0)
         self.assertEqual(diagnostics.available_stack.currentIndex(), 1)
         self.assertEqual(
@@ -167,6 +167,38 @@ class GuiRuntimeTests(unittest.TestCase):
                 for key, value in preset.items():
                     self.assertEqual(values[key], value)
         self._assert_no_messages()
+
+    def test_codecheck_dropdown_modes_hide_and_omit_inactive_options(self):
+        schema = self.window.runtime.get_command_schema("sql.codecheck")
+        form = DynamicSchemaForm(schema, "sql.codecheck")
+        self.addCleanup(form.deleteLater)
+        form.set_values({"mapping_mode": "database", "output_mode": "select_only",
+                         "mapping_input": "/unused/mapping.xlsx", "mapping_source": "same_workbook",
+                         "file_layout": "combined_rows", "result_table": "audit_results",
+                         "result_scope": "all", "store_scope": "all", "create_policy": "create_new",
+                         "statement_layout": "separate", "union_batch_size": 10,
+                         "code_table": {"table_parts": ["mapping"]}})
+        values = form.get_values()
+        self.assertEqual(values["output_mode"], "select_only")
+        self.assertEqual(form.fields["output_mode"][1].currentText(), "仅生成SELECT")
+        self.assertEqual(form.fields["statement_layout"][1].currentText(), "各用例独立SQL")
+        for key in ("mapping_input", "mapping_source", "file_layout", "store_scope", "result_table", "create_policy", "union_batch_size"):
+            self.assertNotIn(key, values)
+            self.assertTrue(form.field_containers[key].isHidden())
+        form.set_values({"mapping_mode": "file", "mapping_source": "same_workbook", "file_layout": "combined_rows",
+                         "output_mode": "insert_only", "statement_layout": "union_all"})
+        values = form.get_values()
+        self.assertEqual(values["output_mode"], "insert_only")
+        self.assertEqual(values["union_batch_size"], 10)
+        for key in ("mapping_input", "code_table", "result_scope", "mapping_options"):
+            self.assertNotIn(key, values)
+        self.assertIn("result_table", values)
+        form.set_values({"output_mode": "select_and_insert", "mapping_source": "separate_file"})
+        values = form.get_values()
+        self.assertIn("mapping_input", values)
+        self.assertIn("result_scope", values)
+        self.assertNotIn("file_layout", values)
+        self.assertIn("xlsx", form._file_filter("test_plan_input", schema["properties"]["test_plan_input"]))
 
     def test_missing_file_is_inline_validation_not_task_execution(self):
         self.window.navigate_to_command("sql.parse", {

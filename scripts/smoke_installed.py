@@ -16,7 +16,7 @@ import tempfile
 import zipfile
 
 
-COMMANDS = {"data.mock", "sql.parse", "sql.select", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
+COMMANDS = {"data.mock", "sql.parse", "sql.select", "sql.codecheck", "evidence.build", "data.preview", "data.compare", "data.check", "sql.diff", "sql.preview"}
 
 
 def verify_installed(python: Path, *, gui: bool = False, evidence: bool = False) -> dict:
@@ -135,6 +135,23 @@ finally: r.close()
         select_file = Path(selected["workspace"]) / "output" / selected["files"][0]
         if "SELECT" not in select_file.read_text() or "users" not in select_file.read_text():
             raise AssertionError("Installed SQL handoff produced unexpected text")
+        codecheck_plan = cwd / "codecheck-plan.json"
+        codecheck_plan.write_text(json.dumps([{
+            "source_table": "source_records", "source_code_field": "gender", "target_table": "target_records",
+            "target_code_field": "gender_code", "domain_value": "GENDER",
+        }]), encoding="utf-8")
+        codechecked = run("sql.codecheck", {
+            "test_plan_input": str(codecheck_plan),
+            "test_plan_columns": {name: name for name in ("source_table", "source_code_field", "target_table", "target_code_field", "domain_value")},
+            "defaults": {"source_keys": ["id"], "target_keys": ["id"]},
+            "sql_engine": "sqlite", "engine_version": "3.35", "mapping_mode": "database",
+            "code_table": {"table_parts": ["code_mapping"], "columns": {
+                "domain": "domain", "source_code": "source_code", "target_code": "target_code", "code_label": "label",
+            }},
+        })
+        codecheck_sql = Path(codechecked["workspace"]) / "output" / "codecheck.sql"
+        if "GENDER" not in codecheck_sql.read_text() or codechecked["data"]["execution_status"] != "NOT_EXECUTED":
+            raise AssertionError("Installed code-value SQL generation lost domain or execution boundary")
         stored = cli("task", "result", selected["task_id"])
         if stored["files"] != selected["files"]:
             raise AssertionError("Installed task result could not be read back")
@@ -174,7 +191,8 @@ finally: r.close()
         summary = {"cli": "passed", "resources": "passed", "sql_handoff": "passed",
                    "reproducibility": "passed", "export": "passed", "plugin_override": "passed",
                    "gui": "not_requested", "evidence": "not_requested",
-                   "data_preview": "passed", "data_compare": "passed", "data_check": "passed", "sql_diff": "passed"}
+                   "data_preview": "passed", "data_compare": "passed", "data_check": "passed", "sql_diff": "passed",
+                   "code_value_sql": "passed"}
         if evidence:
             fixtures = code('''import json
 from pathlib import Path

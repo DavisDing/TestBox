@@ -26,7 +26,7 @@ class BundledBuildPy(build_py):
                     continue
                 if item.suffix in {".pyc", ".pyo"}:
                     continue
-                if relative.parts[0] not in {"src", "schemas", "config", "data", "manifest.yaml", "README.md", "requirements.txt"}:
+                if relative.parts[0] not in {"src", "schemas", "config", "data", "examples", "manifest.yaml", "README.md", "requirements.txt"}:
                     continue
                 if item.is_symlink():
                     raise ValueError(f"Bundled plugin resources cannot be links: {item}")
