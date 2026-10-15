@@ -6,6 +6,7 @@ import os
 import secrets
 import shutil
 import sys
+from copy import deepcopy
 from datetime import UTC, date, datetime, time as datetime_time, tzinfo
 from pathlib import Path
 from typing import Any
@@ -116,6 +117,37 @@ class Runtime:
     def list_commands(self) -> dict[str, Manifest]:
         return dict(self.manager.available)
 
+    def _plugin_source(self, manifest: Manifest) -> str:
+        bundled = self.bundled_plugins_dir.resolve()
+        user = self.plugins_dir.resolve()
+        parent = manifest.path.resolve().parent
+        if bundled == user:
+            return "local"
+        if parent == user:
+            return "user"
+        return "bundled" if parent == bundled else "local"
+
+    def list_catalog_entries(self) -> list[dict[str, Any]]:
+        """Project only active commands; never import a plugin to build its card."""
+        entries = []
+        for name, manifest in self.list_commands().items():
+            command = next(item for item in manifest.commands if item.name == name)
+            entries.append({
+                "command_name": name,
+                "command_display_name": command.display_name or name,
+                "description": command.description or manifest.description,
+                "plugin_name": manifest.name,
+                "plugin_display_name": manifest.display_name or manifest.name,
+                "plugin_description": manifest.description,
+                "plugin_version": manifest.version,
+                "category": manifest.category,
+                "category_display_name": manifest.category_display_name or manifest.category,
+                "source": self._plugin_source(manifest),
+                "plugin_path": str(manifest.path),
+                "capabilities": deepcopy(manifest.capabilities),
+            })
+        return entries
+
     def reload_plugins(self) -> None:
         """重新扫描插件目录，使 GUI 安装/卸载后立即更新命令索引。"""
         self.manager.discover()
@@ -151,6 +183,8 @@ class Runtime:
         return {
             "name": manifest.name,
             "version": manifest.version,
+            "display_name": manifest.display_name or manifest.name,
+            "category_display_name": manifest.category_display_name or manifest.category,
             "description": manifest.description,
             "category": manifest.category,
             "core_compatibility": manifest.core_compatibility,
@@ -237,6 +271,9 @@ class Runtime:
         return {
             "name": manifest.name,
             "version": manifest.version,
+            "display_name": manifest.display_name or manifest.name,
+            "category_display_name": manifest.category_display_name or manifest.category,
+            "source": self._plugin_source(manifest),
             "description": manifest.description,
             "category": manifest.category,
             "core_compatibility": manifest.core_compatibility,
@@ -245,7 +282,8 @@ class Runtime:
             "capabilities": manifest.capabilities,
             "uninstallable": self.can_uninstall_plugin(manifest.name),
             "commands": [
-                {"name": item.name, "description": item.description, "input_schema": item.input_schema}
+                {"name": item.name, "display_name": item.display_name or item.name,
+                 "description": item.description, "input_schema": item.input_schema}
                 for item in manifest.commands
             ],
         }

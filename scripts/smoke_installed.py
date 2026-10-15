@@ -229,8 +229,54 @@ from unittest.mock import patch
 from PySide6 import QtCore, QtWidgets
 from testbox.gui import MainWindow
 app=QtWidgets.QApplication([]); app.setQuitOnLastWindowClosed(False)
-window=MainWindow()
+settings=QtCore.QSettings(str(Path.cwd() / 'desktop.ini'), QtCore.QSettings.Format.IniFormat)
+window=MainWindow(settings=settings)
+catalog=window.page_catalog
+entries=window.runtime.list_catalog_entries()
+assert len(entries)==10 and all(entry['source']=='bundled' for entry in entries)
+assert any(entry['category_display_name']=='数据' for entry in entries)
+before=len(window.runtime.list_tasks())
 for command in window.runtime.list_commands(): window.navigate_to_command(command)
+assert len(window.runtime.list_tasks())==before, 'Opening catalog configurations created tasks'
+assert len(catalog.preferences.recent)==10
+catalog._toggle_favorite(('data-generator', 'data.mock'))
+catalog.mode_tabs.setCurrentIndex(1)
+assert [row[0] for row in catalog.all_cards if not row[-1].isHidden()]==['data.mock']
+from testbox.gui_catalog import CatalogPreferences
+assert CatalogPreferences(settings).favorites==[('data-generator', 'data.mock')]
+catalog.mode_tabs.setCurrentIndex(0)
+# Install a previously unknown group into user data and verify that the GUI
+# discovers its declaration without any core category or plugin name table.
+fixture=Path.cwd() / 'catalog-fixture'
+fixture.mkdir()
+(fixture / 'main.py').write_text("raise RuntimeError('catalog must not import plugins')", encoding='utf-8')
+(fixture / 'manifest.yaml').write_text("""schema_version: 1
+name: catalog-fixture
+display_name: 自定义工具
+version: 1.0.0
+description: Installed catalog fixture
+category: installed-custom
+category_display_name: 安装态自定义分组
+core_compatibility: '>=1.0.0'
+entry: main:Plugin
+commands:
+  - name: custom.inspect
+    display_name: 自定义操作
+capabilities:
+  concurrency: true
+  network: false
+  filesystem: output-only
+  resources: []
+""", encoding='utf-8')
+window.runtime.install_plugin(fixture)
+catalog.reload_tools()
+assert catalog.category_labels['installed-custom']=='安装态自定义分组'
+assert next(row[-1].entry for row in catalog.all_cards if row[0]=='custom.inspect')['source']=='user'
+catalog.search_input.setText('安装态自定义分组')
+assert [row[0] for row in catalog.all_cards if not row[-1].isHidden()]==['custom.inspect']
+window.runtime.uninstall_plugin('catalog-fixture')
+catalog.search_input.clear()
+catalog.reload_tools()
 for index in (0,4,5): window.switch_page(index); app.processEvents()
 # Exercise the default-root worker against installed resources for both import
 # formats. A normal task alone does not cover the separate preview worker.

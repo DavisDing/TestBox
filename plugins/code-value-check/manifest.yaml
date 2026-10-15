@@ -1,8 +1,10 @@
 schema_version: 1
 name: code-value-check
+display_name: 码值转换校验
 version: 1.0.0
 description: 可配置码值转换校验 SQL 生成（查询、组合及结果落表）
 category: sql
+category_display_name: SQL
 core_compatibility: ">=1.0.23,<2.0"
 capabilities:
   concurrency: true
@@ -12,5 +14,6 @@ capabilities:
 entry: src.main:Plugin
 commands:
   - name: sql.codecheck
+    display_name: 生成码值校验 SQL
     description: 按码值域及多条件生成校验 SQL，不连接或执行数据库
     input_schema: schemas/sql.codecheck.json

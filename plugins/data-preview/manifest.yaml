@@ -1,8 +1,10 @@
 schema_version: 1
 name: data-preview
+display_name: 数据解析预览
 version: 1.1.0
 description: 多格式数据解析、标准化与只读预览
 category: data
+category_display_name: 数据
 core_compatibility: ">=1.0.23,<2.0"
 capabilities:
   concurrency: true
@@ -12,5 +14,6 @@ capabilities:
 entry: src.main:Plugin
 commands:
   - name: data.preview
+    display_name: 预览数据
     description: 调整编码、分隔符、记录换行和区域后预览解析结果
     input_schema: schemas/data.preview.json

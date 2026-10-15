@@ -1,8 +1,10 @@
 schema_version: 1
 name: sql-parser
+display_name: SQL 字段解析器
 version: 1.0.0
 description: 解析 CREATE TABLE 字段定义
 category: parser
+category_display_name: 解析
 core_compatibility: ">=1.0,<2.0"
 capabilities:
   concurrency: true
@@ -12,5 +14,6 @@ capabilities:
 entry: src.main:Plugin
 commands:
   - name: sql.parse
+    display_name: 解析 DDL 字段
     description: 导出 SQL 字段清单
     input_schema: schemas/sql.parse.json

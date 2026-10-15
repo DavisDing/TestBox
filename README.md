@@ -34,6 +34,8 @@ python3 -m venv .venv
 
 GUI 的“首选项与设置”支持白色面板、黑色面板和蓝灰面板三种主题，切换后立即生效并自动记住。各插件配置页、任务详情、弹窗和文件选择器使用同一套主题颜色。
 
+“工具目录”按插件声明自动分组，支持中文名称搜索、分类筛选、收藏和最近使用。最近使用记录本机桌面最近成功打开配置的 12 个命令；收藏和最近使用只保存插件/命令 ID，不保存任务参数。
+
 文件选择器的 `Look in` 目录栏支持直接编辑或粘贴目录路径，按 Enter 跳转；也可使用 `Ctrl+L` 聚焦目录栏。粘贴目录只用于定位，仍需选中具体文件后才会作为插件输入。
 
 ## Python 发行包安装
@@ -47,7 +49,7 @@ python -m pip install './testbox-X.Y.Z-py3-none-any.whl[desktop,evidence]'
 testbox --json plugin list
 ```
 
-wheel 包含九个官方插件（十一个命令）及其 Schema、配置、固定数据和 GUI 图标，可以从任意工作目录启动。任务与用户插件不写入 Python 安装目录：Windows 使用 `%LOCALAPPDATA%\TestBox`，其他平台使用 `${XDG_DATA_HOME:-~/.local/share}/testbox`。源码/可编辑安装仍使用源码项目的 `plugins/` 和 `workspace/`；显式 `Runtime(root)` 保持独立目录行为。
+wheel 包含九个官方插件（十个命令）及其 Schema、配置、固定数据和 GUI 图标，可以从任意工作目录启动。任务与用户插件不写入 Python 安装目录：Windows 使用 `%LOCALAPPDATA%\TestBox`，其他平台使用 `${XDG_DATA_HOME:-~/.local/share}/testbox`。源码/可编辑安装仍使用源码项目的 `plugins/` 和 `workspace/`；显式 `Runtime(root)` 保持独立目录行为。
 
 安装后验证可在源码仓库执行以下脚本，`--python` 应指向刚创建的虚拟环境（Windows 为 `.venv\Scripts\python.exe`）：
 
@@ -92,6 +94,22 @@ python3 -m testbox.cli plugin package ./plugins/data-generator --output ./dist/d
 python3 -m testbox.cli plugin install ./dist/data-generator-1.0.0.zip
 python3 -m testbox.cli plugin uninstall data-generator
 ```
+
+新增插件应在自己的 `manifest.yaml` 声明目录信息，例如以下片段（其余必填字段仍需提供）：
+
+```yaml
+name: network-tools
+display_name: 网络工具
+category: network
+category_display_name: 网络诊断
+commands:
+  - name: network.inspect
+    display_name: 检查网络配置
+    description: 查看本机网络配置
+    input_schema: schemas/network.inspect.json
+```
+
+`category` 是分组键，相同键进入同一分组；`category_display_name` 是分组显示名。可以自由声明新分组，无需修改核心或 GUI 名称表。同一分组建议统一显示名；冲突时目录按插件 ID 顺序选择首个显式名称并提示。三个显示名称字段为可选字符串，最长 100 字符；旧插件缺少或留空时使用对应 ID/分组键。安装后目录自动更新，手动添加到插件目录后点击“刷新插件目录”。
 
 ## Windows 使用
 

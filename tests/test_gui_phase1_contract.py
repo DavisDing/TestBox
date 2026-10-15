@@ -125,19 +125,20 @@ class GuiPhase1ContractTests(unittest.TestCase):
             and call.func.attr == "connect"
             and call.args
             and isinstance(call.args[0], ast.Attribute)
-            and call.args[0].attr == "reload_tools"
+            and call.args[0].attr == "_rescan_tools"
             for call in calls
         )
         self.assertTrue(has_refresh_button, "ToolCatalogView 应提供刷新按钮或等价刷新入口")
-        self.assertTrue(has_reload_connection, "刷新入口应连接 ToolCatalogView.reload_tools")
+        self.assertTrue(has_reload_connection, "刷新入口应连接目录重新扫描")
+        self.assertIn("reload_tools(rescan=True)", self.contract.segment(self.contract.method("_rescan_tools")))
 
     def test_tool_catalog_reads_commands_from_runtime(self):
-        """工具目录必须通过 Runtime.list_commands 建立命令索引。"""
+        """工具目录必须通过 Runtime 的只读目录投影建立命令索引。"""
         has_list_commands_call = any(
-            isinstance(call.func, ast.Attribute) and call.func.attr == "list_commands"
+            isinstance(call.func, ast.Attribute) and call.func.attr == "list_catalog_entries"
             for call in self.contract.call_nodes(self.contract.catalog)
         )
-        self.assertTrue(has_list_commands_call, "ToolCatalogView 必须调用 Runtime.list_commands()")
+        self.assertTrue(has_list_commands_call, "ToolCatalogView 必须调用 Runtime.list_catalog_entries()")
 
     def test_gui_does_not_open_sqlite_directly(self):
         """GUI 只能通过 Runtime 访问任务/插件数据，不得自行连接 SQLite。"""

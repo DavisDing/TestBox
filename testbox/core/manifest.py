@@ -52,6 +52,12 @@ def _scalar(value: str) -> Any:
     if value in {"[]", "{}"}: return [] if value == "[]" else {}
     if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
+    # Preserve scalar types in the supported subset so display metadata cannot
+    # bypass string validation merely because PyYAML is unavailable.
+    if value in {"null", "Null", "NULL", "~"}: return None
+    if re.fullmatch(r"[+-]?(?:0|[1-9][0-9_]*)", value): return int(value.replace("_", ""))
+    if re.fullmatch(r"[+-]?[0-9][0-9_]*\.[0-9_]*(?:[eE][+-]?[0-9]+)?", value):
+        return float(value.replace("_", ""))
     return value
 
 
@@ -112,11 +118,21 @@ def load_yaml_subset(path: Path) -> dict[str, Any]:
     return root
 
 
+def _display_name(raw: dict, key: str, fallback: str) -> str:
+    if key not in raw:
+        return fallback
+    value = raw[key]
+    if not isinstance(value, str) or len(value) > 100:
+        raise ValueError(f"{key} 必须为不超过 100 字符的字符串")
+    return value.strip() or fallback
+
+
 @dataclass(frozen=True)
 class Command:
     name: str
     description: str
     input_schema: str | None = None
+    display_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -130,6 +146,8 @@ class Manifest:
     entry: str
     commands: list[Command]
     capabilities: dict[str, Any] = field(default_factory=dict)
+    display_name: str = ""
+    category_display_name: str = ""
 
     @classmethod
     def load(cls, path: Path) -> "Manifest":
@@ -149,7 +167,9 @@ class Manifest:
         entry_path = path.parent / (module_name.replace(".", "/") + ".py")
         if not entry_path.is_file(): raise ValueError(f"插件入口不存在: {entry_path.relative_to(path.parent)}")
         if not isinstance(raw["commands"], list): raise ValueError("commands 必须为列表")
-        commands = [Command(str(item.get("name", "")), str(item.get("description", "")), item.get("input_schema")) for item in raw["commands"] if isinstance(item, dict)]
+        commands = [Command(str(item.get("name", "")), str(item.get("description", "")), item.get("input_schema"),
+                            _display_name(item, "display_name", str(item.get("name", ""))))
+                    for item in raw["commands"] if isinstance(item, dict)]
         if not commands or any(not COMMAND_RE.fullmatch(command.name) for command in commands): raise ValueError("commands 必须包含小写点分命令")
         if len({command.name for command in commands}) != len(commands): raise ValueError("commands 不能包含重复命令")
         for command in commands:
@@ -167,4 +187,6 @@ class Manifest:
         if not isinstance(capabilities.get("concurrency"), bool) or not isinstance(capabilities.get("network"), bool): raise ValueError("capabilities.concurrency 和 network 必须为布尔值")
         if capabilities.get("filesystem") != "output-only": raise ValueError("capabilities.filesystem 必须为 output-only")
         if not isinstance(capabilities.get("resources"), list) or not all(isinstance(item, str) for item in capabilities["resources"]): raise ValueError("capabilities.resources 必须为字符串列表")
-        return cls(path.parent, str(raw["name"]), str(raw["version"]), str(raw["description"]), str(raw["category"]), str(raw["core_compatibility"]), entry, commands, capabilities)
+        return cls(path.parent, str(raw["name"]), str(raw["version"]), str(raw["description"]), str(raw["category"]), str(raw["core_compatibility"]), entry, commands, capabilities,
+                   _display_name(raw, "display_name", str(raw["name"])),
+                   _display_name(raw, "category_display_name", str(raw["category"])))

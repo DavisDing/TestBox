@@ -24,7 +24,7 @@ class CiPortabilityTests(unittest.TestCase):
 sys.path[:0] = sys.argv[1:3]
 loader = unittest.TestLoader()
 suite = loader.loadTestsFromNames([
-    "test_gui_files", "test_gui_theme", "test_gui_preview", "test_gui_runtime"
+    "test_gui_files", "test_gui_theme", "test_gui_preview", "test_gui_runtime", "test_gui_catalog"
 ])
 expected = suite.countTestCases()
 assert expected > 0, "GUI test discovery returned no tests"

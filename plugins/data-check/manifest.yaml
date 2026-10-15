@@ -1,8 +1,10 @@
 schema_version: 1
 name: data-check
+display_name: 数据质量检查
 version: 1.1.0
 description: 本地声明式数据质量检查（不改写输入）
 category: data
+category_display_name: 数据
 core_compatibility: ">=1.0.23,<2.0"
 capabilities:
   concurrency: true
@@ -12,5 +14,6 @@ capabilities:
 entry: src.main:Plugin
 commands:
   - name: data.check
+    display_name: 检查数据质量
     description: 检查数据质量并导出 JSON、CSV、Markdown 报告
     input_schema: schemas/data.check.json

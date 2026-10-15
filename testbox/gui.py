@@ -13,6 +13,7 @@ from testbox.core.plugin_packages import PluginPackageError
 from testbox.core.redaction import Redactor
 from testbox.core.runtime import Runtime
 from testbox.core.schema_validator import SchemaValidationError
+from testbox.gui_catalog import CatalogPreferences
 
 
 # The GUI executable supports both the desktop mode and the headless Host
@@ -153,22 +154,7 @@ TYPE_LABELS = {
     "object": "对象",
 }
 
-PLUGIN_LABELS = {
-    "code-value-check": "码值转换校验 SQL",
-    "data-preview": "解析预览", "data-compare": "数据比对",
-    "data-check": "数据质量", "schema-diff": "结构比对",
-    "data-generator": "测试数据生成器",
-    "sql-parser": "SQL 字段解析器",
-    "sql-select": "SQL 查询生成器",
-    "evidence-tool": "测试证据工具",
-}
-
-CATEGORY_LABELS = {
-    "data": "数据",
-    "parser": "解析",
-    "sql": "SQL",
-    "evidence": "证据",
-}
+SOURCE_LABELS = {"bundled": "内置", "user": "用户安装", "local": "本地目录"}
 
 PARAMETER_LABELS.update({
     "test_plan_input": "测试清单", "test_plan_options": "清单读取配置", "test_plan_columns": "清单表头映射",
@@ -1659,11 +1645,17 @@ class ToolCardWidget(QtWidgets.QFrame):
     """工具目录中的命令卡片"""
     clicked = QtCore.Signal(str)  # command_name
 
-    def __init__(self, command_name: str, cmd_desc: str, manifest: Any, parent=None):
+    favoriteToggled = QtCore.Signal(object)
+
+    def __init__(self, entry: dict, favorite=False, parent=None):
         super().__init__(parent)
-        self.command_name = command_name
+        self.entry = entry
+        self.command_name = entry["command_name"]
+        self.identity = (entry["plugin_name"], self.command_name)
         self.setObjectName("toolCard")
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"{entry['command_display_name']}，{self.command_name}")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -1673,31 +1665,34 @@ class ToolCardWidget(QtWidgets.QFrame):
         top_bar = QtWidgets.QHBoxLayout()
         top_bar.setSpacing(8)
 
-        name_lbl = QtWidgets.QLabel(command_name)
+        name_lbl = QtWidgets.QLabel(f"{entry['command_display_name']} · {self.command_name}")
         name_lbl.setObjectName("toolCardTitle")
+        name_lbl.setWordWrap(True)
 
-        plugin_tag = QtWidgets.QLabel(f"{PLUGIN_LABELS.get(manifest.name, manifest.name)}（{manifest.name}） v{manifest.version}")
+        plugin_tag = QtWidgets.QLabel(f"{entry['plugin_display_name']}（{entry['plugin_name']}） v{entry['plugin_version']}")
         plugin_tag.setObjectName("tagLabel")
+        plugin_tag.setWordWrap(True)
 
         top_bar.addWidget(name_lbl)
         top_bar.addWidget(plugin_tag)
         top_bar.addStretch()
 
         # 分类与状态徽标
-        cat_tag = QtWidgets.QLabel(f"{CATEGORY_LABELS.get(manifest.category, manifest.category)}（{manifest.category.upper()}）")
+        cat_tag = QtWidgets.QLabel(f"{entry['category_display_name']}（{entry['category']}） · {SOURCE_LABELS.get(entry['source'], entry['source'])}")
         cat_tag.setObjectName("tagLabelMuted")
+        cat_tag.setWordWrap(True)
         top_bar.addWidget(cat_tag)
 
         layout.addLayout(top_bar)
 
         # 命令描述
-        desc_lbl = QtWidgets.QLabel(cmd_desc or manifest.description or "暂无详细描述")
+        desc_lbl = QtWidgets.QLabel(entry['description'] or "暂无详细描述")
         desc_lbl.setObjectName("toolCardDesc")
         desc_lbl.setWordWrap(True)
         layout.addWidget(desc_lbl)
 
         # 底部特性标签
-        caps = manifest.capabilities or {}
+        caps = entry['capabilities'] or {}
         caps_bar = QtWidgets.QHBoxLayout()
         caps_bar.setSpacing(8)
 
@@ -1713,11 +1708,32 @@ class ToolCardWidget(QtWidgets.QFrame):
 
         caps_bar.addStretch()
 
+        self.favorite_btn = QtWidgets.QPushButton()
+        self.favorite_btn.setObjectName("secondaryButton")
+        self.favorite_btn.setCheckable(True)
+        self.set_favorite(favorite)
+        self.favorite_btn.clicked.connect(lambda: self.favoriteToggled.emit(self.identity))
+        caps_bar.addWidget(self.favorite_btn)
+
         action_lbl = QtWidgets.QLabel("配置此命令 →")
         action_lbl.setObjectName("actionText")
         caps_bar.addWidget(action_lbl)
 
         layout.addLayout(caps_bar)
+        for label in self.findChildren(QtWidgets.QLabel):
+            label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+
+    def set_favorite(self, favorite):
+        self.favorite_btn.setChecked(favorite)
+        self.favorite_btn.setText("★ 已收藏" if favorite else "☆ 收藏")
+        self.favorite_btn.setAccessibleName(f"{'取消收藏' if favorite else '收藏'} {self.command_name}")
+
+    def keyPressEvent(self, event):
+        if event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter, QtCore.Qt.Key.Key_Space):
+            self.clicked.emit(self.command_name)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -1728,10 +1744,16 @@ class ToolCardWidget(QtWidgets.QFrame):
 class ToolCatalogView(QtWidgets.QWidget):
     """工具目录页面：支持分类筛选、关键字搜索、直观卡片网格"""
     commandSelected = QtCore.Signal(str)
+    diagnosticsRequested = QtCore.Signal()
+    pluginsRescanned = QtCore.Signal()
 
-    def __init__(self, runtime: Runtime, parent=None):
+    def __init__(self, runtime: Runtime, parent=None, *, settings=None):
         super().__init__(parent)
         self.runtime = runtime
+        self.preferences = CatalogPreferences(settings if settings is not None else QtCore.QSettings("TestBox", "Desktop"))
+        self._decorations = []
+        self.category_labels = {}
+        self._group_warning = ""
         self.all_cards: list[tuple[str, str, str, str, str, ToolCardWidget]] = []
         self._catalog_state = "loading"
         self._init_ui()
@@ -1756,10 +1778,26 @@ class ToolCatalogView(QtWidgets.QWidget):
 
         self.refresh_btn = QtWidgets.QPushButton("🔄 刷新插件目录")
         self.refresh_btn.setObjectName("secondaryButton")
-        self.refresh_btn.clicked.connect(self.reload_tools)
+        self.refresh_btn.clicked.connect(self._rescan_tools)
         header_box.addWidget(self.refresh_btn)
 
         layout.addLayout(header_box)
+
+        self.mode_tabs = QtWidgets.QTabBar()
+        for title in ("全部", "收藏", "最近使用"):
+            self.mode_tabs.addTab(title)
+        self.mode_tabs.currentChanged.connect(self._filter_cards)
+        layout.addWidget(self.mode_tabs)
+        self.recent_hint = QtWidgets.QLabel("最近使用记录本机桌面最近成功打开配置的 12 个命令。")
+        self.recent_hint.setObjectName("mutedText")
+        self.recent_hint.setWordWrap(True)
+        self.recent_hint.hide()
+        layout.addWidget(self.recent_hint)
+        self.preference_notice = QtWidgets.QLabel()
+        self.preference_notice.setObjectName("mutedText")
+        self.preference_notice.setWordWrap(True)
+        self.preference_notice.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        layout.addWidget(self.preference_notice)
 
         # 搜索与分类过滤条
         filter_bar = QtWidgets.QHBoxLayout()
@@ -1771,7 +1809,7 @@ class ToolCatalogView(QtWidgets.QWidget):
         filter_bar.addWidget(self.search_input, 2)
 
         self.category_combo = QtWidgets.QComboBox()
-        self.category_combo.addItem("全部分类", "all")
+        self.category_combo.addItem("全部分类", None)
         self.category_combo.currentIndexChanged.connect(self._filter_cards)
         filter_bar.addWidget(self.category_combo, 1)
 
@@ -1780,6 +1818,7 @@ class ToolCatalogView(QtWidgets.QWidget):
         self.unavailable_label = QtWidgets.QLabel("")
         self.unavailable_label.setObjectName("mutedText")
         self.unavailable_label.setWordWrap(True)
+        self.unavailable_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.unavailable_label.setVisible(False)
         layout.addWidget(self.unavailable_label)
 
@@ -1807,10 +1846,11 @@ class ToolCatalogView(QtWidgets.QWidget):
         self.state_detail = QtWidgets.QLabel("")
         self.state_detail.setObjectName("mutedText")
         self.state_detail.setWordWrap(True)
+        self.state_detail.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.state_detail.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.state_retry_btn = QtWidgets.QPushButton("重试")
         self.state_retry_btn.setObjectName("secondaryButton")
-        self.state_retry_btn.clicked.connect(self.reload_tools)
+        self.state_retry_btn.clicked.connect(self._rescan_tools)
         state_layout.addWidget(self.state_icon)
         state_layout.addWidget(self.state_text)
         state_layout.addWidget(self.state_detail)
@@ -1830,6 +1870,8 @@ class ToolCatalogView(QtWidgets.QWidget):
             "loading": ("⏳", "正在加载工具目录", "正在从 Runtime 读取插件和命令信息...", False),
             "empty_plugins": ("📦", "暂无可用工具插件", "请检查插件目录或打开“插件与诊断”查看不可用原因。", False),
             "empty_search": ("🔎", "未找到匹配的工具命令", "请清除搜索词或切换分类后重试。", False),
+            "empty_favorites": ("☆", "尚无收藏", "点击工具卡片上的收藏按钮，方便下次查找。", False),
+            "empty_recent": ("◷", "尚无最近使用", "成功打开工具配置后会在这里显示；当前不可用的命令暂不展示。", False),
             "error": ("⚠️", "工具目录加载失败", detail or "Runtime 未能读取插件和命令信息。", True),
         }
         icon, text, default_detail, can_retry = states.get(state, states["error"])
@@ -1842,10 +1884,36 @@ class ToolCatalogView(QtWidgets.QWidget):
             card.setVisible(False)
 
     def _clear_cards(self):
+        self._clear_layout()
         for _, _, _, _, _, card in self.all_cards:
-            self.cards_layout.removeWidget(card)
+            card.hide()
             card.deleteLater()
         self.all_cards.clear()
+
+    def _clear_layout(self):
+        while self.cards_layout.count():
+            self.cards_layout.takeAt(0)
+        for widget in self._decorations:
+            widget.hide()
+            widget.deleteLater()
+        self._decorations.clear()
+        self.cards_layout.addWidget(self.state_widget)
+
+    def _notice(self):
+        message = "\n".join(filter(None, (self.preferences.warning, self._group_warning)))
+        self.preference_notice.setText(message)
+        self.preference_notice.setVisible(bool(message))
+
+    def _toggle_favorite(self, key):
+        self.preferences.toggle_favorite(key)
+        self._filter_cards()
+
+    def record_recent(self, plugin_name, command_name):
+        self.preferences.record_recent((plugin_name, command_name))
+        self._filter_cards()
+
+    def _rescan_tools(self):
+        self.reload_tools(rescan=True)
 
     def _unavailable_plugins(self) -> list[dict[str, str]]:
         getter = getattr(self.runtime, "list_unavailable_plugins", None)
@@ -1865,40 +1933,52 @@ class ToolCatalogView(QtWidgets.QWidget):
         self.unavailable_label.setText(f"⚠️ {len(items)} 个插件当前不可用：{preview}{suffix}")
         self.unavailable_label.setVisible(True)
 
-    def reload_tools(self):
+    def reload_tools(self, *, rescan=False):
         self._clear_cards()
         self._set_catalog_state("loading")
         self.refresh_btn.setEnabled(False)
         self.search_input.setEnabled(False)
         self.category_combo.setEnabled(False)
         try:
-            commands_map = self.runtime.list_commands()
+            if rescan:
+                self.runtime.reload_plugins()
+            entries = self.runtime.list_catalog_entries()
             unavailable = self._unavailable_plugins()
+            self.preferences.reload()
         except Exception as error:
             self._show_unavailable([])
-            self._set_catalog_state("error", f"调用 Runtime.list_commands 失败：{error}")
+            self._set_catalog_state("error", f"调用 Runtime 读取目录失败：{error}")
             self.refresh_btn.setEnabled(True)
             self.search_input.setEnabled(True)
             self.category_combo.setEnabled(True)
             return
 
-        categories = set()
-        for cmd_name, manifest in sorted(commands_map.items()):
-            cmd_desc = next((cmd.description for cmd in manifest.commands if cmd.name == cmd_name), "")
-            card = ToolCardWidget(cmd_name, cmd_desc, manifest)
+        self.category_labels = {}
+        self._group_warning = ""
+        # Prefer explicit labels; plugin ID makes conflicting declarations deterministic.
+        for entry in sorted(entries, key=lambda item: item['plugin_name']):
+            category, label = entry['category'], entry['category_display_name']
+            previous = self.category_labels.get(category)
+            if previous is None or previous == category:
+                self.category_labels[category] = label
+            elif label not in (category, previous):
+                self._group_warning = "同一分组存在不同显示名，已按插件 ID 顺序选取；工具仍可使用。"
+        for entry in sorted(entries, key=lambda item: (item['category'], item['plugin_name'], item['plugin_version'], item['plugin_path'])):
+            cmd_name, cmd_desc = entry['command_name'], entry['description']
+            card = ToolCardWidget(entry, (entry['plugin_name'], cmd_name) in self.preferences.favorites)
             card.clicked.connect(self.commandSelected.emit)
+            card.favoriteToggled.connect(self._toggle_favorite)
             self.cards_layout.addWidget(card)
-            search_text = " ".join((cmd_name, manifest.name, manifest.description, cmd_desc, manifest.category)).lower()
-            self.all_cards.append((cmd_name, manifest.name, manifest.category, cmd_desc, search_text, card))
-            categories.add(manifest.category)
+            search_text = " ".join(str(entry[field]) for field in ('command_name', 'command_display_name', 'plugin_name', 'plugin_display_name', 'plugin_description', 'description', 'category', 'category_display_name')).lower()
+            self.all_cards.append((cmd_name, entry['plugin_name'], entry['category'], cmd_desc, search_text, card))
 
         current_cat = self.category_combo.currentData()
         self.category_combo.blockSignals(True)
         self.category_combo.clear()
-        self.category_combo.addItem("全部分类", "all")
-        for cat in sorted(categories):
-            self.category_combo.addItem(f"分类：{CATEGORY_LABELS.get(cat, cat)}（{cat.upper()}）", cat)
-        if current_cat:
+        self.category_combo.addItem("全部分类", None)
+        for cat, label in sorted(self.category_labels.items()):
+            self.category_combo.addItem(f"分类：{label}（{cat}）", cat)
+        if current_cat is not None:
             idx = self.category_combo.findData(current_cat)
             if idx >= 0:
                 self.category_combo.setCurrentIndex(idx)
@@ -1909,14 +1989,21 @@ class ToolCatalogView(QtWidgets.QWidget):
         self.category_combo.setEnabled(True)
         self._catalog_state = "ready"
         self._filter_cards()
+        if rescan:
+            self.pluginsRescanned.emit()
 
     def _filter_cards(self):
         if self._catalog_state in ("loading", "error"):
             return
         query = self.search_input.text().strip().lower()
-        selected_cat = self.category_combo.currentData() or "all"
+        selected_cat = self.category_combo.currentData()
+        mode = self.mode_tabs.currentIndex()
+        self.recent_hint.setVisible(mode == 2)
+        self._notice()
+        self._clear_layout()
 
         visible_count = 0
+        visible = []
         for cmd_name, plugin_name, category, description, search_text, card in self.all_cards:
             match_query = (
                 (not query)
@@ -1926,18 +2013,75 @@ class ToolCatalogView(QtWidgets.QWidget):
                 or (query in category.lower())
                 or (query in search_text)
             )
-            match_cat = (selected_cat == "all") or (category == selected_cat)
-            show = match_query and match_cat
+            match_cat = selected_cat is None or category == selected_cat
+            identity = (plugin_name, cmd_name)
+            match_mode = mode == 0 or identity in (self.preferences.favorites if mode == 1 else self.preferences.recent)
+            show = match_query and match_cat and match_mode
+            card.set_favorite(identity in self.preferences.favorites)
             card.setVisible(show)
             if show:
                 visible_count += 1
+                visible.append(card)
+
+        if mode == 2:
+            visible.sort(key=lambda card: self.preferences.recent.index(card.identity))
+        group_counts = {}
+        for card in visible:
+            group = (card.entry['plugin_name'], card.entry['plugin_version'], card.entry['plugin_path'])
+            group_counts[group] = group_counts.get(group, 0) + 1
+        last_category = last_plugin = None
+        for card in visible:
+            entry = card.entry
+            group = (entry['plugin_name'], entry['plugin_version'], entry['plugin_path'])
+            if mode != 2 and entry['category'] != last_category:
+                self._add_heading(self.category_labels[entry['category']])
+                last_category = entry['category']
+            if mode != 2 and group != last_plugin:
+                if group_counts[group] > 1:
+                    self._add_heading(f"{entry['plugin_display_name']} · {entry['plugin_name']} v{entry['plugin_version']}")
+                last_plugin = group
+            self.cards_layout.addWidget(card)
+
+        if mode == 1 and selected_cat is None:
+            available = {(row[1], row[0]) for row in self.all_cards}
+            for key in self.preferences.favorites:
+                if key not in available and (not query or query in " ".join(key).lower()):
+                    self._add_unavailable_favorite(key)
+                    visible_count += 1
 
         if visible_count == 0:
             self.empty_widget.setVisible(visible_count == 0)
-            self._set_catalog_state("empty_search" if self.all_cards else "empty_plugins")
+            empty_state = "empty_search" if query or selected_cat is not None else ("empty_favorites" if mode == 1 else "empty_recent" if mode == 2 else "empty_plugins")
+            self._set_catalog_state(empty_state)
         else:
             self._catalog_state = "ready"
             self.state_widget.setVisible(False)
+        self.cards_layout.addStretch()
+
+    def _add_heading(self, text):
+        label = QtWidgets.QLabel(text)
+        label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        label.setObjectName("toolCardTitle")
+        label.setWordWrap(True)
+        self._decorations.append(label)
+        self.cards_layout.addWidget(label)
+
+    def _add_unavailable_favorite(self, key):
+        row = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(row)
+        label = QtWidgets.QLabel(f"{key[0]} · {key[1]} · 当前不可用")
+        label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        label.setWordWrap(True)
+        label.setEnabled(False)
+        layout.addWidget(label, 1)
+        remove = QtWidgets.QPushButton("取消收藏")
+        remove.clicked.connect(lambda: self._toggle_favorite(key))
+        diagnostics = QtWidgets.QPushButton("查看插件诊断")
+        diagnostics.clicked.connect(self.diagnosticsRequested.emit)
+        layout.addWidget(remove)
+        layout.addWidget(diagnostics)
+        self._decorations.append(row)
+        self.cards_layout.addWidget(row)
 
 
 # ==============================================================================
@@ -2131,12 +2275,15 @@ class CommandDetailFormView(QtWidgets.QWidget):
             self.cmd_title_lbl.setText(f"命令: {command_name}")
             self.plugin_badge.setText("不可用")
             self._set_form_feedback(f"无法从 Runtime 加载命令 Schema：{error}")
-            return
+            return False
 
-        self.cmd_title_lbl.setText(f"命令: {command_name}")
-        self.plugin_badge.setText(f"{PLUGIN_LABELS.get(self.current_manifest.name, self.current_manifest.name)}（{self.current_manifest.name}） v{self.current_manifest.version}")
+        command = next(item for item in self.current_manifest.commands if item.name == command_name)
+        self.cmd_title_lbl.setText(f"{command.display_name or command_name} · {command_name}")
+        self.plugin_badge.setText(f"{self.current_manifest.display_name or self.current_manifest.name}（{self.current_manifest.name}） v{self.current_manifest.version}")
         self.lbl_manifest_ver.setText(self.current_manifest.version)
-        self.lbl_category.setText(f"{CATEGORY_LABELS.get(self.current_manifest.category, self.current_manifest.category)}（{self.current_manifest.category.upper()}）")
+        self.lbl_category.setText(f"{self.current_manifest.category_display_name or self.current_manifest.category}（{self.current_manifest.category}）")
+        for label in (self.cmd_title_lbl, self.plugin_badge, self.lbl_category, self.info_desc_lbl):
+            label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         caps = self.current_manifest.capabilities or {}
         self.lbl_concurrency.setText("支持并发" if caps.get("concurrency", True) else "仅串行执行")
         self.lbl_filesystem.setText({"output-only": "仅输出目录（output-only）", "none": "不写入文件（none）"}.get(caps.get("filesystem", "output-only"), str(caps.get("filesystem", "output-only"))))
@@ -2144,19 +2291,23 @@ class CommandDetailFormView(QtWidgets.QWidget):
         cmd_desc = next((cmd.description for cmd in self.current_manifest.commands if cmd.name == command_name), "")
         self.info_desc_lbl.setText(cmd_desc or self.current_manifest.description)
 
-        self.form_widget = DataMockForm(self.current_schema, runtime=self.runtime, runtime_root=self.runtime_root) if command_name == "data.mock" else DynamicSchemaForm(self.current_schema, command_name=command_name)
-        if preset_params:
-            self.form_widget.set_values(preset_params)
-        self.form_container_layout.addWidget(self.form_widget)
-        self.preview_panel = None
-        preview_metadata = self.current_schema.get("x-preview")
-        if isinstance(preview_metadata, dict):
-            from testbox.gui_preview import ParsingPreviewPanel
-            self.preview_panel = ParsingPreviewPanel(
-                self.runtime, self.runtime_root, self.form_widget, preview_metadata,
-            )
-            self.form_container_layout.addWidget(self.preview_panel)
+        try:
+            self.form_widget = DataMockForm(self.current_schema, runtime=self.runtime, runtime_root=self.runtime_root) if command_name == "data.mock" else DynamicSchemaForm(self.current_schema, command_name=command_name)
+            self.form_container_layout.addWidget(self.form_widget)
+            if preset_params:
+                self.form_widget.set_values(preset_params)
+            preview_metadata = self.current_schema.get("x-preview")
+            if isinstance(preview_metadata, dict):
+                from testbox.gui_preview import ParsingPreviewPanel
+                self.preview_panel = ParsingPreviewPanel(
+                    self.runtime, self.runtime_root, self.form_widget, preview_metadata,
+                )
+                self.form_container_layout.addWidget(self.preview_panel)
+        except Exception as error:
+            self._set_form_feedback(f"无法打开命令配置：{error}")
+            return False
         self.submit_btn.setEnabled(True)
+        return True
 
     def _reset_form(self):
         if self.current_command:
@@ -3528,6 +3679,8 @@ class TaskHistoryView(QtWidgets.QWidget):
 class PluginDiagnosticsView(QtWidgets.QWidget):
     """Read-only plugin and Runtime diagnostics plus separately confirmed mutations."""
 
+    pluginsChanged = QtCore.Signal()
+
     def __init__(self, runtime: Runtime, parent=None):
         super().__init__(parent)
         self.runtime = runtime
@@ -3563,16 +3716,16 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 
         refresh_btn = QtWidgets.QPushButton("🔄 重新扫描插件")
         refresh_btn.setObjectName("secondaryButton")
-        refresh_btn.clicked.connect(self.refresh_plugins)
+        refresh_btn.clicked.connect(self._rescan_plugins)
         header.addWidget(refresh_btn)
         layout.addLayout(header)
 
         available_group = QtWidgets.QGroupBox("可用插件")
         available_layout = QtWidgets.QVBoxLayout(available_group)
-        self.plugins_table = QtWidgets.QTableWidget(0, 7)
+        self.plugins_table = QtWidgets.QTableWidget(0, 8)
         self.plugins_table.verticalHeader().setVisible(False)
         self.plugins_table.setHorizontalHeaderLabels(
-            ["插件名称", "版本", "分类", "命令列表", "能力", "Core 兼容", "路径"]
+            ["插件名称", "版本", "分类", "命令列表", "能力", "Core 兼容", "路径", "来源"]
         )
         for column in range(self.plugins_table.columnCount()):
             mode = QtWidgets.QHeaderView.ResizeMode.Stretch if column in {3, 6} else QtWidgets.QHeaderView.ResizeMode.ResizeToContents
@@ -3664,10 +3817,15 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 
         self.refresh_plugins()
 
-    def refresh_plugins(self):
+    def _rescan_plugins(self):
+        self.refresh_plugins(rescan=True)
+
+    def refresh_plugins(self, *, rescan=False):
         self.available_stack.setCurrentIndex(0)
         self.uninstall_btn.setEnabled(False)
         try:
+            if rescan:
+                self.runtime.reload_plugins()
             plugins = self.runtime.list_plugins()
             unavailable = self.runtime.list_unavailable_plugins()
             runtime_info = self.runtime.get_runtime_diagnostics()
@@ -3698,11 +3856,11 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
         self.plugins_table.setRowCount(len(plugins))
         for row, plugin in enumerate(plugins):
             details = self.runtime.inspect_plugin(plugin.name) or {}
-            name_item = QtWidgets.QTableWidgetItem(f"📦 {plugin.name}")
+            name_item = QtWidgets.QTableWidgetItem(f"📦 {plugin.display_name or plugin.name}（{plugin.name}）")
             name_item.setData(QtCore.Qt.ItemDataRole.UserRole, details)
             self.plugins_table.setItem(row, 0, name_item)
             self.plugins_table.setItem(row, 1, QtWidgets.QTableWidgetItem(plugin.version))
-            category = f"{CATEGORY_LABELS.get(plugin.category, plugin.category)}（{plugin.category.upper()}）"
+            category = f"{plugin.category_display_name or plugin.category}（{plugin.category}）"
             self.plugins_table.setItem(row, 2, QtWidgets.QTableWidgetItem(category))
             command_names = [command.name for command in plugin.commands]
             self.plugins_table.setItem(row, 3, QtWidgets.QTableWidgetItem(", ".join(command_names)))
@@ -3711,6 +3869,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
             self.plugins_table.setItem(row, 4, QtWidgets.QTableWidgetItem(capability_text))
             self.plugins_table.setItem(row, 5, QtWidgets.QTableWidgetItem(plugin.core_compatibility))
             self.plugins_table.setItem(row, 6, QtWidgets.QTableWidgetItem(str(details.get("path", plugin.path))))
+            self.plugins_table.setItem(row, 7, QtWidgets.QTableWidgetItem(SOURCE_LABELS.get(details.get("source"), "本地目录")))
         self.available_stack.setCurrentIndex(1 if plugins else 2)
 
         self.unavailable_table.setRowCount(len(unavailable))
@@ -3721,6 +3880,8 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 
         for key, label in self.runtime_diagnostic_labels.items():
             label.setText(str(runtime_info.get(key, "-")))
+        if rescan:
+            self.pluginsChanged.emit()
 
     def _selected_plugin_details(self) -> dict[str, Any] | None:
         selected = self.plugins_table.selectedItems()
@@ -3781,6 +3942,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
             return
 
         self.refresh_plugins()
+        self.pluginsChanged.emit()
         QtWidgets.QMessageBox.information(
             self,
             "导入成功",
@@ -3809,6 +3971,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "卸载插件失败", str(error))
             return
         self.refresh_plugins()
+        self.pluginsChanged.emit()
         QtWidgets.QMessageBox.information(self, "卸载成功", f"插件 {name} 已卸载。\n工具目录已同步更新。")
 
     def _on_clean_workspace(self):
@@ -4040,7 +4203,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.setObjectName("mainStack")
 
         # 实例化子页面
-        self.page_catalog = ToolCatalogView(self.runtime)
+        self.page_catalog = ToolCatalogView(self.runtime, settings=self.theme_settings)
         self.page_form = CommandDetailFormView(self.runtime, runtime_root=self._runtime_root)
         self.page_running = RunningWorkspaceView()
         self.page_result = TaskResultDetailView(self.runtime)
@@ -4058,6 +4221,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 信号绑定
         self.page_catalog.commandSelected.connect(self.navigate_to_command)
+        self.page_catalog.diagnosticsRequested.connect(self.navigate_to_diagnostics)
+        self.page_catalog.pluginsRescanned.connect(self.page_diagnostics.refresh_plugins)
+        self.page_diagnostics.pluginsChanged.connect(self.page_catalog.reload_tools)
         self.page_form.backToCatalog.connect(lambda: self.switch_page(0))
         self.page_form.executeRequested.connect(self.execute_task)
 
@@ -4116,8 +4282,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.page_diagnostics.refresh_plugins()
 
     def navigate_to_command(self, command_name: str, params: dict | None = None):
-        self.page_form.load_command(command_name, params)
+        if self.page_form.load_command(command_name, params):
+            self.page_catalog.record_recent(self.page_form.current_manifest.name, command_name)
         self.stack.setCurrentIndex(1)
+
+    def navigate_to_diagnostics(self):
+        self._select_nav_page(5)
+        self.switch_page(5)
 
     def navigate_to_task_result(self, task_id: str):
         self._select_nav_page(4)

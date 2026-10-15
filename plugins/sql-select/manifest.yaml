@@ -1,8 +1,10 @@
 schema_version: 1
 name: sql-select
+display_name: SELECT 生成器
 version: 1.0.0
 description: 根据 SQL Parser 字段清单生成 SELECT 语句
 category: sql
+category_display_name: SQL
 core_compatibility: ">=1.0,<2.0"
 capabilities:
   concurrency: true
@@ -12,5 +14,6 @@ capabilities:
 entry: src.main:Plugin
 commands:
   - name: sql.select
+    display_name: 生成 SELECT
     description: 根据字段清单生成 SELECT 语句
     input_schema: schemas/sql.select.json

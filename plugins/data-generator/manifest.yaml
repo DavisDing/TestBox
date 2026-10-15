@@ -1,8 +1,10 @@
 schema_version: 1
 name: data-generator
+display_name: 测试数据生成器
 version: 1.0.0
 description: 生成可复现的测试个人信息和手机号
 category: data
+category_display_name: 数据
 core_compatibility: ">=1.0,<2.0"
 capabilities:
   concurrency: true
@@ -12,5 +14,6 @@ capabilities:
 entry: src.main:Plugin
 commands:
   - name: data.mock
+    display_name: 生成测试数据
     description: 生成模拟测试数据
     input_schema: schemas/data.mock.json
