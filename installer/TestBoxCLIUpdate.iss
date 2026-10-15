@@ -1,9 +1,9 @@
 #define AppName "TestBox CLI Incremental Update"
 #ifndef AppVersion
-#define AppVersion "1.0.27"
+#define AppVersion "1.0.28"
 #endif
 #ifndef UpdatePackage
-#define UpdatePackage "TestBox-CLI-update-v1.0.27.zip"
+#define UpdatePackage "TestBox-CLI-update-v1.0.28.zip"
 #endif
 
 [Setup]
