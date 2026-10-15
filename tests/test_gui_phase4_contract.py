@@ -343,9 +343,15 @@ class GuiPhase4ContractTests(unittest.TestCase):
             and call.func.value.id == "QtWidgets"
         }
         self.assertFalse(
-            interactive_controls,
-            f"设置页第一阶段不应出现可编辑配置控件: {sorted(interactive_controls)}",
+            interactive_controls - {"QComboBox"},
+            f"设置页除已确认主题选择外不应出现可编辑配置控件: {sorted(interactive_controls)}",
         )
+        combo_assignments = [node for node in ast.walk(settings) if isinstance(node, ast.Assign)
+                             and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)
+                             and node.value.func.attr == "QComboBox"]
+        self.assertEqual(len(combo_assignments), 1)
+        self.assertTrue(any(isinstance(target, ast.Attribute) and target.attr == "theme_combo"
+                            for target in combo_assignments[0].targets))
 
 
 if __name__ == "__main__":

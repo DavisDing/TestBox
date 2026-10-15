@@ -221,10 +221,72 @@ class GuiPreviewTests(unittest.TestCase):
             pass
         self.window.navigate_to_command('data.preview')
         picker=self.window.page_form.form_widget.fields['inputs'][1]
-        with patch.object(QtWidgets.QFileDialog,'getExistingDirectory',return_value=str(directory)):
+        from testbox.gui_files import FileDialog
+        with patch.object(FileDialog,'getExistingDirectory',return_value=str(directory)):
             picker._add_directory()
         self.assertEqual([Path(p).name for p in picker.get_paths()],['a.json','b.csv'])
         self.assertIn('失效',self.window.page_form.preview_panel.status.text())
+
+    def test_navigation_and_reset_do_not_accumulate_preview_panels(self):
+        from testbox.gui_preview import ParsingPreviewPanel
+
+        view = self.window.page_form
+        for command in ("data.preview", "data.compare", "sql.diff", "data.check", "sql.preview",
+                        "sql.codecheck", "data.preview", "data.preview"):
+            with self.subTest(command=command):
+                self.window.navigate_to_command(command)
+                panels = [view.form_container_layout.itemAt(index).widget()
+                          for index in range(view.form_container_layout.count())
+                          if isinstance(view.form_container_layout.itemAt(index).widget(), ParsingPreviewPanel)]
+                expected = 1 if "x-preview" in view.current_schema else 0
+                self.assertEqual(len(panels), expected)
+                self.assertEqual(view.form_container_layout.count(), 1 + expected)
+                self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+                self.app.processEvents()
+                self.assertEqual(len(view.findChildren(ParsingPreviewPanel)), expected)
+        view._reset_form()
+        self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+        self.assertEqual(len(view.findChildren(ParsingPreviewPanel)), 1)
+
+    def test_schema_failure_removes_previous_preview(self):
+        from unittest.mock import patch
+        from testbox.gui_preview import ParsingPreviewPanel
+
+        self.window.navigate_to_command("data.preview")
+        view = self.window.page_form
+        with patch.object(self.window.runtime, "get_command_schema", side_effect=ValueError("fixture failure")):
+            view.load_command("data.compare")
+        self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+        self.assertIsNone(view.preview_panel)
+        self.assertEqual(view.form_container_layout.count(), 0)
+        self.assertEqual(view.findChildren(ParsingPreviewPanel), [])
+
+    def test_switching_during_real_host_preview_keeps_only_current_panel(self):
+        from testbox.gui_preview import ParsingPreviewPanel
+
+        path = self.root / "switch.csv"
+        path.write_text("id\n001\n", encoding="utf-8")
+        self.window.navigate_to_command("data.preview", {"input": str(path)})
+        old = self.window.page_form.preview_panel
+        source, editors, _button = old.editors[0]
+        old.preview(source, editors)
+        self.assertIsNotNone(old.worker)
+        self.window.navigate_to_command("data.compare")
+        current = self.window.page_form.preview_panel
+        self.assertTrue(old._disposed)
+        self.assertTrue(old.isHidden())
+        self.assertTrue(QtCore.QThreadPool.globalInstance().waitForDone(30_000))
+        self.app.processEvents()
+        self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+        self.assertEqual(self.window.page_form.findChildren(ParsingPreviewPanel), [current])
+        self.assertEqual(current.status.text(), "尚未预览")
+        self.assertTrue(all(button.isEnabled() for _source, _editors, button in current.editors))
+        tasks = self.window.runtime.list_tasks(command="data.preview")
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["status"], "SUCCEEDED")
 
 
 if __name__ == "__main__":

@@ -40,6 +40,8 @@ def _qt():
 
 
 QtCore, QtGui, QtWidgets = _qt()
+from testbox.gui_files import FileDialog
+from testbox.gui_theme import THEME_LABELS, apply_theme, build_stylesheet, read_theme, theme_color
 
 
 # Schema 字段与枚举值统一使用“中文说明 + 英文键名/原始值”的展示方式。
@@ -510,7 +512,8 @@ class SingleFilePicker(QtWidgets.QWidget):
         layout.addWidget(self.btn_clear)
 
     def _choose_file(self):
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "选择文件", "", self.filter_str, options=_file_dialog_options())
+        directory = self.line_edit.text().strip().strip("'\"")
+        file_path, _ = FileDialog.getOpenFileName(self, "选择文件", directory, self.filter_str, options=_file_dialog_options())
         if file_path:
             self.set_path(file_path)
 
@@ -522,6 +525,10 @@ class SingleFilePicker(QtWidgets.QWidget):
 
     def _validate_and_apply(self, raw_text: str, from_user_input: bool = False):
         clean_text = raw_text.strip().strip("'\"")
+        self.line_edit.setProperty("invalid", bool(clean_text and Path(clean_text).is_dir()))
+        self.line_edit.style().unpolish(self.line_edit)
+        self.line_edit.style().polish(self.line_edit)
+        self.line_edit.update()
         if not clean_text:
             self._path = ""
             self.line_edit.setStyleSheet("")
@@ -534,8 +541,7 @@ class SingleFilePicker(QtWidgets.QWidget):
         if p.is_dir():
             # 目录地址非法：重置有效路径并显示醒目警示
             self._path = ""
-            self.line_edit.setStyleSheet("border: 1.5px solid #EF4444; background-color: #2b1418; color: #FCA5A5;")
-            self.line_edit.setToolTip("❌ 不能输入目录地址，必须选择具体文件！")
+            self.line_edit.setToolTip("这是目录；点击“选择文件”从此目录继续选择，不能直接作为输入文件。")
             self.btn_clear.setVisible(True)
             self.valueChanged.emit("")
             return
@@ -616,7 +622,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
         layout.addWidget(self.list_widget)
 
     def _add_files(self):
-        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "选择多个文件", "", self.filter_str, options=_file_dialog_options())
+        files, _ = FileDialog.getOpenFileNames(self, "选择多个文件", "", self.filter_str, options=_file_dialog_options())
         if files:
             for f in files:
                 if f not in self._paths:
@@ -624,7 +630,7 @@ class MultiFilesPicker(QtWidgets.QWidget):
             self._sync_list()
 
     def _add_directory(self):
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "选择文件夹（仅当前层，不递归）", "", options=_file_dialog_options())
+        directory = FileDialog.getExistingDirectory(self, "选择文件夹（仅当前层，不递归）", "", options=_file_dialog_options())
         if not directory:
             return
         try:
@@ -784,7 +790,7 @@ class DataMockFieldsEditor(QtWidgets.QWidget):
         header_labels = ["字段名", "数据库类型", "生成方式", "生成参数", "注释", "唯一", "主键", "自增", "空值率", "", "操作"]
         for col, text_h in enumerate(header_labels):
             lbl = QtWidgets.QLabel(text_h)
-            lbl.setStyleSheet("font-weight: 600; color: #94a3b8; font-size: 12px;")
+            lbl.setObjectName("fieldHeader")
             header.addWidget(lbl, 0, col)
         header.setColumnStretch(0, 2)
         header.setColumnStretch(2, 2)
@@ -1335,11 +1341,17 @@ class DynamicSchemaForm(QtWidgets.QWidget):
         label_bar.setSpacing(6)
 
         field_label = _parameter_label(key)
-        title_text = f"<b>{spec.get('title') or field_label}</b> <span style='color: #94a3b8;'>（{key}）</span>"
-        if is_required:
-            title_text += " <span style='color: #ef4444; font-weight: bold;'>*必填</span>"
-        lbl = QtWidgets.QLabel(title_text)
+        lbl = QtWidgets.QLabel(str(spec.get("title") or field_label))
+        lbl.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        lbl.setStyleSheet("font-weight: 700;")
         label_bar.addWidget(lbl)
+        key_label = QtWidgets.QLabel(f"（{key}）")
+        key_label.setObjectName("fieldKeyLabel")
+        label_bar.addWidget(key_label)
+        if is_required:
+            required_label = QtWidgets.QLabel("*必填")
+            required_label.setObjectName("requiredLabel")
+            label_bar.addWidget(required_label)
 
         # 类型或格式标记
         type_str = spec.get("type", "string")
@@ -1697,7 +1709,7 @@ class ToolCardWidget(QtWidgets.QFrame):
         caps_bar.addStretch()
 
         action_lbl = QtWidgets.QLabel("配置此命令 →")
-        action_lbl.setStyleSheet("color: #2563eb; font-weight: 600; font-size: 12px;")
+        action_lbl.setObjectName("actionText")
         caps_bar.addWidget(action_lbl)
 
         layout.addLayout(caps_bar)
@@ -1785,7 +1797,7 @@ class ToolCatalogView(QtWidgets.QWidget):
         self.state_icon.setStyleSheet("font-size: 48px;")
         self.state_icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.state_text = QtWidgets.QLabel("")
-        self.state_text.setStyleSheet("color: #64748b; font-size: 15px; font-weight: 500;")
+        self.state_text.setObjectName("catalogStateText")
         self.state_text.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.state_detail = QtWidgets.QLabel("")
         self.state_detail.setObjectName("mutedText")
@@ -1890,6 +1902,7 @@ class ToolCatalogView(QtWidgets.QWidget):
         self.refresh_btn.setEnabled(True)
         self.search_input.setEnabled(True)
         self.category_combo.setEnabled(True)
+        self._catalog_state = "ready"
         self._filter_cards()
 
     def _filter_cards(self):
@@ -2034,7 +2047,7 @@ class CommandDetailFormView(QtWidgets.QWidget):
         info_layout.setSpacing(12)
 
         info_title = QtWidgets.QLabel("ℹ️ 命令与插件信息")
-        info_title.setStyleSheet("font-weight: 700; font-size: 14px; color: #0f172a;")
+        info_title.setObjectName("panelTitle")
         info_layout.addWidget(info_title)
 
         self.info_desc_lbl = QtWidgets.QLabel("")
@@ -2044,7 +2057,7 @@ class CommandDetailFormView(QtWidgets.QWidget):
 
         line = QtWidgets.QFrame()
         line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        line.setStyleSheet("color: #e2e8f0;")
+        line.setObjectName("separator")
         info_layout.addWidget(line)
 
         # 属性清单
@@ -2068,17 +2081,17 @@ class CommandDetailFormView(QtWidgets.QWidget):
 
         # 提示盒子
         tip_box = QtWidgets.QWidget()
-        tip_box.setStyleSheet("background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 8px;")
+        tip_box.setObjectName("tipBox")
         tip_layout = QtWidgets.QVBoxLayout(tip_box)
         tip_layout.setContentsMargins(8, 8, 8, 8)
         tip_icon_lbl = QtWidgets.QLabel("💡 提示与规范")
-        tip_icon_lbl.setStyleSheet("font-weight: 700; color: #166534; font-size: 12px;")
+        tip_icon_lbl.setObjectName("tipTitle")
         tip_content = QtWidgets.QLabel(
             "• 参数经 Schema 严格校验\n"
             "• 敏感参数由 Runtime 自动脱敏\n"
             "• 生成文件统一保存在独立工作区"
         )
-        tip_content.setStyleSheet("color: #15803d; font-size: 11px;")
+        tip_content.setObjectName("tipContent")
         tip_layout.addWidget(tip_icon_lbl)
         tip_layout.addWidget(tip_content)
         info_layout.addWidget(tip_box)
@@ -2095,7 +2108,12 @@ class CommandDetailFormView(QtWidgets.QWidget):
         self.current_command = command_name
         self._set_form_feedback()
         self.submit_btn.setEnabled(False)
+        if self.preview_panel is not None:
+            self.form_container_layout.removeWidget(self.preview_panel)
+            self.preview_panel.dispose()
+            self.preview_panel = None
         if self.form_widget:
+            self.form_widget.hide()
             self.form_container_layout.removeWidget(self.form_widget)
             self.form_widget.deleteLater()
             self.form_widget = None
@@ -2216,7 +2234,7 @@ class RunningWorkspaceView(QtWidgets.QWidget):
 
         status_text_box = QtWidgets.QVBoxLayout()
         self.status_title_lbl = QtWidgets.QLabel("任务正在运行中")
-        self.status_title_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #2563eb;")
+        self.status_title_lbl.setObjectName("runningTitle")
         self.status_desc_lbl = QtWidgets.QLabel("任务处于等待执行或运行中（PENDING / RUNNING），正在等待插件返回。")
         self.status_desc_lbl.setObjectName("mutedText")
         self.status_desc_lbl.setWordWrap(True)
@@ -3005,7 +3023,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
 
     def _export_single_file(self, task_id: str, rel_path: str, filename: str):
         """调用 Runtime.commit_output 导出文件到用户选定路径，绝不在 UI 中私自复制"""
-        dest_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出任务产物", filename, options=_file_dialog_options())
+        dest_path, _ = FileDialog.getSaveFileName(self, "导出任务产物", filename, options=_file_dialog_options())
         if not dest_path:
             return
         try:
@@ -3026,7 +3044,7 @@ class TaskResultDetailView(QtWidgets.QWidget):
         if not task_id:
             return
         default_name = f"{task_id}-outputs.zip"
-        dest_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        dest_path, _ = FileDialog.getSaveFileName(
             self,
             "一键打包导出全部产物",
             default_name,
@@ -3171,6 +3189,7 @@ class TaskHistoryView(QtWidgets.QWidget):
         layout.addLayout(filter_bar)
 
         self.table = QtWidgets.QTableWidget(0, 9)
+        self.table.setObjectName("taskHistoryTable")
         self.table.verticalHeader().setVisible(False)
         self.table.setHorizontalHeaderLabels(
             ["任务 ID", "命令", "插件 / 版本", "状态", "开始时间", "耗时", "产物数", "完成时间", "操作"]
@@ -3222,7 +3241,7 @@ class TaskHistoryView(QtWidgets.QWidget):
         self.btn_prev.setObjectName("smallButton")
         self.btn_prev.clicked.connect(self._prev_page)
         self.page_lbl = QtWidgets.QLabel("第 1 页")
-        self.page_lbl.setStyleSheet("font-weight: 600; color: #334155;")
+        self.page_lbl.setObjectName("pageNumber")
         self.btn_next = QtWidgets.QPushButton("下一页 ▶")
         self.btn_next.setObjectName("smallButton")
         self.btn_next.clicked.connect(self._next_page)
@@ -3381,14 +3400,10 @@ class TaskHistoryView(QtWidgets.QWidget):
         self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(plugin_text))
 
         status_item = QtWidgets.QTableWidgetItem(self._status_label(status))
-        color = {
-            "SUCCEEDED": "#10b981",
-            "FAILED": "#ef4444",
-            "ABANDONED": "#ea580c",
-            "RUNNING": "#2563eb",
-            "PENDING": "#7c3aed",
-        }.get(status, "#64748b")
-        status_item.setForeground(QtGui.QColor(color))
+        token = {"SUCCEEDED": "success", "FAILED": "danger", "ABANDONED": "abandoned",
+                 "RUNNING": "info", "PENDING": "info"}.get(status, "muted")
+        status_item.setData(QtCore.Qt.ItemDataRole.UserRole, status)
+        status_item.setForeground(theme_color(token))
         self.table.setItem(row, 3, status_item)
         self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(self._format_timestamp(task.get("started_at"))))
         self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(self._format_duration(task)))
@@ -3719,7 +3734,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
             self.uninstall_btn.setToolTip("卸载用户插件；历史任务不会被删除")
 
     def _on_import_plugin(self):
-        source, _ = QtWidgets.QFileDialog.getOpenFileName(
+        source, _ = FileDialog.getOpenFileName(
             self,
             "选择插件包",
             "",
@@ -3815,7 +3830,9 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
 # ============================================================================
 
 class SettingsDialog(QtWidgets.QDialog):
-    """只读展示 Runtime、工作区、插件目录、版本和环境诊断。"""
+    """展示只读运行诊断与桌面主题偏好。"""
+
+    themeChanged = QtCore.Signal(str)
 
     def __init__(self, runtime: Runtime, parent=None):
         super().__init__(parent)
@@ -3859,10 +3876,22 @@ class SettingsDialog(QtWidgets.QDialog):
         title = QtWidgets.QLabel("⚙️ 首选项与设置")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
-        desc = QtWidgets.QLabel("只读查看 Runtime 路径、数据持久化位置和环境诊断；本阶段不修改配置。")
+        desc = QtWidgets.QLabel("主题切换立即生效并自动记住；Runtime 路径、存储位置与环境诊断仍为只读。")
         desc.setObjectName("mutedText")
         desc.setWordWrap(True)
         layout.addWidget(desc)
+
+        appearance_group = QtWidgets.QGroupBox("外观主题")
+        appearance_layout = QtWidgets.QFormLayout(appearance_group)
+        self.theme_combo = QtWidgets.QComboBox()
+        self.theme_combo.setObjectName("themeSelector")
+        for theme, label in THEME_LABELS.items():
+            self.theme_combo.addItem(label, theme)
+        active_theme = QtWidgets.QApplication.instance().property("testboxTheme") or "dark"
+        self.theme_combo.setCurrentIndex(self.theme_combo.findData(active_theme))
+        self.theme_combo.currentIndexChanged.connect(lambda: self.themeChanged.emit(self.theme_combo.currentData()))
+        appearance_layout.addRow("整体配色：", self.theme_combo)
+        layout.addWidget(appearance_group)
 
         paths_group = QtWidgets.QGroupBox("Runtime 与存储路径")
         paths_layout = QtWidgets.QVBoxLayout(paths_group)
@@ -3908,8 +3937,10 @@ class MainWindow(QtWidgets.QMainWindow):
     - Page 4: 任务历史 (TaskHistoryView)
     - Page 5: 插件诊断与状态 (PluginDiagnosticsView)
     """
-    def __init__(self, root: Path | None = None):
+    def __init__(self, root: Path | None = None, *, settings: QtCore.QSettings | None = None):
         super().__init__()
+        self.theme_settings = settings if settings is not None else QtCore.QSettings("TestBox", "Desktop")
+        apply_theme(QtWidgets.QApplication.instance(), read_theme(self.theme_settings))
         self._runtime_root = root
         self.runtime = Runtime(root)
         self._interactive_task = False
@@ -3960,7 +3991,7 @@ class MainWindow(QtWidgets.QMainWindow):
         brand_icon.setFixedSize(28, 28)
         brand_icon.setPixmap(get_app_logo_pixmap(28))
         brand_title = QtWidgets.QLabel("TestBox")
-        brand_title.setStyleSheet("color: #ffffff; font-size: 18px; font-weight: 800; letter-spacing: 0.5px;")
+        brand_title.setObjectName("brandTitle")
         brand_bar.addWidget(brand_icon)
         brand_bar.addWidget(brand_title)
         brand_bar.addStretch()
@@ -3985,7 +4016,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 底部设置按钮
         settings_btn = QtWidgets.QPushButton("⚙️  首选项与设置")
         settings_btn.setObjectName("secondaryButton")
-        settings_btn.setToolTip("查看数据持久化目录、SQLite 任务库路径及常用配置")
+        settings_btn.setToolTip("切换整体主题，查看数据持久化目录与运行诊断")
         settings_btn.clicked.connect(self._open_settings_dialog)
         sidebar_layout.addWidget(settings_btn)
 
@@ -3994,7 +4025,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 底部版本信息
         runtime_version = self.runtime.get_runtime_diagnostics().get("version", "-")
         footer_lbl = QtWidgets.QLabel(f"TestBox Engine v{runtime_version}\nLocal-First Desktop")
-        footer_lbl.setStyleSheet("color: #64748b; font-size: 11px; line-height: 1.4;")
+        footer_lbl.setObjectName("footerText")
         sidebar_layout.addWidget(footer_lbl)
 
         root_layout.addWidget(sidebar)
@@ -4043,7 +4074,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _open_settings_dialog(self):
         dlg = SettingsDialog(self.runtime, self)
+        dlg.themeChanged.connect(self.set_theme)
         dlg.exec()
+
+    def set_theme(self, theme: str):
+        apply_theme(QtWidgets.QApplication.instance(), theme)
+        self.theme_settings.setValue("appearance/theme", theme)
+        self.theme_settings.sync()
+        if self.theme_settings.status() != QtCore.QSettings.Status.NoError:
+            QtWidgets.QMessageBox.warning(self, "主题偏好未保存", "当前主题已生效，但无法保存偏好；下次启动可能恢复原主题。")
 
     def _on_nav_selected(self, row: int):
         item = self.nav_list.item(row)
@@ -4139,429 +4178,7 @@ class MainWindow(QtWidgets.QMainWindow):
 # 视觉设计与样式表 (Apple & Modern Desktop QSS Design Tokens)
 # ==============================================================================
 
-STYLE = """
-* {
-    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
-    font-size: 13px;
-    color: #F8FAFC;
-}
-
-/* 所有 Qt 原生弹窗也使用深色高对比度主题，避免白底灰字。
-   文件选择器通过 DontUseNativeDialog 使用此 QSS；消息框/输入框直接匹配。 */
-QDialog, QMessageBox, QInputDialog, QFileDialog {
-    background-color: #111318;
-    color: #F8FAFC;
-}
-QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel, QFileDialog QLabel {
-    color: #F8FAFC;
-}
-QDialogButtonBox QPushButton, QMessageBox QPushButton {
-    min-width: 78px;
-    min-height: 32px;
-    padding: 0 14px;
-    background-color: #232832;
-    color: #F8FAFC;
-    border: 1px solid #3B4554;
-    border-radius: 6px;
-}
-QDialogButtonBox QPushButton:hover, QMessageBox QPushButton:hover {
-    background-color: #303846;
-    border-color: #10B981;
-}
-QMessageBox QPushButton {
-    background-color: #166534;
-    border-color: #22C55E;
-}
-QMessageBox QPushButton:default {
-    background-color: #059669;
-    color: #FFFFFF;
-}
-QInputDialog QLineEdit, QFileDialog QLineEdit, QFileDialog QComboBox {
-    background-color: #0B0D11;
-    color: #F8FAFC;
-    border: 1px solid #3B4554;
-}
-QFileDialog QListView, QFileDialog QTreeView, QFileDialog QTableView {
-    background-color: #0B0D11;
-    color: #F8FAFC;
-    alternate-background-color: #141922;
-    selection-background-color: #14532D;
-    selection-color: #FFFFFF;
-}
-QFileDialog QToolButton, QFileDialog QPushButton {
-    color: #F8FAFC;
-    background-color: #232832;
-    border: 1px solid #3B4554;
-    border-radius: 6px;
-    padding: 5px 10px;
-}
-QFileDialog QHeaderView::section {
-    background-color: #1A1F28;
-    color: #E2E8F0;
-}
-QToolTip {
-    background-color: #111827;
-    color: #F8FAFC;
-    border: 1px solid #475569;
-    padding: 5px;
-}
-
-/* 失败、诊断和日志必须在深色主题中保持高对比度；避免浅色背景叠加浅灰文字。 */
-#statusBannerSuccess, #statusBannerWarning, #statusBannerFailed, #statusBannerAbandoned, #statusBannerCancelled {
-    border-radius: 8px;
-}
-#statusBannerSuccess { background-color: #10251f; border: 1px solid #17624a; }
-#statusBannerWarning { background-color: #2a2110; border: 1px solid #765718; }
-#statusBannerFailed { background-color: #2b1418; border: 1px solid #7f2635; }
-#statusBannerAbandoned { background-color: #2a1b0f; border: 1px solid #7c3b16; }
-#statusBannerCancelled { background-color: #171b22; border: 1px solid #374151; }
-#statusSuccess { color: #6ee7b7; font-size: 16px; font-weight: 700; }
-#statusWarning { color: #fbbf24; font-size: 16px; font-weight: 700; }
-#statusFailed { color: #fda4af; font-size: 16px; font-weight: 700; }
-#statusAbandoned { color: #fdba74; font-size: 16px; font-weight: 700; }
-#statusCancelled { color: #cbd5e1; font-size: 16px; font-weight: 700; }
-#diagnosticBox { background-color: #2b1418; border: 1px solid #7f2635; border-radius: 8px; }
-#diagnosticTitle { color: #fecdd3; font-size: 14px; font-weight: 700; }
-#diagnosticReason { color: #fda4af; font-size: 13px; font-weight: 600; }
-#diagnosticAdvice { color: #fecdd3; font-size: 12px; }
-#codeOutput, #logOutput {
-    background-color: #09090B;
-    color: #EDEDED;
-    border: 1px solid #27272A;
-    font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
-    font-size: 12px;
-}
-#logOutput { background-color: #111827; color: #F8FAFC; }
-
-QMainWindow, QStackedWidget#mainStack, QScrollArea, QScrollArea > QWidget > QWidget {
-    background-color: #000000;
-}
-
-/* 侧边导航栏 */
-#navSidebar {
-    background-color: #0A0A0C;
-    border-right: 1px solid #222226;
-}
-
-#nav {
-    background: transparent;
-    border: none;
-    outline: none;
-}
-
-#nav::item {
-    color: #CBD5E1;
-    min-height: 40px;
-    padding-left: 14px;
-    border-radius: 6px;
-    margin-bottom: 4px;
-    font-weight: 500;
-}
-
-#nav::item:hover {
-    background-color: #161618;
-    color: #FAFAFA;
-}
-
-#nav::item:selected {
-    background-color: #18181B;
-    color: #10B981;
-    border: 1px solid #27272A;
-    font-weight: 600;
-}
-
-/* 标题与文字样式 */
-#pageTitle {
-    font-size: 20px;
-    font-weight: 700;
-    color: #FAFAFA;
-    letter-spacing: -0.3px;
-}
-
-#mutedText {
-    color: #CBD5E1;
-    font-size: 12px;
-}
-
-#fieldErrorLabel {
-    color: #F87171;
-    font-size: 12px;
-    font-weight: 600;
-    margin-top: 2px;
-}
-
-#tagLabel {
-    background-color: rgba(16, 185, 129, 0.12);
-    color: #34D399;
-    border: 1px solid rgba(16, 185, 129, 0.25);
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-#tagLabelMuted {
-    background-color: #20242C;
-    color: #CBD5E1;
-    border: 1px solid #27272A;
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 500;
-}
-
-#tagLabelDanger {
-    background-color: rgba(239, 68, 68, 0.15);
-    color: #F87171;
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-#tagLabelInfo {
-    background-color: rgba(59, 130, 246, 0.15);
-    color: #60A5FA;
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-/* 工具卡片 */
-#toolCard {
-    background-color: #0D0D10;
-    border: 1px solid #222226;
-    border-radius: 8px;
-}
-
-#toolCard:hover {
-    border-color: #10B981;
-    background-color: #121215;
-}
-
-#toolCardTitle {
-    font-size: 15px;
-    font-weight: 700;
-    color: #FAFAFA;
-}
-
-#toolCardDesc {
-    font-size: 12px;
-    color: #CBD5E1;
-    line-height: 1.4;
-}
-
-/* 面板卡片与 GroupBox */
-#cardPanel, QGroupBox {
-    background-color: #0D0D10;
-    border: 1px solid #222226;
-    border-radius: 8px;
-}
-
-QGroupBox {
-    margin-top: 14px;
-    font-weight: 600;
-    color: #EDEDED;
-    padding-top: 14px;
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    left: 14px;
-    padding: 0 6px;
-    background-color: #000000;
-    color: #CBD5E1;
-    font-size: 12px;
-}
-
-/* 按钮规范 */
-QPushButton {
-    min-height: 32px;
-    padding: 0 14px;
-    border-radius: 6px;
-    font-weight: 500;
-    background-color: #18181B;
-    color: #EDEDED;
-    border: 1px solid #27272A;
-}
-
-QPushButton:hover {
-    background-color: #222226;
-    border-color: #3F3F46;
-    color: #FAFAFA;
-}
-
-QPushButton:pressed {
-    background-color: #141416;
-}
-
-#primaryButton {
-    background-color: #10B981;
-    color: #000000;
-    border: 1px solid #10B981;
-    font-weight: 700;
-}
-
-#primaryButton:hover {
-    background-color: #34D399;
-    border-color: #34D399;
-    color: #000000;
-}
-
-#primaryButton:pressed {
-    background-color: #059669;
-    border-color: #059669;
-    color: #000000;
-}
-
-#primaryButton:disabled {
-    background-color: #27272A;
-    border-color: #27272A;
-    color: #71717A;
-}
-
-#secondaryButton {
-    background-color: #18181B;
-    color: #EDEDED;
-    border: 1px solid #27272A;
-}
-
-#secondaryButton:hover {
-    background-color: #222226;
-    border-color: #3F3F46;
-    color: #FAFAFA;
-}
-
-#smallButton {
-    min-height: 26px;
-    padding: 0 8px;
-    font-size: 12px;
-    background-color: #18181B;
-    color: #EDEDED;
-    border: 1px solid #27272A;
-}
-
-#smallButton:hover {
-    background-color: #222226;
-    border-color: #3F3F46;
-    color: #FAFAFA;
-}
-
-/* 表单输入控件 */
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit {
-    min-height: 32px;
-    border: 1px solid #27272A;
-    border-radius: 6px;
-    padding: 0 8px;
-    background-color: #09090B;
-    color: #FAFAFA;
-}
-
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus {
-    border: 1px solid #10B981;
-    background-color: #09090B;
-}
-
-QComboBox QAbstractItemView {
-    background-color: #121215;
-    border: 1px solid #27272A;
-    selection-background-color: #18181B;
-    selection-color: #10B981;
-    color: #FAFAFA;
-    padding: 4px;
-}
-
-QPlainTextEdit, QTextEdit {
-    border: 1px solid #27272A;
-    border-radius: 6px;
-    padding: 8px;
-    background-color: #09090B;
-    color: #EDEDED;
-}
-
-QPlainTextEdit:focus, QTextEdit:focus {
-    border: 1px solid #10B981;
-}
-
-QProgressBar {
-    background-color: #18181B;
-    border: 1px solid #27272A;
-    border-radius: 4px;
-    text-align: center;
-    color: #EDEDED;
-}
-
-QProgressBar::chunk {
-    background-color: #10B981;
-    border-radius: 3px;
-}
-
-/* 表格控件 */
-QTableWidget, QTableView {
-    background-color: #0D0D10;
-    border: 1px solid #222226;
-    border-radius: 6px;
-    gridline-color: #1A1A1E;
-    selection-background-color: #18181B;
-    selection-color: #10B981;
-    color: #EDEDED;
-}
-
-QHeaderView {
-    background-color: #121215;
-    border: none;
-}
-
-QHeaderView::section {
-    background-color: #121215;
-    color: #A1A1AA;
-    font-weight: 600;
-    padding: 8px;
-    border: none;
-    border-bottom: 1px solid #27272A;
-}
-
-QTableCornerButton::section {
-    background-color: #121215;
-    border: none;
-    border-bottom: 1px solid #27272A;
-}
-
-QListWidget {
-    background-color: #09090B;
-    border: 1px solid #27272A;
-    border-radius: 6px;
-    color: #EDEDED;
-}
-
-QListWidget::item:selected {
-    background-color: #18181B;
-    color: #10B981;
-}
-
-QScrollBar:vertical {
-    border: none;
-    background: #000000;
-    width: 8px;
-    margin: 0px 0 0px 0;
-}
-QScrollBar::handle:vertical {
-    background: #27272A;
-    min-height: 20px;
-    border-radius: 4px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #3F3F46;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    border: none;
-    background: none;
-}
-"""
+STYLE = build_stylesheet("dark")
 
 
 def main() -> None:
@@ -4582,7 +4199,6 @@ def main() -> None:
     app_font.setPointSize(10)
     app_font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferQuality)
     app.setFont(app_font)
-    app.setStyleSheet(STYLE)
     window = MainWindow()
     window.show()
     raise SystemExit(app.exec())

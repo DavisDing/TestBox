@@ -38,6 +38,7 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
         self.revision = 0
         self.request_revision = -1
         self.syncing = False
+        self._disposed = False
         layout = QtWidgets.QVBoxLayout(self)
         help_label = QtWidgets.QLabel("先选择输入文件或填写 SQL，再调整解析配置。预览通过真实任务执行，不修改原文件；预览前 20 行不代表仅校验前 20 行。")
         help_label.setWordWrap(True)
@@ -121,6 +122,13 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
                 if signal is not None:
                     signal.connect(self._changed)
                     break
+
+    def dispose(self):
+        self._disposed = True
+        self.hide()
+        self.setEnabled(False)
+        if self.worker is None:
+            self.deleteLater()
 
     def _sync_options(self, text, editors):
         if self.syncing:
@@ -221,6 +229,9 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
     @QtCore.Slot(str, object)
     def _finished(self, task, result):
         self.worker = None
+        if self._disposed:
+            self.deleteLater()
+            return
         for _s, _e, button in self.editors:
             button.setEnabled(True)
         if self.request_revision != self.revision:

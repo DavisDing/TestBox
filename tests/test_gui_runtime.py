@@ -22,7 +22,9 @@ except ModuleNotFoundError as error:
     QT_AVAILABLE = False
 else:
     QT_AVAILABLE = True
+    from PySide6 import QtGui
     from testbox.gui import DataMockForm, DynamicSchemaForm, MainWindow
+    from testbox.gui_theme import THEMES, apply_theme, build_stylesheet
 
 
 from testbox.core.schema_validator import SchemaValidationError, SchemaValidator
@@ -54,7 +56,8 @@ class GuiRuntimeTests(unittest.TestCase):
                 QtWidgets.QMessageBox, name,
                 return_value=QtWidgets.QMessageBox.StandardButton.No,
             ))
-        self.window = MainWindow(self.root)
+        self.theme_settings = QtCore.QSettings(str(self.root / "desktop.ini"), QtCore.QSettings.Format.IniFormat)
+        self.window = MainWindow(self.root, settings=self.theme_settings)
         self.addCleanup(self._close_window)
         self.window.show()
         self.app.processEvents()
@@ -138,6 +141,25 @@ class GuiRuntimeTests(unittest.TestCase):
         self.window.nav_list.setCurrentRow(0)
         self.assertEqual(self.window.stack.currentIndex(), 0)
         self._assert_no_messages()
+
+    def test_catalog_leaves_loading_state_after_commands_are_loaded(self):
+        catalog = self.window.page_catalog
+        self.assertEqual(catalog._catalog_state, "ready")
+        self.assertFalse(catalog.state_widget.isVisible())
+        self.assertGreater(len(catalog.all_cards), 0)
+
+    def test_theme_styles_keep_form_text_visible_and_switch_palette(self):
+        application = self.app
+        for theme, colors in THEMES.items():
+            with self.subTest(theme=theme):
+                apply_theme(application, theme)
+                stylesheet = build_stylesheet(theme)
+                self.assertIn("QWidget", stylesheet)
+                self.assertIn(colors["text"], stylesheet)
+                self.assertIn(colors["panel"], stylesheet)
+                self.assertEqual(application.property("testboxTheme"), theme)
+                self.assertEqual(application.palette().color(QtGui.QPalette.ColorRole.Window).name().upper(), colors["window"].upper())
+        apply_theme(application, "dark")
 
     def test_all_four_command_forms_round_trip_presets(self):
         sql = self.root / "input.sql"
