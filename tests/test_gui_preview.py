@@ -75,6 +75,57 @@ class GuiPreviewTests(unittest.TestCase):
         self.assertEqual(self.window.page_form.form_widget.get_values()["options"]["delimiter"],"||")
         self.assertEqual(p.read_text(),"id||value<EOR>001||A<EOR>002||B<EOR>")
 
+    def test_compare_and_sql_diff_preview_map_both_batch_sides_to_inputs(self):
+        for command, suffix, content in (
+            ("data.compare", ".csv", "id,value\n001,A\n"),
+            ("sql.diff", ".sql", "CREATE TABLE sample (id INTEGER, value VARCHAR(10));"),
+        ):
+            paths = []
+            for index in range(2):
+                path = self.root / f"batch-{index}{suffix}"
+                path.write_text(content, encoding="utf-8")
+                paths.append(str(path))
+            self.window.navigate_to_command(command, {"left_inputs": paths, "right_inputs": paths})
+            panel = self.window.page_form.preview_panel
+            for source, editors, _button in panel.editors:
+                with self.subTest(command=command, side=source["input"]):
+                    panel.preview(source, editors)
+                    self.await_preview(panel)
+                    result = self.window.runtime.get_task_result(panel.last_task_id)
+                    self.assertEqual(result["status"], "success", result["message"])
+                    self.assertEqual(len(panel.batch_items), 2)
+                    self.assertTrue(all(item["status"] == "success" for item in panel.batch_items))
+                    self.assertGreater(panel.table.rowCount(), 0)
+                    panel.item_selector.setCurrentIndex(1)
+                    self.assertGreater(panel.table.rowCount(), 0)
+
+    def test_compare_batch_side_preview_preserves_all_sheet_selection(self):
+        try:
+            from openpyxl import Workbook
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        path = self.root / "sheets.xlsx"
+        workbook = Workbook()
+        workbook.active.title = "First"
+        workbook.active.append(["id"])
+        workbook.active.append(["001"])
+        workbook.create_sheet("Second").append(["id"])
+        workbook["Second"].append(["002"])
+        workbook.save(path)
+        workbook.close()
+        self.window.navigate_to_command("data.compare", {
+            "left_inputs": [str(path)], "right_inputs": [str(path)],
+            "left_options": {"sheets": "all"}, "right_options": {"sheets": "all"},
+        })
+        panel = self.window.page_form.preview_panel
+        for source, editors, _button in panel.editors:
+            panel.preview(source, editors)
+            self.await_preview(panel)
+            self.assertEqual([item["input"]["sheet"] for item in panel.batch_items], ["First", "Second"])
+            self.assertEqual(panel.table.item(0, 0).text(), "001")
+            panel.item_selector.setCurrentIndex(1)
+            self.assertEqual(panel.table.item(0, 0).text(), "002")
+
     def test_advanced_options_editor_and_preview_stay_synchronized(self):
         p=self.root / "a.csv"
         p.write_text("id;value\n001;A\n",encoding="utf-8")

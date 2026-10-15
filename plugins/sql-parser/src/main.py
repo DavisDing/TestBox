@@ -109,7 +109,25 @@ def extract_tables(sql: str) -> tuple[list[tuple[str, str, str]], list[tuple[str
     result = []
     unparsed_tables = []
     quote_pairs = {"'": "'", '"': '"', "`": "`", "[": "]"}
-    matches = list(CREATE_TABLE_HEADER.finditer(sql))
+    # Search the original text (quoted table names must remain intact), but
+    # accept headers only outside literals and quoted identifiers.
+    matches = []
+    position = 0
+    quote = None
+    for match in CREATE_TABLE_HEADER.finditer(sql):
+        while position < match.start():
+            character = sql[position]
+            if quote:
+                if character == quote:
+                    if position + 1 < len(sql) and sql[position + 1] == quote:
+                        position += 2
+                        continue
+                    quote = None
+            elif character in quote_pairs:
+                quote = quote_pairs[character]
+            position += 1
+        if quote is None:
+            matches.append(match)
     for idx, match in enumerate(matches):
         table_name = clean_qualified_identifier(match.group("table"))
         start_index = match.end()

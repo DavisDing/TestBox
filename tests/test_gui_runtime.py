@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+from contextlib import closing
+import importlib.util
 import json
 import math
 import os
@@ -10,7 +12,8 @@ import shutil
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 # Select the headless platform before importing Qt or creating QApplication.
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -83,6 +86,141 @@ class GuiRuntimeTests(unittest.TestCase):
     def _assert_no_messages(self):
         for message in self.messages.values():
             message.assert_not_called()
+
+    def test_imported_fields_preserve_unedited_metadata_and_generated_ddl(self):
+        import sqlite3
+        self.window.navigate_to_command("data.mock")
+        form = self.window.page_form.form_widget
+        fields = [{"name": "id", "type": "INTEGER", "generator": "integer_random",
+                   "options": {}, "nullable": False, "default": "99",
+                   "foreign_table": "parent", "foreign_field": "id"},
+                  {"name": "disabled", "type": "INTEGER", "generator": "constant",
+                   "options": {"value": 3}, "enabled": False}]
+        original = copy.deepcopy(fields)
+        form.mode_combo.setCurrentIndex(2)
+        form._set_imported_tables([{"name": "sample", "fields": fields}])
+        params = form.get_values()
+        for key in ("nullable", "default", "foreign_table", "foreign_field"):
+            self.assertEqual(params["fields"][0][key], original[0][key])
+        self.assertFalse(params["fields"][1]["enabled"])
+        params["fields"][1]["options"]["value"] = 9
+        self.assertEqual(fields, original)
+        params.update(count=1, format="sql", sql_dialect="sqlite", sql_create_table=True)
+        task, result = self.window.runtime.run("data.mock", params)
+        self.assertEqual(result.status, "success", result.message)
+        script = self.window.runtime.get_task_output_path(task, result.files[0]).read_text(encoding="utf-8")
+        with closing(sqlite3.connect(":memory:")) as database:
+            database.executescript(script)
+            columns = database.execute("PRAGMA table_info(sample)").fetchall()
+        self.assertEqual(len(columns), 1)
+        self.assertEqual(columns[0][1:5], ("id", "INTEGER", 1, "'99'"))
+
+    def test_field_metadata_merge_allows_clearing_editable_values(self):
+        from testbox.gui import DataMockFieldRow
+        source = {"name": "id", "generator": "constant", "options": {"value": "old"},
+                  "comment": "old", "nullable": False, "default": "99"}
+        row = DataMockFieldRow(source)
+        self.addCleanup(row.deleteLater)
+        row.comment_edit.clear()
+        row.options_edit.clear()
+        row.generator_combo.setCurrentIndex(0)
+        value = row.get_value()
+        self.assertNotIn("comment", value)
+        self.assertNotIn("generator", value)
+        self.assertEqual(value["options"], {})
+        self.assertFalse(value["nullable"])
+        self.assertEqual(source["comment"], "old")
+
+    def test_default_root_import_preview_uses_installed_bundle_and_user_storage(self):
+        from testbox.core.runtime import Runtime
+        package = self.root / "site-packages" / "testbox"
+        (package / "core").mkdir(parents=True)
+        shutil.copytree(self.root / "plugins", package / "_bundled_plugins")
+        source = self.root / "schema.sql"
+        source.write_text("CREATE TABLE sample (id INTEGER NOT NULL DEFAULT 99);", encoding="utf-8")
+        data = self.root / "user-data"
+        with patch("testbox.core.runtime.__file__", str(package / "core" / "runtime.py")), \
+                patch.object(Runtime, "_user_data_dir", return_value=data):
+            runtime = Runtime()
+            try:
+                form = DataMockForm(runtime.get_command_schema("data.mock"), runtime=runtime)
+                self.addCleanup(form.deleteLater)
+                form.source_picker.set_path(str(source))
+                with patch.object(QtCore.QThreadPool, "start") as start:
+                    form._preview_source()
+                worker = start.call_args.args[0]
+                self.assertIsNone(worker.root)
+                worker.run()
+                self.assertEqual(form.imported_tables[0]["name"], "sample")
+                self.assertEqual(len(runtime.list_tasks()), 1)
+                self.assertTrue((data / "workspace").is_dir())
+                self.assertFalse((package / "workspace").exists())
+                self.assertFalse((package / "plugins").exists())
+                self._assert_no_messages()
+            finally:
+                runtime.close()
+
+    def test_generic_array_history_roundtrip_preserves_objects_and_commas(self):
+        schema = self.window.runtime.get_command_schema("data.check")
+        form = DynamicSchemaForm(schema, "data.check")
+        self.addCleanup(form.deleteLater)
+        rules = [{"type": "required", "fields": ["id", "a,b"]}]
+        form.set_values({"rules": rules})
+        self.assertEqual(form.get_values()["rules"], rules)
+        generic = DynamicSchemaForm({"type": "object", "properties": {
+            "items": {"type": "array"},
+        }})
+        self.addCleanup(generic.deleteLater)
+        for value in ([], ["a,b", "中文"], [{"nested": ["x,y", {"value": 1}]}]):
+            generic.set_values({"items": value})
+            self.assertEqual(generic.get_values()["items"], value)
+
+    def test_legacy_rules_history_reruns_as_fields_without_losing_values(self):
+        params = {"count": 2, "format": "json", "seed": 7, "rules": [{
+            "name": "only", "generator": "constant", "options": {"value": "EXPECTED"},
+        }]}
+        first, result = self.window.runtime.run("data.mock", params)
+        self.assertEqual(result.status, "success", result.message)
+        history = self.window.runtime.get_task(first)["params"]
+        self.window.navigate_to_command("data.mock", history)
+        restored = self.window.page_form.form_widget.get_values()
+        self.assertNotIn("rules", restored)
+        second, rerun = self.window.runtime.run("data.mock", restored)
+        self.assertEqual(rerun.status, "success", rerun.message)
+        self.assertEqual(self.window.runtime.get_task_output_path(first, result.files[0]).read_bytes(),
+                         self.window.runtime.get_task_output_path(second, rerun.files[0]).read_bytes())
+
+    def test_evidence_optional_rows_do_not_hide_the_case_card(self):
+        spec = importlib.util.spec_from_file_location(
+            "audit_interactive", ROOT / "plugins" / "evidence-tool" / "src" / "interactive.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        items = [SimpleNamespace(case_name="One", checkpoint="check", step_name="",
+                                 step_description="", expected_result=""),
+                 SimpleNamespace(case_name="Two", checkpoint="other", step_name="step",
+                                 step_description="description", expected_result="expected")]
+
+        def inspect(session):
+            try:
+                for index in (0, 1, 0):
+                    session.index = index
+                    session.refresh()
+                    for key in ("case", "checkpoint"):
+                        label, value = session.field_rows[key]
+                        self.assertFalse(label.isHidden())
+                        self.assertFalse(value.isHidden())
+                        self.assertFalse(value.parentWidget().isHidden())
+                    for key in ("step", "desc", "expected"):
+                        label, value = session.field_rows[key]
+                        self.assertEqual(label.isHidden(), index == 0)
+                        self.assertEqual(value.isHidden(), index == 0)
+                return QtWidgets.QDialog.DialogCode.Rejected
+            finally:
+                session.reject()
+                session.deleteLater()
+
+        with patch.object(QtWidgets.QDialog, "exec", inspect):
+            module.run_session(items, self.root / "captures", Mock())
 
     def test_schema_file_filters_override_defaults_and_array_item_hints(self):
         schema = {"type": "object", "properties": {

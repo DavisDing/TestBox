@@ -204,7 +204,7 @@ class ParsingPreviewPanel(QtWidgets.QGroupBox):
             plural_key = "inputs" if source.get("input") == "input" else source.get("input", "") + "_inputs"
             plural = source.get("inputs") or plural_key
             if plural and values.get(plural):
-                params[plural] = values[plural]
+                params["inputs"] = values[plural]
             if values.get(source.get("text", "")):
                 params["text"] = values[source["text"]]
             if source.get("normalize"):

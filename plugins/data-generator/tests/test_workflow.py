@@ -5,6 +5,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -16,6 +17,32 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FieldListWorkflowTests(unittest.TestCase):
+    def test_sparse_excel_coordinates_preserve_shared_strings_and_wide_columns(self):
+        namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "sparse.xlsx"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("xl/sharedStrings.xml", f'<sst xmlns="{namespace}"><si><t>shared</t></si></sst>')
+                archive.writestr("xl/worksheets/sheet1.xml", f'''<worksheet xmlns="{namespace}"><sheetData>
+                    <row r="1"><c r="B1" t="s"><v>0</v></c><c r="AA1" t="inlineStr"><is><t>tail</t></is></c></row>
+                    <row r="2"><c r="A2" t="b"><v>1</v></c><c r="C2"><v>42</v></c></row>
+                </sheetData></worksheet>''')
+            rows = MODULE._read_excel_rows(path)
+        self.assertEqual(rows[0], ["", "shared"] + [""] * 24 + ["tail"])
+        self.assertEqual(rows[1], ["1", "", "42"])
+
+    def test_excel_column_coordinates_are_bounded(self):
+        for reference in ("XFE1", "ZZZ1", "AAAA1", "A0", "invalid"):
+            with self.subTest(reference=reference), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "invalid.xlsx"
+                with zipfile.ZipFile(path, "w") as archive:
+                    archive.writestr("xl/worksheets/sheet1.xml", f'''<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                        <row r="1"><c r="{reference}"><v>1</v></c></row>
+                    </sheetData></worksheet>''')
+                with self.assertRaises(MODULE.PluginError) as error:
+                    MODULE._read_excel_rows(path)
+                self.assertEqual(error.exception.code, "INPUT_INVALID")
+
     def test_consumes_sql_parse_json_field_list_without_plugin_import(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "orders.json"

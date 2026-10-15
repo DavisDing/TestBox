@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -704,6 +705,7 @@ class DataMockFieldRow(QtWidgets.QWidget):
     def __init__(self, value: dict | None = None, parent=None):
         super().__init__(parent)
         value = value or {}
+        self._original_value = copy.deepcopy(value)
         self.setObjectName("dataMockFieldRow")
         layout = QtWidgets.QGridLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -735,7 +737,10 @@ class DataMockFieldRow(QtWidgets.QWidget):
             except json.JSONDecodeError as error: raise ValueError(f"字段 {self.name_edit.text().strip() or '未命名'} 的生成参数必须是 JSON 对象") from error
             if not isinstance(options, dict): raise ValueError(f"字段 {self.name_edit.text().strip() or '未命名'} 的生成参数必须是 JSON 对象")
         else: options = {}
-        value = {"name": self.name_edit.text().strip(), "type": self.type_edit.currentText().strip() or "VARCHAR", "options": options, "unique": self.unique_check.isChecked(), "primary_key": self.primary_check.isChecked(), "auto_increment": self.auto_increment_check.isChecked(), "nullable_rate": self.nullable_spin.value()}
+        value = copy.deepcopy(self._original_value)
+        value.update({"name": self.name_edit.text().strip(), "type": self.type_edit.currentText().strip() or "VARCHAR", "options": options, "unique": self.unique_check.isChecked(), "primary_key": self.primary_check.isChecked(), "auto_increment": self.auto_increment_check.isChecked(), "nullable_rate": self.nullable_spin.value()})
+        value.pop("comment", None)
+        value.pop("generator", None)
         if self.comment_edit.text().strip(): value["comment"] = self.comment_edit.text().strip()
         if self.generator_combo.currentData(): value["generator"] = self.generator_combo.currentData()
         return value
@@ -1053,8 +1058,6 @@ class DataMockForm(QtWidgets.QWidget):
         self.preview_status.setText("正在解析表结构…")
         params = {"count": 1, "format": "json", "source_file": path, "source_format": self.source_format_combo.currentData(), "preview": True}
         worker_root = self.runtime_root
-        if worker_root is None and not getattr(sys, "frozen", False):
-            worker_root = self.runtime.root
         worker = RuntimeWorker(worker_root, "data.mock", params)
         worker.signals.finished.connect(self._on_preview_finished)
         worker.signals.failed.connect(self._on_preview_failed)
@@ -1152,6 +1155,8 @@ class DataMockForm(QtWidgets.QWidget):
         if "table" in values: self.table_edit.setText(str(values["table"]))
         if values.get("fields") is not None:
             self.mode_combo.setCurrentIndex(0); self.fields_editor.set_values(values.get("fields") or [])
+        elif values.get("rules") is not None:
+            self.mode_combo.setCurrentIndex(0); self.fields_editor.set_values(values.get("rules") or [])
         elif values.get("template"):
             self.mode_combo.setCurrentIndex(1); self.template_combo.setCurrentIndex(max(0, self.template_combo.findData(values["template"])))
         elif values.get("source_file"):
@@ -1561,7 +1566,7 @@ class DynamicSchemaForm(QtWidgets.QWidget):
                 widget.set_paths(val)
             elif ftype == "array-text":
                 if isinstance(val, (list, tuple)):
-                    widget.setText(", ".join(str(x) for x in val))
+                    widget.setText(json.dumps(val, ensure_ascii=False))
                 else:
                     widget.setText(str(val))
             elif ftype == "object-text":

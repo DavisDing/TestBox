@@ -348,7 +348,11 @@ def run_session(items, output_dir: Path, logger, on_saved: Callable[[object, Pat
             if self.index >= len(items): self.accept(); return
             item = items[self.index]; self.current_saved = False; self.next.setEnabled(False); total = len(items); self.progress.setRange(0, total); self.progress.setValue(self.index); self.progress_label.setText(f"{self.index + 1}/{total}")
             values = {"case": item.case_name, "checkpoint": item.checkpoint, "step": item.step_name, "desc": item.step_description, "expected": item.expected_result}
-            for key, (_label, widget) in self.field_rows.items(): widget.setText(values.get(key) or "-"); widget.parentWidget().setVisible(key in {"case", "checkpoint"} or bool(values.get(key)))
+            for key, (label, widget) in self.field_rows.items():
+                widget.setText(values.get(key) or "-")
+                visible = key in {"case", "checkpoint"} or bool(values.get(key))
+                label.setVisible(visible)
+                widget.setVisible(visible)
         def keyPressEvent(self, event):
             if event.key() == QtCore.Qt.Key.Key_F8: self.capture_item(); return
             super().keyPressEvent(event)

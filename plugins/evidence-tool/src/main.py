@@ -179,6 +179,11 @@ class WorkbookCases:
         current_checkpoint = ""
         executed = {normalize(value) for value in EXECUTED}
         for row in range(self.header_row + 1, self.sheet.max_row + 1):
+            # A separator/format-only row is not a step. Check physical cells
+            # before inheriting case/checkpoint values from preceding rows.
+            step = tuple(self.text(row, role) for role in STEP_ROLES)
+            if not any((self.text(row, "测试名称"), self.text(row, "验证点"), *step)):
+                continue
             raw_case = self.text(row, "测试名称", resolve_merged=True)
             raw_checkpoint = self.text(row, "验证点", resolve_merged=True)
             if raw_case and raw_case != current_case:
@@ -190,9 +195,6 @@ class WorkbookCases:
                 current_case = raw_case
             if raw_checkpoint:
                 current_checkpoint = raw_checkpoint
-            step = tuple(self.text(row, role) for role in STEP_ROLES)
-            if not any((current_case, current_checkpoint, *step)):
-                continue
             if normalize(self.text(row, "测试结果")) in executed:
                 continue
             items.append(TestItem(row, current_case or f"未命名用例_{row}", current_checkpoint or "未填写验证点", *step))

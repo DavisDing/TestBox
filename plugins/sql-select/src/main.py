@@ -98,15 +98,16 @@ def value(row: dict[str, object], key: str) -> str:
     return str(row.get(key, "") or "").strip()
 
 
-def quote_identifier(identifier: str, dialect: str) -> str:
+def quote_identifier(identifier: str, dialect: str, *, qualified: bool = False) -> str:
     if not identifier or any(ord(character) < 32 for character in identifier):
         raise PluginError("INPUT_INVALID", f"字段清单包含无法安全引用的标识符: {identifier}")
     if dialect == "auto":
-        if not re.fullmatch(r"[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*", identifier):
+        pattern = r"[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*" if qualified else r"[A-Za-z_][\w$]*"
+        if not re.fullmatch(pattern, identifier):
             raise PluginError("INPUT_INVALID", f"auto 方言无法安全引用标识符: {identifier}")
         return identifier
     left, right = DIALECT_QUOTES[dialect]
-    parts = identifier.split(".")
+    parts = identifier.split(".") if qualified else [identifier]
     if any(not part or left in part or right in part for part in parts):
         raise PluginError("INPUT_INVALID", f"字段清单包含无法安全引用的标识符: {identifier}")
     escaped = [part.replace(right, right + right) for part in parts]
@@ -129,7 +130,7 @@ def render_select(rows: list[dict[str, object]], dialect: str, include_comments:
             if include_comments and comment:
                 expression += f" /* {comment.replace('*/', '* /')} */"
             select_fields.append(f"    {expression}")
-        statements.append("SELECT\n" + ",\n".join(select_fields) + f"\nFROM {quote_identifier(table, dialect)};")
+        statements.append("SELECT\n" + ",\n".join(select_fields) + f"\nFROM {quote_identifier(table, dialect, qualified=True)};")
     return "\n\n".join(statements) + "\n", len(grouped)
 
 

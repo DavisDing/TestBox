@@ -1401,3 +1401,14 @@ WHERE <批次列> = <本脚本批次常量>
 修复只涉及上述测试与本节设计记录；不调整主题、文件选择器或插件业务，不跳过失败测试，不修改自动版本策略。先通过扩展后的回归复现相同 NameError，再修复并运行专项与全量验证。远端修复验收仍需提交推送后对新提交运行 Actions；本地 macOS 结果不能替代 Windows 实机测试或把旧运行改称通过。
 
 本地验证结果：兼容性专项 3 项、文件选择专项 6 项通过；完整桌面依赖环境全量 650 项通过、无跳过。另在保留本机其他依赖的进程内显式阻断 PySide6 导入，全量 650 项完成、仅 38 项 GUI 运行测试按既有策略跳过，无导入错误；这不是实际 Ubuntu runner。`git diff --check` 通过。尚未提交或推送修复；#52 的失败状态未改变，原生 Windows 修复后结果仍待新运行核实。
+
+## 26.5 审计缺陷修复（2026-10-15）
+
+状态：`CURRENT`。本轮用户明确授权修复全库审计确认的 12 项缺陷；修改保持既有 UI 布局和 Runtime/Host 边界，不把本地验证扩大为目标平台验收。
+
+- SQL Parser 只在字符串和引用标识符之外识别 `CREATE TABLE`；SQL Select 对字段整体引用、对 `schema.table` 仅在 FROM 对象路径拆分。Data Generator 的 Excel 导入按 OOXML 单元格坐标补齐空列，联合主键输出单条表级约束，地址筛选先构造完整匹配树。
+- Data Mock GUI 的字段行保留未展示元数据并允许用户清空可编辑值；历史 `rules` 回填到字段编辑器；预览 worker 保持默认 `Runtime(root=None)` 的安装态发现语义。通用数组回填使用 JSON，左右批量预览统一传递 `inputs`。
+- Evidence Tool 在继承用例/验证点前跳过物理空行，交互面板按行控制可见性，避免可选预期字段隐藏整个信息卡片。
+- 针对性回归位于 `tests/test_audit_regressions.py`、GUI Runtime/Preview 测试和 data-generator workflow 测试；覆盖 SQLite 实际执行、稀疏 Excel、安装态 worker、批量多 Sheet、历史回填、空行截图配对和卡片可见性。
+
+本轮验证：新增/专项回归通过；完整 `.venv/bin/python -m unittest discover -s tests -v` 为 665 项通过，插件 workflow 为 5 项通过；`compileall`、`git diff --check` 通过；重新构建 wheel，并在仓库外临时 venv 以空 cwd 执行安装态 CLI、Qt offscreen GUI、Evidence smoke 通过。上述结果仍不替代原生 Windows 安装/更新/卸载、真人桌面和外部数据库验收，也不代表远端 CI 或 Release 已通过。

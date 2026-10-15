@@ -224,12 +224,38 @@ print(json.dumps({{'status': 'passed'}}))
             summary["evidence"] = check["status"]
         if gui:
             gui_result = code('''import json, time
+from pathlib import Path
+from unittest.mock import patch
 from PySide6 import QtCore, QtWidgets
 from testbox.gui import MainWindow
 app=QtWidgets.QApplication([]); app.setQuitOnLastWindowClosed(False)
 window=MainWindow()
 for command in window.runtime.list_commands(): window.navigate_to_command(command)
 for index in (0,4,5): window.switch_page(index); app.processEvents()
+# Exercise the default-root worker against installed resources for both import
+# formats. A normal task alone does not cover the separate preview worker.
+ddl=Path.cwd() / 'schema.sql'
+parsed_task, parsed=window.runtime.run('sql.parse', {'input':str(ddl), 'format':'xlsx'})
+assert parsed.status=='success', parsed.message
+excel=window.runtime.get_task_output_path(parsed_task, parsed.files[0])
+for path, source_format in ((ddl, 'sql'), (excel, 'excel')):
+    window.navigate_to_command('data.mock')
+    form=window.page_form.form_widget
+    form.source_picker.set_path(str(path))
+    form.source_format_combo.setCurrentIndex(form.source_format_combo.findData(source_format))
+    form.mode_combo.setCurrentIndex(2)
+    with patch.object(QtWidgets.QMessageBox, 'critical') as critical, patch.object(QtWidgets.QMessageBox, 'warning') as warning:
+        form._preview_source()
+        deadline=time.monotonic()+30
+        while form._preview_running and time.monotonic()<deadline:
+            app.processEvents(); time.sleep(0.01)
+        assert not form._preview_running, 'Import preview timed out'
+        critical.assert_not_called(); warning.assert_not_called()
+    assert form.imported_tables[0]['name']=='users'
+    assert [field['name'] for field in form.get_values()['fields']]==['id','name']
+package=Path(__import__('testbox').__file__).parent
+assert not (package / 'workspace').exists(), 'GUI preview wrote to installed package'
+assert not (package / 'plugins').exists(), 'GUI preview used an explicit source root'
 window.execute_task('data.mock', {'count': 2, 'format': 'csv', 'seed': 19, 'template': 'retail_customer'})
 deadline=time.monotonic()+30
 while window.stack.currentIndex()==2 and time.monotonic()<deadline:
