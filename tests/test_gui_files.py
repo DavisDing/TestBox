@@ -46,7 +46,9 @@ class GuiFileDialogTests(unittest.TestCase):
         self.app.processEvents()
         apply_theme(self.app, "dark")
 
-    def dialog(self, mode=QtWidgets.QFileDialog.FileMode.ExistingFile):
+    def dialog(self, mode=None):
+        if mode is None:
+            mode = QtWidgets.QFileDialog.FileMode.ExistingFile
         dialog = FileDialog(caption="选择测试文件", directory=str(self.root), filter="数据文件 (*.csv)")
         self.dialogs.append(dialog)
         dialog.setFileMode(mode)
@@ -75,7 +77,7 @@ class GuiFileDialogTests(unittest.TestCase):
                 dialog.selectFile(str(self.file))
                 dialog.accept()
                 self.assertEqual(accepted.count(), 1)
-                self.assertEqual(dialog.selectedFiles(), [str(self.file)])
+                self.assertEqual([Path(path) for path in dialog.selectedFiles()], [self.file])
 
     def test_bad_directory_does_not_close_or_change_location(self):
         dialog = self.dialog()
