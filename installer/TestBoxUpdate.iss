@@ -1,9 +1,9 @@
 #define AppName "TestBox GUI Incremental Update"
 #ifndef AppVersion
-#define AppVersion "1.0.29"
+#define AppVersion "1.0.30"
 #endif
 #ifndef UpdatePackage
-#define UpdatePackage "TestBox-GUI-update-v1.0.29.zip"
+#define UpdatePackage "TestBox-GUI-update-v1.0.30.zip"
 #endif
 
 [Setup]
