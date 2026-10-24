@@ -64,6 +64,32 @@ class UpdaterRecoveryTests(unittest.TestCase):
                 updater.apply_update(self.install, self.package)
         self.assertEqual(self.snapshot(), self.before)
 
+    def test_backup_sync_uses_writable_handles_before_mutating_install(self):
+        original_open = Path.open
+        original_fsync = updater.os.fsync
+        streams = {}
+        synced = set()
+
+        def track_open(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            if path.parent.name.startswith('testbox-update-backup-'):
+                streams[stream.fileno()] = (path.name, stream)
+            return stream
+
+        def sync(fd):
+            if fd in streams and not streams[fd][1].closed:
+                name, stream = streams[fd]
+                self.assertTrue(stream.writable(), name)
+                self.assertEqual(self.snapshot(), self.before)
+                synced.add(name)
+            return original_fsync(fd)
+
+        with patch.object(Path, 'open', autospec=True, side_effect=track_open), \
+             patch.object(updater.os, 'fsync', side_effect=sync):
+            updater.apply_update(self.install, self.package)
+        self.assertEqual(synced, {'a.txt', 'b.txt', 'remove.txt', updater.MANIFEST_NAME})
+        self.assertEqual((self.install / 'a.txt').read_text(encoding='utf-8'), 'new-a')
+
     def test_apply_failure_restores_files_manifest_and_new_directories(self):
         original = Path.replace
         def fail(path, target):

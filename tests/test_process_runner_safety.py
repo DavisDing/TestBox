@@ -35,6 +35,11 @@ class ProcessRunnerSafetyTests(unittest.TestCase):
 
     def _launch(self, script, *, frozen_gui=False, request=None, on_started=None):
         def launch(command, **kwargs):
+            # subprocess.run also uses this patched Popen. Preserve helper
+            # commands such as Windows taskkill rather than launching another
+            # copy of the Host fixture in their place.
+            if command[1:3] != ["-m", "testbox.core.host"] and "--plugin-host" not in command:
+                return self.real_popen(command, **kwargs)
             self.commands.append(command)
             # Run actual OS child processes while substituting the executable
             # entry point: frozen GUI packaging is not available on this host.
@@ -85,14 +90,33 @@ class ProcessRunnerSafetyTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         self._assert_reaped()
 
-    @unittest.skipIf(os.name == "nt", "POSIX process-group cleanup; Windows needs native tree acceptance")
+    def test_auxiliary_subprocess_keeps_its_command(self):
+        def callback(pid):
+            helper = subprocess.run([self.python, "-c", "raise SystemExit(7)"],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=2, check=False)
+            self.assertEqual(helper.returncode, 7)
+
+        result = self._launch(self._success_script(), on_started=callback)
+        self.assertEqual(result.payload["status"], "success")
+        self._assert_reaped()
+
     def test_timeout_stops_grandchild_before_it_can_write(self):
         marker = self.root / "grandchild-finished"
-        child = f"import time; from pathlib import Path; time.sleep(1.2); Path({str(marker)!r}).touch()"
+        ready = self.root / "grandchild-ready"
+        child = (f"import time; from pathlib import Path; Path({str(ready)!r}).touch(); "
+                 f"time.sleep(1.2); Path({str(marker)!r}).touch()")
         script = (f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',{child!r}]); "
                   "time.sleep(30)")
+
+        def wait_for_grandchild(pid):
+            deadline = time.monotonic() + 3
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(ready.exists(), "Grandchild must start before testing tree termination")
+
         self.runner.timeout_seconds = 0.5
-        result = self._launch(script)
+        result = self._launch(script, on_started=wait_for_grandchild)
         self.assertEqual(result.payload["data"]["error_code"], ErrorCode.TIMEOUT)
         time.sleep(1.3)
         self.assertFalse(marker.exists())

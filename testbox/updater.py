@@ -555,7 +555,9 @@ def _apply_update(
                 }
                 for saved in backup.rglob("*"):
                     if saved.is_file():
-                        with saved.open("rb") as stream:
+                        # Windows _commit/FlushFileBuffers requires a writable
+                        # handle; r+b preserves the completed backup contents.
+                        with saved.open("r+b") as stream:
                             os.fsync(stream.fileno())
                 _atomic_json(journal_path, journal)
 
