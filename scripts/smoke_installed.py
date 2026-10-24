@@ -182,7 +182,7 @@ finally: r.close()
         # resources remain available afterwards and are never rewritten.
         package = cwd / "data-generator.zip"
         cli("plugin", "package", str(bundled / "data-generator"), "--output", str(package))
-        cli("plugin", "install", str(package))
+        cli("plugin", "install", str(package), "--trust-code")
         if not (user_plugins / "data-generator" / "manifest.yaml").is_file():
             raise AssertionError("Plugin override did not install into user data")
         cli("plugin", "uninstall", "data-generator")
@@ -268,7 +268,7 @@ capabilities:
   filesystem: output-only
   resources: []
 """, encoding='utf-8')
-window.runtime.install_plugin(fixture)
+window.runtime.install_plugin(fixture, trust_code=True)
 catalog.reload_tools()
 assert catalog.category_labels['installed-custom']=='安装态自定义分组'
 assert next(row[-1].entry for row in catalog.all_cards if row[0]=='custom.inspect')['source']=='user'

@@ -43,17 +43,19 @@ def _xlsx_cell_value(cell: ElementTree.Element, shared_strings: list[str]) -> st
 
 
 def read_xlsx(path: Path) -> list[dict[str, str]]:
+    from testbox.file_safety import check_excel_archive, read_excel_xml
     namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     try:
         with zipfile.ZipFile(path) as archive:
+            check_excel_archive(archive)
             shared: list[str] = []
             if "xl/sharedStrings.xml" in archive.namelist():
-                root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+                root = read_excel_xml(archive, "xl/sharedStrings.xml")
                 shared = ["".join(node.text or "" for node in item.findall(f".//{namespace}t")) for item in root.findall(f"{namespace}si")]
             sheet_name = next((name for name in archive.namelist() if name.startswith("xl/worksheets/") and name.endswith(".xml")), None)
             if not sheet_name:
                 raise ValueError("XLSX 缺少工作表")
-            root = ElementTree.fromstring(archive.read(sheet_name))
+            root = read_excel_xml(archive, sheet_name)
             rows = []
             for row in root.findall(f".//{namespace}row"):
                 cells = {}

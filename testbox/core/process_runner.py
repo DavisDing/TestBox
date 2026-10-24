@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -15,6 +16,25 @@ from pathlib import Path
 from typing import Any, Callable
 
 from testbox.core.errors import ErrorCode
+
+_POPEN_TYPE = subprocess.Popen
+
+
+def host_environment() -> dict[str, str]:
+    """Only inherit OS/desktop bootstrap settings, never arbitrary credentials.
+
+    Plugin-specific TESTBOX_* settings already travel in request.config. This
+    reduces accidental disclosure; trusted native code can still read the disk.
+    """
+    allowed = {
+        "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR",
+        "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+        "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "QT_QPA_PLATFORM",
+        # PyInstaller's own child-process bootstrap (no general _PYI_* pass-through).
+        "_PYI_ARCHIVE_FILE", "_PYI_APPLICATION_HOME_DIR", "_PYI_PARENT_PROCESS_LEVEL",
+        "_PYI_SPLASH_IPC",
+    }
+    return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
 
 @dataclass(frozen=True)
@@ -56,6 +76,24 @@ class ProcessRunner:
     def __init__(self, root: Path, *, timeout_seconds: float):
         self.root = root
         self.timeout_seconds = timeout_seconds
+        self.cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """Request termination from another thread; no SQLite access here."""
+        self.cancel_event.set()
+
+    @staticmethod
+    def _kill_group(process: Any) -> None:
+        if not getattr(process, "_testbox_new_session", False):
+            return
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        else:
+            # Cleanup runs from both the exchange and outer finally. Avoid
+            # signalling an already reaped group's zombie-only remainder.
+            process._testbox_new_session = False
 
     @staticmethod
     def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
@@ -66,13 +104,29 @@ class ProcessRunner:
     def _kill_and_wait(process: Any) -> None:
         # Reaping is mandatory even if the Host exited between detection/kill.
         kill_error: OSError | None = None
+        if os.name == "nt" and isinstance(process, _POPEN_TYPE):
+            # Invoke before killing the Host, while Windows can still find its
+            # tree. Job containment is specified in SECURITY_HARDENING.md.
+            try:
+                subprocess.run([str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"),
+                                "/PID", str(process.pid), "/T", "/F"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=5, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # Still attempt direct termination/reaping below.
         try:
             process.kill()
         except OSError as error:
             kill_error = error
+        # Every POSIX Host starts a new session. Kill its group even if the
+        # Host just exited; descendants may still own transport pipe handles.
+        try:
+            ProcessRunner._kill_group(process)
+        except OSError as error:
+            kill_error = kill_error or error
         try:
             # A failed kill must not turn error cleanup into an infinite wait.
-            process.wait(timeout=1.0 if kill_error is not None else None)
+            process.wait(timeout=1.0)
         except BaseException as wait_error:
             if kill_error is not None:
                 raise kill_error from wait_error
@@ -89,6 +143,8 @@ class ProcessRunner:
             running = poll() is None if poll is not None else process.returncode is None
             if running:
                 cls._kill_and_wait(process)
+            else:
+                cls._kill_group(process)
         except BaseException as error:
             cleanup_errors.append(error)
         # A failed kill/wait must not skip pipe closure or replace the error
@@ -167,6 +223,9 @@ class ProcessRunner:
             for thread in threads:
                 thread.start()
             while True:
+                if self.cancel_event.is_set():
+                    reason = "cancelled"
+                    break
                 if stdout.exceeded.is_set():
                     reason = "stdout"
                     break
@@ -197,6 +256,7 @@ class ProcessRunner:
                 thread.join(timeout=max(0.0, drain_deadline - time.monotonic()))
             if reason is None and any(thread.is_alive() for thread in threads):
                 reason = "timeout"
+                self._kill_group(process)
             if reason is None and stdout.exceeded.is_set():
                 reason = "stdout"
             if reason is None and errors:
@@ -206,16 +266,15 @@ class ProcessRunner:
             try:
                 self._cleanup_process(process)
             finally:
-                # Closing a pipe does not cancel an os.read already blocked
-                # on an inherited fd held by a descendant. These daemon
-                # readers can outlive run(); this is not process-tree cleanup.
+                # A plugin that deliberately creates a new OS session can
+                # escape group cleanup. This is not security containment.
                 for thread in threads:
                     if thread.ident is not None:
                         thread.join(timeout=0.1)
         return bytes(stdout.buffer), bytes(stderr.buffer), reason
 
     def run(self, request: dict[str, Any], *, task_id: str, on_started: Callable[[int], None] | None = None) -> HostExecution:
-        environment = os.environ.copy()
+        environment = host_environment()
         temp_dir: Path | None = None
         response_path: Path | None = None
         process = None
@@ -234,11 +293,14 @@ class ProcessRunner:
                     command = [sys.executable, "--plugin-host"]
             else:
                 package_root = str(Path(__file__).resolve().parents[2])
-                environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
+                environment["PYTHONPATH"] = package_root
                 command = [sys.executable, "-m", "testbox.core.host"]
             stdout_target = subprocess.DEVNULL if response_path is not None else subprocess.PIPE
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=stdout_target,
-                                       stderr=subprocess.PIPE, cwd=self.root, env=environment)
+                                       stderr=subprocess.PIPE, cwd=self.root, env=environment,
+                                       start_new_session=os.name != "nt")
+            if os.name != "nt" and isinstance(process, _POPEN_TYPE):
+                process._testbox_new_session = True
             # Callback errors propagate to Runtime only after the Host is reaped
             # and all temporary resources have been released in finally.
             if on_started is not None:
@@ -255,7 +317,10 @@ class ProcessRunner:
                         reason = "response_file"
                 except (OSError, ValueError):
                     stdout = b""
-            if reason == "timeout":
+            if reason == "cancelled":
+                payload = {"status": "cancelled", "message": "用户取消了任务",
+                           "data": {"error_code": "CANCELLED"}, "files": [], "warnings": []}
+            elif reason == "timeout":
                 payload = self._failure(ErrorCode.TIMEOUT, f"插件执行超过 {self.timeout_seconds:g} 秒限制",
                                         timeout_seconds=self.timeout_seconds)
             elif reason is not None:
@@ -279,5 +344,6 @@ class ProcessRunner:
                 if process is not None:
                     self._cleanup_process(process)
             finally:
+                self.cancel_event = threading.Event()
                 if temp_dir is not None:
                     shutil.rmtree(temp_dir, ignore_errors=True)

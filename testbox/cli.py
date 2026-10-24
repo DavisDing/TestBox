@@ -97,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     install = plugin_sub.add_parser("install")
     install.add_argument("path")
     install.add_argument("--force", action="store_true")
+    install.add_argument("--trust-code", action="store_true", help="确认信任插件本地代码及当前用户权限；未启用安全沙箱")
     _json_flag(install)
     uninstall = plugin_sub.add_parser("uninstall")
     uninstall.add_argument("name")
@@ -127,6 +128,10 @@ def build_parser() -> argparse.ArgumentParser:
     result = task_sub.add_parser("result")
     result.add_argument("task_id")
     _json_flag(result)
+    report = task_sub.add_parser("report")
+    report.add_argument("task_id")
+    report.add_argument("--output", help="将 Runtime 报告保存到指定路径")
+    _json_flag(report)
     export = task_sub.add_parser("export")
     export.add_argument("task_id")
     export.add_argument("relative_path", nargs="?", default=None, help="相对路径（如导出全部为zip压缩包可省略并搭配 --archive）")
@@ -243,7 +248,11 @@ def main() -> None:
                     output = runtime.package_plugin(Path(arguments.path), Path(arguments.output))
                     emit_value({"operation": "package", "path": str(output)}, as_json=as_json, text=f"已打包: {output}")
                 elif arguments.plugin_action == "install":
-                    manifest = runtime.install_plugin(Path(arguments.path), force=arguments.force)
+                    preview = runtime.preview_plugin_install(Path(arguments.path))
+                    if not arguments.trust_code:
+                        raise PluginPackageError(preview["security_warning"] + " 请使用 --trust-code 明确确认。"
+                                                 + " 声明能力: " + json.dumps(preview["capabilities"], ensure_ascii=False))
+                    manifest = runtime.install_plugin(Path(arguments.path), force=arguments.force, trust_code=True)
                     emit_value({"operation": "install", "name": manifest.name, "version": manifest.version}, as_json=as_json, text=f"已安装: {manifest.name} {manifest.version}")
                 elif arguments.plugin_action == "uninstall":
                     runtime.uninstall_plugin(arguments.name)
@@ -276,6 +285,20 @@ def main() -> None:
                 if result is None:
                     raise CliFailure(ErrorCode.RESULT_NOT_FOUND, f"任务结果不存在: {arguments.task_id}", int(ExitCode.FAILED))
                 emit_value(result, as_json=as_json)
+                return
+            if arguments.task_action == "report":
+                report = runtime.get_task_report(arguments.task_id)
+                if report is None:
+                    raise CliFailure(ErrorCode.RESULT_NOT_FOUND, "任务报告不存在", int(ExitCode.FAILED))
+                if arguments.output:
+                    try:
+                        destination = runtime.commit_task_report(arguments.task_id, Path(arguments.output))
+                    except (ValueError, LookupError, OSError) as error:
+                        raise CliFailure(ErrorCode.INVALID_PARAMS, str(error), int(ExitCode.USAGE)) from error
+                    emit_value({"task_id": arguments.task_id, "destination": str(destination)}, as_json=as_json,
+                               text=f"已导出报告: {destination}")
+                else:
+                    emit_value({"task_id": arguments.task_id, "report": report}, as_json=as_json, text=report)
                 return
             if arguments.task_action == "export":
                 try:

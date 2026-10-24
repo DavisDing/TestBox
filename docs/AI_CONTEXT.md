@@ -62,7 +62,7 @@ AI 后续开发的主要知识源是：
 - 插件之间不得直接依赖；下游插件通过任务工作区中的已登记输出文件消费上游产物。
 - 插件只能通过 SDK 的 Context、Result 和 PluginError 使用 Core 能力。
 - 任务工作区是可追溯性的基本边界：输入、输出、日志、manifest、result 和 report 都围绕任务 ID 保存。
-- 当前 Host 协议是一次 JSON 请求/一次 JSON 结果响应。不要在没有需求确认前假设存在实时进度、心跳或取消事件。
+- 当前 Host 协议是一次 JSON 请求/一次 JSON 结果响应，没有实时进度/心跳事件。取消由本窗口 Worker 的 Event 交给 Runtime/ProcessRunner 强制停止；不向其他进程提供任意任务取消协议。
 - Plugin Host 是异常隔离，不是恶意代码安全沙箱；本地插件默认视为可信代码。
 
 ## 6. Core Runtime 契约
@@ -90,7 +90,7 @@ inspect_plugin(identifier)
 validate_plugin(source)
 preview_plugin_install(source)
 package_plugin(source, destination)
-install_plugin(source, force)
+install_plugin(source, force, trust_code)
 uninstall_plugin(name)
 get_runtime_diagnostics()
 validate_params(command, params)
@@ -105,6 +105,8 @@ clean_workspace(before)
 clean_history(before)
 commit_output(task_id, relative_path, destination)
 commit_outputs_archive(task_id, destination)
+commit_task_report(task_id, destination)
+cancel()
 ```
 
 `execute(command, params)` 仅作为旧 GUI 调用的兼容别名；新代码优先使用 `run`。任务状态统一使用 `PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`、`ABANDONED`。
@@ -121,7 +123,7 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 
 任务历史 schema v2 在 v1 上增量增加可空 `owner_pid`，保留已有记录；Runtime 显式记录拥有者 PID。恢复在 Host 未启动时检查 owner，Host 已启动时检查 Host，并用非阻塞任务生命周期锁保护结果收尾窗口。PID 存活检查不识别 PID 复用。工作区清理跳过被锁定任务、PENDING/RUNNING 和未知状态，历史清理只删除明确终态。
 
-业务结果先落盘再同步历史；历史写入失败进行一次有界重试，保留原状态和产物列表，并返回可见警告。持续失败可能暂时留下未同步历史，不应宣称数据库已成功更新。
+业务结果先落盘再同步历史；历史写入失败或终态 UPDATE 未命中进行一次有界重试，保留原状态和产物列表，并返回可见警告。持续失败或并发终态冲突可能留下未同步历史，不应宣称数据库已成功更新。
 
 任务日志展示在有界读取后先将 CRLF/CR 统一为 LF，再按字符数截取尾部；不改写原始日志文件。
 
@@ -131,7 +133,7 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 
 - setuptools 的 `testbox_build.BundledBuildPy` 在构建输出中将官方 `plugins/` 资源装配到 `testbox/_bundled_plugins`；源码插件仍是唯一资源来源，构建不生成源码副本。`MANIFEST.in` 保留 sdist 重建所需的构建钩子和插件资源；wheel 不包含插件测试、缓存或运行工作区。
 - wheel 从安装目录加载官方插件、Schema、配置、固定数据和图标，忽略无关 cwd 的插件目录。任务与用户插件放在 `_user_data_dir()`：Windows 为 `%LOCALAPPDATA%/TestBox`，其余平台为 `${XDG_DATA_HOME:-~/.local/share}/testbox`，不写入 site-packages 的任务目录。
-- 源码/可编辑安装及显式 `Runtime(root)` 的目录语义不变；冻结程序继续从 `_MEIPASS/plugins` 读取官方资源。同名用户插件可覆盖官方插件；卸载用户副本后官方插件重新可用，不允许卸载官方资源。
+- 源码/可编辑安装从项目 `plugins/` 读取官方资源，新增用户覆盖副本安装到 `_user_data_dir()/plugins`，任务工作区仍位于项目根。显式临时 `Runtime(root)` 保留本地目录语义；显式指向实际源码资源根时同样保护官方目录。冻结程序继续从 `_MEIPASS/plugins` 读取官方资源。同名用户插件可覆盖官方插件；卸载用户副本后官方插件重新可用，不允许卸载官方资源。
 - 安装后验证入口为 `scripts/smoke_installed.py --python <目标虚拟环境Python>`；`--gui` 和 `--evidence` 要求相应可选依赖，使用空 cwd、隔离子进程与临时用户数据。offscreen GUI 和合成证据测试不能替代真实系统权限、截图或安装器实机验证。
 
 ## 7. 当前插件
@@ -171,6 +173,8 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - UI Agent 不应在 GUI 中重新实现文件写入、任务状态机或插件业务。
 - GUI 的任务历史筛选、插件可用性与 Schema 问题、Runtime 路径和版本诊断均通过 Runtime 只读接口获取，不直连 SQLite 或自行扫描插件目录。
 - GUI 安装插件前必须通过 `preview_plugin_install(source)` 使用与正式安装一致的包校验逻辑展示预览；预览不能改变用户插件目录，覆盖和卸载仍需明确确认。
+- 插件安装预览展示声明能力、任意本地代码权限和未验签风险；Runtime 安装要求 `trust_code=True`，CLI 对应 `--trust-code`。这不是沙箱授权或签名认证。Host 环境采用启动白名单，插件专属环境配置经 Core 解析后只通过 request.config 显式传递。
+- 插件发现忽略隐藏安装恢复目录，拒绝链接目录/清单与名称不一致目录。隐藏恢复材料保留并展示诊断，不自动删除。任务生命周期锁在目录协调 gate 保护下回收，升级时应先结束旧版本任务，避免混用锁实现。
 
 ## 9.1 Windows 发布与自动版本
 
@@ -178,6 +182,7 @@ Runtime 只将脱敏参数写入任务清单和 SQLite。执行请求仍可携�
 - CLI 包排除 PySide6 和 `testbox.gui`；GUI 包仅显式引入实际使用的 Qt Core/Gui/Widgets/Svg 模块，避免收集不需要的 Qt WebEngine、QML、3D 等组件。两产品共享 `%LOCALAPPDATA%\TestBox` 中的用户数据，但卸载或更新不会管理该目录。
 - 更新 manifest schema 为 2，并含 `component`（`cli` 或 `gui`）；更新器会拒绝跨组件更新。旧 schema 1 的合包更新不能升级分包安装，应运行相应完整安装器迁移。
 - 更新器先校验 Windows 安全路径、文件清单、ZIP 内容/哈希、基线版本与组件身份；网络清单必须与包内清单一致。拒绝链接/junction 目标和覆盖/删除未登记的用户文件。全部备份完成后才修改文件；失败尽力回滚，回滚失败保留恢复材料并暴露路径。
+- 网络更新仅接受无凭据 HTTPS，重定向和最终响应同样校验；尚未实现发布者签名。新更新事务在全部备份完成后写入恢复日志并串行修改，下次更新会恢复被强杀的事务；不猜测修复旧版无日志的半更新。系统沙箱和签名发布方案见 `docs/SECURITY_HARDENING.md`，属于设计而非已启用能力。
 - 完整安装器拒绝与共享用户数据及另一组件安装路径重叠（含短文件名及链接路径保护），卸载只管理本次 Inno 已登记文件，不递归删除整个安装根目录。完整重装覆盖旧卸载日志以丢弃历史递归删除规则，因此不在新包中的旧文件可能保留，不做无清单清理。增量安装器等待更新器退出并检查返回码，将 UTF-8 诊断作为失败原因，不能把更新失败显示成安装成功。Windows 原生编译和实机安装/升级/卸载仍需目标平台验证。
 - `scripts/smoke_windows_installers.py` 是原生安装器验收入口，只允许无现有 TestBox 注册的 GitHub-hosted Windows 临时 runner；要求新的 `RUNNER_TEMP` 子目录。实际编译并执行完整安装器、合成增量安装器及卸载程序，校验 CLI/GUI Host、路径冲突、组件/base/hash 拒绝、锁文件回滚、用户数据/未登记文件保留和任务结果读取。日志与 JSON 摘要由 CI `always()` 上传；合成 delta 不代表相邻正式版本兼容性，配置存在不代表已验收。
 - 每次推送到 `main` 或 `master` 都由 GitHub Actions 创建一个正式版本：以最新 `vX.Y.Z` 标签为基准自动增加补丁号，并同步 `pyproject.toml`、四个安装器版本、标签及 GitHub Release。首次自动发布使用声明版本。

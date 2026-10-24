@@ -159,6 +159,8 @@ def install_plugin(
         if validate is not None:
             validate(manifest)
         target = plugins_dir / manifest.name
+        if target.is_symlink():
+            raise PluginPackageError("插件安装目标不能是符号链接")
         if target.exists() and not force:
             raise PluginPackageError(f"插件已安装: {manifest.name}（使用 --force 覆盖）")
         plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -214,6 +216,13 @@ def install_plugin(
 
 def uninstall_plugin(name: str, plugins_dir: Path) -> None:
     target = plugins_dir / name
+    if (not name or name.startswith(".") or target.parent.resolve() != plugins_dir.resolve()
+            or target.is_symlink()):
+        raise PluginPackageError("非法插件卸载路径")
+    resources = [Path(__file__).resolve().parents[2] / "plugins",
+                 Path(__file__).resolve().parents[1] / "_bundled_plugins"]
+    if any(target.resolve().is_relative_to(path.resolve()) for path in resources):
+        raise PluginPackageError("内置插件资源不能卸载")
     if not target.is_dir(): raise PluginPackageError(f"未安装插件: {name}")
     manifest = Manifest.load(target / "manifest.yaml")
     if manifest.name != name: raise PluginPackageError("插件目录与清单名称不一致，拒绝卸载")

@@ -179,8 +179,8 @@ class GuiPhase3ContractTests(unittest.TestCase):
             "运行页不得展示没有 Runtime/Host 数据支撑的伪百分比",
         )
 
-    def test_gui_does_not_call_unsupported_cancellation_protocol(self):
-        """Phase 3 must not invent cancellation while Host remains request/response."""
+    def test_gui_cancellation_uses_worker_token_without_process_or_database_access(self):
+        """Cancellation is now supported by Runtime/ProcessRunner using a token."""
         forbidden = {
             "cancel_task",
             "cancel_run",
@@ -194,11 +194,9 @@ class GuiPhase3ContractTests(unittest.TestCase):
             called & forbidden,
             f"GUI 不得调用尚未支持的取消协议: {sorted(called & forbidden)}",
         )
-        self.assertNotRegex(
-            self.gui.source,
-            r"\b(?:cancelRequested|cancelTaskRequested|taskCancelRequested)\b",
-            "GUI 不应声明尚无 Runtime/Host 支持的任务取消信号",
-        )
+        worker = self.gui.segment(self.gui.class_node("RuntimeWorker"))
+        self.assertIn("cancel_event=self.cancel_event", worker)
+        self.assertIn("self.cancel_event.set()", worker)
 
     def test_pending_and_running_have_user_visible_detail_states(self):
         """Opening an in-flight task must show meaningful PENDING/RUNNING details."""

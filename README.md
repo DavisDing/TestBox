@@ -87,13 +87,19 @@ python3 -m testbox.cli run sql.parse --set input=./schema.sql --set format=csv
 
 ## 插件包管理
 
-插件包为 ZIP 文件，根目录必须直接包含 `manifest.yaml`。安装会先在临时目录完成校验，成功后才启用；卸载只接受清单名称与目录一致的已安装插件。
+插件包为 ZIP 文件，根目录必须直接包含 `manifest.yaml`。安装会先在临时目录完成校验，成功后才启用；卸载只接受清单名称与目录一致的已安装用户插件。源码与已安装发行包的官方资源均不能卸载。
+
+插件会以当前用户权限执行本地代码；能力声明不是系统安全沙箱，当前也没有发布者验签。仅安装信任的代码，CLI 用 `--trust-code` 明确确认，GUI 会在确认框展示能力与风险。源码运行的用户安装/覆盖副本放在用户数据目录的 `plugins/`，卸载覆盖副本后会恢复官方插件。Host 不继承任意环境变量；插件专属 `TESTBOX_<PLUGIN>_*` 配置仍通过 SDK 的 `context.config` 显式提供。
 
 ```text
 python3 -m testbox.cli plugin package ./plugins/data-generator --output ./dist/data-generator-1.0.0.zip
-python3 -m testbox.cli plugin install ./dist/data-generator-1.0.0.zip
+python3 -m testbox.cli plugin install ./dist/data-generator-1.0.0.zip --trust-code
 python3 -m testbox.cli plugin uninstall data-generator
 ```
+
+执行工作区可以取消当前窗口任务；取消会强制停止 Host 并保存取消状态。POSIX 会清理同组后代，主动脱离组和 Windows 全树隔离仍需系统沙箱。任务报告可在 GUI 报告区导出，CLI 使用 `python3 -m testbox.cli task report <任务ID> --output ./report.md`。
+
+CSV/TXT 导出对可能被表格程序识别为公式的字符串加前置单引号（包括表头），真正的数值保留。需要原始字符串时选择 JSON。详细修复、更新中断恢复边界、系统沙箱和签名发布设计见 [安全加固方案](docs/SECURITY_HARDENING.md)。
 
 新增插件应在自己的 `manifest.yaml` 声明目录信息，例如以下片段（其余必填字段仍需提供）：
 

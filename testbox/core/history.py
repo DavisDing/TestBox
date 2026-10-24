@@ -150,13 +150,18 @@ class TaskHistory:
                 (TaskStatus.RUNNING.value, self._now(), task_id, TaskStatus.PENDING.value),
             )
 
-    def finish(self, task_id: str, *, status: str | TaskStatus, finished_at: str, error_code: str | None = None) -> None:
+    def finish(self, task_id: str, *, status: str | TaskStatus, finished_at: str, error_code: str | None = None) -> bool:
         value = status.value if isinstance(status, TaskStatus) else str(status)
+        if value not in self.TERMINAL_STATUSES:
+            raise ValueError("任务完成状态必须为终态")
         with self.connection:
-            self.connection.execute(
+            cursor = self.connection.execute(
                 "UPDATE task_history SET status = ?, finished_at = ?, error_code = ?, heartbeat_at = ? WHERE id = ? AND status = ?",
                 (value, finished_at, error_code, finished_at, task_id, TaskStatus.RUNNING.value),
             )
+            # A concurrent terminal transition must remain protected, but the
+            # caller must learn that its result was not synchronized.
+            return cursor.rowcount == 1
 
     def set_host_pid(self, task_id: str, host_pid: int) -> None:
         with self.connection:

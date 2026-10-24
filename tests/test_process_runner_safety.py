@@ -85,6 +85,31 @@ class ProcessRunnerSafetyTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         self._assert_reaped()
 
+    @unittest.skipIf(os.name == "nt", "POSIX process-group cleanup; Windows needs native tree acceptance")
+    def test_timeout_stops_grandchild_before_it_can_write(self):
+        marker = self.root / "grandchild-finished"
+        child = f"import time; from pathlib import Path; time.sleep(1.2); Path({str(marker)!r}).touch()"
+        script = (f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',{child!r}]); "
+                  "time.sleep(30)")
+        self.runner.timeout_seconds = 0.5
+        result = self._launch(script)
+        self.assertEqual(result.payload["data"]["error_code"], ErrorCode.TIMEOUT)
+        time.sleep(1.3)
+        self.assertFalse(marker.exists())
+        self._assert_reaped(killed=True)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process-group cleanup; Windows needs native tree acceptance")
+    def test_success_also_cleans_background_descendant(self):
+        marker = self.root / "background-finished"
+        child = f"import time; from pathlib import Path; time.sleep(1.2); Path({str(marker)!r}).touch()"
+        script = (f"import subprocess,sys; subprocess.Popen([sys.executable,'-c',{child!r}], "
+                  "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+                  f"sys.stdin.read(); sys.stdout.write({json.dumps(self.EVENT)!r})")
+        result = self._launch(script)
+        self.assertEqual(result.payload["status"], "success")
+        time.sleep(1.3)
+        self.assertFalse(marker.exists())
+
     def test_overflow_found_by_reader_after_process_exit_is_rejected(self):
         real_read = os.read
         delayed_chunks = []

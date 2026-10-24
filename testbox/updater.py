@@ -14,11 +14,15 @@ import stat
 import tempfile
 import time
 import urllib.request
+import urllib.parse
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from testbox.core.locks import PluginExecutionLock
+
 MANIFEST_NAME = "update-manifest.json"
+JOURNAL_NAME = ".testbox-update-transaction.json"
 UPDATER_NAMES = frozenset({"TestBox-Updater.exe", "TestBox-CLI-Updater.exe", "TestBox-GUI-Updater.exe"})
 MANIFEST_SCHEMA_VERSION = 2
 VALID_COMPONENTS = frozenset({"cli", "gui", "test"})
@@ -48,7 +52,7 @@ def _safe_relative_path(path: str) -> str:
 
 def _managed_relative_path(path: str) -> str:
     relative = _safe_relative_path(path)
-    if relative.casefold() == MANIFEST_NAME.casefold() or relative.split("/")[-1].casefold() in {
+    if relative.casefold() in {MANIFEST_NAME.casefold(), JOURNAL_NAME.casefold(), (JOURNAL_NAME + ".tmp").casefold()} or relative.split("/")[-1].casefold() in {
         name.casefold() for name in UPDATER_NAMES
     }:
         raise ValueError(f"更新清单试图管理受保护文件: {relative}")
@@ -265,7 +269,139 @@ def _wait_for_pid(pid: int, timeout: float) -> None:
         time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
 
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _file_identity(path: Path) -> dict[str, Any] | None:
+    return {"size": path.stat().st_size, "sha256": sha256_file(path)} if path.is_file() else None
+
+
+def _recover_interrupted_update(install_root: Path) -> bool:
+    """Recover a write-ahead transaction while holding the install update lock."""
+    journal_path = _install_path(install_root, JOURNAL_NAME)
+    if not journal_path.exists():
+        return False
+    if journal_path.stat().st_size > 8 * 1024 * 1024:
+        raise ValueError("更新恢复日志过大，请保留恢复材料并使用完整安装器修复")
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    if journal.get("schema_version") != 1 or journal.get("install_root") != str(install_root):
+        raise ValueError("更新恢复日志与安装目录不匹配")
+    backup_name = journal.get("backup", "")
+    if (not isinstance(backup_name, str) or not backup_name.startswith("testbox-update-backup-")
+            or _safe_relative_path(backup_name) != backup_name or "/" in backup_name):
+        raise ValueError("更新恢复备份路径无效")
+    backup = install_root.parent / backup_name
+    if _is_redirect(backup) or not backup.is_dir():
+        raise ValueError("更新恢复备份不存在或包含链接；请保留日志并使用完整安装器修复")
+    entries = journal.get("entries")
+    if not isinstance(entries, dict):
+        raise ValueError("更新恢复日志缺少文件信息")
+    manifest_path = _install_path(install_root, MANIFEST_NAME)
+    committed = _file_identity(manifest_path) == journal.get("new_manifest")
+    # Verify all recovery sources AND destinations before writing anything.
+    plans = []
+    for relative, states in entries.items():
+        _managed_relative_path(relative)
+        target = _install_path(install_root, relative)
+        old, new = states["old"], states["new"]
+        current = _file_identity(target)
+        if target.exists() and not target.is_file():
+            raise ValueError(f"更新恢复目标不是普通文件: {relative}")
+        if current != old and current != new:
+            raise ValueError(f"更新后文件已被修改，保留恢复材料: {relative}")
+        source = _install_path(backup, relative)
+        if old is not None and _file_identity(source) != old:
+            raise ValueError(f"更新恢复备份校验失败: {relative}")
+        if committed and current != new:
+            raise ValueError(f"已提交更新的文件校验失败，保留恢复材料: {relative}")
+        plans.append((target, source, old))
+    old_manifest_backup = _install_path(backup, MANIFEST_NAME)
+    if journal.get("old_manifest") is not None and _file_identity(old_manifest_backup) != journal["old_manifest"]:
+        raise ValueError("更新恢复的原清单备份校验失败")
+    if not committed and _file_identity(manifest_path) != journal.get("old_manifest"):
+        raise ValueError("安装清单已被修改，保留更新恢复材料")
+    if committed:
+        installed = _read_manifest(manifest_path)
+        for item in installed["files"]:
+            target = _install_path(install_root, item["path"])
+            if _file_identity(target) != {key: item[key] for key in ("size", "sha256")}:
+                raise ValueError(f"已提交更新的完整文件校验失败: {item['path']}")
+    temporary_paths = []
+    for relative in journal.get("temporaries", []):
+        temporary = _install_path(install_root, _safe_relative_path(relative))
+        if ".testbox-update-" not in temporary.name:
+            raise ValueError("更新恢复临时文件路径无效")
+        temporary_paths.append(temporary)
+    if not committed:
+        for target, source, old in reversed(plans):
+            if old is None:
+                target.unlink(missing_ok=True)
+            else:
+                # Atomic restore makes another interruption recoverable too.
+                target.parent.mkdir(parents=True, exist_ok=True)
+                fd, temporary_name = tempfile.mkstemp(prefix=".testbox-recover-", dir=target.parent)
+                os.close(fd)
+                temporary = Path(temporary_name)
+                try:
+                    shutil.copy2(source, temporary)
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        # The old manifest was never replaced unless commit finished.
+    for temporary in temporary_paths:
+        temporary.unlink(missing_ok=True)
+    # Delete the journal first: a crash during backup cleanup is harmless.
+    journal_path.unlink()
+    shutil.rmtree(backup)
+    return True
+
+
+def _update_lock(install_root: Path) -> PluginExecutionLock:
+    return PluginExecutionLock(install_root.parent / f".{install_root.name}.testbox-update.lock")
+
+
+def recover_interrupted_update(install_root: Path) -> bool:
+    if _is_redirect(install_root):
+        raise ValueError("更新安装目录包含符号链接或 junction，已拒绝")
+    install_root = install_root.resolve()
+    lock = _update_lock(install_root)
+    lock.acquire()
+    try:
+        return _recover_interrupted_update(install_root)
+    finally:
+        lock.release()
+
+
 def apply_update(
+    install_root: Path, package: Path, *, wait_for_pid: int | None = None,
+    wait_timeout: float = 120.0, expected_component: str | None = None,
+    expected_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if _is_redirect(install_root):
+        raise ValueError("更新安装目录包含符号链接或 junction，已拒绝")
+    install_root = install_root.resolve()
+    lock = _update_lock(install_root)
+    lock.acquire()
+    try:
+        if wait_for_pid is not None:
+            _wait_for_pid(wait_for_pid, wait_timeout)
+        _recover_interrupted_update(install_root)
+        return _apply_update(install_root, package, expected_component=expected_component,
+                             expected_manifest=expected_manifest)
+    finally:
+        lock.release()
+
+
+def _apply_update(
     install_root: Path,
     package: Path,
     *,
@@ -367,6 +503,8 @@ def apply_update(
             temporaries: list[Path] = []
             created_dirs: list[Path] = []
             preserve_backup = False
+            journal_path = _install_path(install_root, JOURNAL_NAME)
+            journal: dict[str, Any] | None = None
 
             def make_parents(target: Path) -> None:
                 missing: list[Path] = []
@@ -383,6 +521,9 @@ def apply_update(
                 os.close(fd)
                 temporary = Path(name)
                 temporaries.append(temporary)
+                if journal is not None:
+                    journal["temporaries"].append(temporary.relative_to(install_root).as_posix())
+                    _atomic_json(journal_path, journal)
                 return temporary
 
             try:
@@ -397,22 +538,48 @@ def apply_update(
                 if old_manifest.is_file():
                     shutil.copy2(old_manifest, old_manifest_backup)
 
+                # All backups are complete before this durable intent record.
+                # Recovery rolls back every planned target, covering a kill
+                # between replace/unlink and the in-memory touched append.
+                journal = {
+                    "schema_version": 1, "install_root": str(install_root), "backup": backup.name,
+                    "old_manifest": _file_identity(old_manifest),
+                    "new_manifest": {"size": len(manifest_bytes), "sha256": hashlib.sha256(manifest_bytes).hexdigest()},
+                    "temporaries": [],
+                    "entries": {
+                        relative: {"old": _file_identity(_install_path(install_root, relative)),
+                                   "new": {key: files_by_path[relative][key] for key in ("size", "sha256")}
+                                   if relative in staged else None}
+                        for relative in sorted(set(changed + deleted))
+                    },
+                }
+                for saved in backup.rglob("*"):
+                    if saved.is_file():
+                        with saved.open("rb") as stream:
+                            os.fsync(stream.fileno())
+                _atomic_json(journal_path, journal)
+
                 for relative, source in staged.items():
                     target = _install_path(install_root, relative)
                     make_parents(target)
                     temporary = temporary_for(target)
                     shutil.copy2(source, temporary)
-                    temporary.replace(target)
                     touched.append(relative)
+                    temporary.replace(target)
                 for relative in deleted:
                     target = _install_path(install_root, relative)
                     if target.is_file():
-                        target.unlink()
                         touched.append(relative)
+                        target.unlink()
                 temporary_manifest = temporary_for(old_manifest)
                 temporary_manifest.write_bytes(manifest_bytes)
                 temporary_manifest.replace(old_manifest)
-            except Exception as error:
+            except BaseException as error:
+                if journal is not None and _file_identity(old_manifest) == journal["new_manifest"]:
+                    # Commit already happened. Do not roll payload files back
+                    # underneath the new manifest if interrupted just after it.
+                    preserve_backup = True
+                    raise
                 recovery_errors: list[str] = []
                 for relative in reversed(touched):
                     try:
@@ -442,14 +609,40 @@ def apply_update(
                 raise
             finally:
                 if not preserve_backup:
+                    journal_path.unlink(missing_ok=True)
                     shutil.rmtree(backup, ignore_errors=True)
     return {"version": manifest["version"], "changed": changed, "deleted": deleted}
 
 
+def _https_url(url: str) -> str:
+    if not isinstance(url, str) or any(ord(char) < 33 for char in url):
+        raise ValueError("更新 URL 必须是无凭据的 HTTPS 地址")
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.fragment):
+        raise ValueError("更新 URL 必须是无凭据的 HTTPS 地址")
+    return url
+
+
+class _HTTPSRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _https_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def download(url: str, destination: Path) -> None:
+    _https_url(url)
     request = urllib.request.Request(url, headers={"User-Agent": "TestBox-Updater"})
-    with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as stream:
-        shutil.copyfileobj(response, stream)
+    opener = urllib.request.build_opener(_HTTPSRedirect())
+    with opener.open(request, timeout=60) as response:
+        _https_url(response.geturl())
+        with destination.open("wb") as stream:
+            total = 0
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > 1024 * 1024 * 1024:
+                    raise ValueError("更新下载超过 1 GiB 限制")
+                stream.write(chunk)
 
 
 def download_and_apply(
@@ -460,6 +653,7 @@ def download_and_apply(
     force: bool = False,
     expected_component: str | None = None,
 ) -> dict[str, Any]:
+    _https_url(manifest_url)
     with tempfile.TemporaryDirectory(prefix="testbox-download-") as temporary_name:
         temporary = Path(temporary_name)
         manifest_path = temporary / MANIFEST_NAME
@@ -468,6 +662,7 @@ def download_and_apply(
         if expected_component is not None and manifest["component"] != expected_component:
             raise ValueError("更新组件不匹配：下载清单不属于当前更新器")
         local_manifest_path = _install_path(install_root.resolve(), MANIFEST_NAME)
+        recover_interrupted_update(install_root)
         local_version = None
         if local_manifest_path.is_file():
             local_manifest = _read_manifest(local_manifest_path)
@@ -481,6 +676,7 @@ def download_and_apply(
         package_url = manifest.get("package_url")
         if not package_url:
             raise ValueError("更新清单缺少 package_url")
+        _https_url(package_url)
         package_name = _safe_relative_path(manifest.get("package", ""))
         if "/" in package_name:
             raise ValueError("非法更新包文件名")

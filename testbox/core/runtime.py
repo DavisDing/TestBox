@@ -6,6 +6,8 @@ import os
 import secrets
 import shutil
 import sys
+import threading
+import tempfile
 from copy import deepcopy
 from datetime import UTC, date, datetime, time as datetime_time, tzinfo
 from pathlib import Path
@@ -14,7 +16,7 @@ from typing import Any
 from testbox.core.config import load_plugin_config
 from testbox.core.errors import ErrorCode
 from testbox.core.history import TaskHistory
-from testbox.core.locks import PluginExecutionLock
+from testbox.core.locks import PluginExecutionLock, TaskLifecycleLock
 from testbox.core.manifest import Manifest
 from testbox.core.models import TaskPaths, TaskStatus
 from testbox import __version__
@@ -30,6 +32,10 @@ from testbox.sdk import Result
 class Runtime:
     MAX_INPUT_BYTES = 100 * 1024 * 1024
     MAX_OUTPUT_BYTES = 500 * 1024 * 1024
+    PLUGIN_TRUST_WARNING = (
+        "插件将在本机执行 Python 代码，拥有当前用户的文件和程序权限。"
+        "能力声明不是安全沙箱；当前未验证发布者签名。仅安装您信任的代码。"
+    )
 
     def __init__(self, root: Path | None = None, *, timeout_seconds: float = 300.0):
         self.root = root or self._application_root()
@@ -56,6 +62,12 @@ class Runtime:
             self.workspace_dir = self.root / "workspace"
             bundled_plugins = self.plugins_dir
         self.bundled_plugins_dir = bundled_plugins
+        source_plugins = Path(__file__).resolve().parents[2] / "plugins"
+        # Source/editable installs must never turn application resources into
+        # writable extension installations. Explicit temporary roots stay local.
+        if bundled_plugins.resolve() == source_plugins.resolve():
+            self.plugins_dir = self._user_data_dir() / "plugins"
+        self._cancel_event: threading.Event | None = None
         plugin_dirs = [self.plugins_dir] if bundled_plugins == self.plugins_dir else [self.plugins_dir, bundled_plugins]
         self.manager = PluginManager(plugin_dirs)
         self.manager.discover()
@@ -189,14 +201,19 @@ class Runtime:
             "category": manifest.category,
             "core_compatibility": manifest.core_compatibility,
             "commands": [item.name for item in manifest.commands],
+            "capabilities": deepcopy(manifest.capabilities),
+            "signature_verified": False,
+            "security_warning": self.PLUGIN_TRUST_WARNING,
         }
 
     def package_plugin(self, source: Path, destination: Path) -> Path:
         """Package a plugin through the Runtime facade."""
         return package_plugin_archive(source, destination)
 
-    def install_plugin(self, source: Path, *, force: bool = False) -> Manifest:
+    def install_plugin(self, source: Path, *, force: bool = False, trust_code: bool = False) -> Manifest:
         """安装用户插件并刷新当前 Runtime 的插件索引。"""
+        if not trust_code:
+            raise PluginPackageError(self.PLUGIN_TRUST_WARNING + " 请明确确认 trust_code（CLI: --trust-code）。")
         management_lock = PluginExecutionLock(self.workspace_dir / ".locks" / "plugin-management.lock")
         management_lock.acquire()
         try:
@@ -221,13 +238,8 @@ class Runtime:
             target = self.plugins_dir / name
             if not target.is_dir():
                 raise PluginPackageError(f"未安装插件: {name}")
-            if self.bundled_plugins_dir.resolve() != self.plugins_dir.resolve():
-                try:
-                    target.resolve().relative_to(self.bundled_plugins_dir.resolve())
-                except ValueError:
-                    pass
-                else:
-                    raise PluginPackageError("内置插件不能卸载，请先安装同名用户插件后再管理")
+            if not self.can_uninstall_plugin(name):
+                raise PluginPackageError("内置插件不能卸载，请先安装同名用户插件后再管理")
             uninstall_plugin_package(name, self.plugins_dir)
             self.reload_plugins()
         finally:
@@ -239,10 +251,15 @@ class Runtime:
     def can_uninstall_plugin(self, name: str) -> bool:
         """Return whether the named plugin is installed in the writable user plugin directory."""
         target = self.plugins_dir / name
-        if not target.is_dir():
+        if not target.is_dir() or target.is_symlink() or target.parent.resolve() != self.plugins_dir.resolve():
             return False
-        if self.bundled_plugins_dir.resolve() == self.plugins_dir.resolve():
-            return True
+        protected = [Path(__file__).resolve().parents[2] / "plugins",
+                     Path(__file__).resolve().parents[1] / "_bundled_plugins"]
+        if self.bundled_plugins_dir.resolve() != self.plugins_dir.resolve():
+            protected.append(self.bundled_plugins_dir)
+        for directory in protected:
+            if target.resolve().is_relative_to(directory.resolve()):
+                return False
         try:
             target.resolve().relative_to(self.plugins_dir.resolve())
         except ValueError:
@@ -312,7 +329,7 @@ class Runtime:
         return self.run(command, params)
 
     def _task_lock(self, task_id: str) -> PluginExecutionLock:
-        return PluginExecutionLock(self.workspace_dir / ".locks" / f"task-{task_id}.lock")
+        return TaskLifecycleLock(self.workspace_dir / ".locks" / f"task-{task_id}.lock")
 
     def _task_is_active(self, task_id: str) -> bool:
         lock = self._task_lock(task_id)
@@ -321,7 +338,15 @@ class Runtime:
         lock.release()
         return False
 
-    def run(self, command: str, params: dict[str, Any]) -> tuple[str, Result]:
+    def cancel(self) -> bool:
+        """Request cancellation of this Runtime's active task from any thread."""
+        token = self._cancel_event
+        if token is None:
+            return False
+        token.set()
+        return True
+
+    def run(self, command: str, params: dict[str, Any], *, cancel_event: threading.Event | None = None) -> tuple[str, Result]:
         manifest = self.get_command(command)
         validated_params = self._validate(manifest, command, params)
         # Fail invalid configuration before creating an incomplete task. Original
@@ -329,6 +354,8 @@ class Runtime:
         config = load_plugin_config(self.root, manifest.path, manifest.name)
         redactor = Redactor(validated_params, config)
         task_id = self._task_id()
+        self._cancel_event = cancel_event if cancel_event is not None else threading.Event()
+        self.process_runner.cancel_event = self._cancel_event
         task_lock = self._task_lock(task_id)
         task_lock.acquire()
         execution_lock = None
@@ -370,8 +397,18 @@ class Runtime:
                     execution_lock = PluginExecutionLock(
                         self.workspace_dir / ".locks" / f"{manifest.name}.lock"
                     )
-                    execution_lock.acquire()
+                    while not execution_lock.try_acquire():
+                        if self._cancel_event.wait(0.05):
+                            break
+                if self._cancel_event.is_set():
+                    result = Result("cancelled", "用户取消了任务", data={"error_code": "CANCELLED"})
+                    self._persist_result(task_id, manifest, paths, result, redactor)
+                    return task_id, result
                 return self._execute_host(task_id, manifest, paths, request, redactor)
+            except KeyboardInterrupt:
+                result = Result("cancelled", "用户取消了任务", data={"error_code": "CANCELLED"})
+                self._persist_result(task_id, manifest, paths, result, redactor)
+                return task_id, result
             except Exception as error:
                 result = Result("failed", "Core 执行任务时发生异常", data={
                     "error_code": ErrorCode.CORE_EXECUTION_FAILED,
@@ -390,6 +427,7 @@ class Runtime:
             if execution_lock is not None:
                 execution_lock.release()
             task_lock.release()
+            self._cancel_event = None
 
     def _persist_result(
         self, task_id: str, manifest: Manifest, paths: TaskPaths,
@@ -411,10 +449,12 @@ class Runtime:
         synchronized = False
         for _ in range(2):
             try:
-                self.history.finish(
+                updated = self.history.finish(
                     task_id, status=status, finished_at=finished_at,
                     error_code=result.data.get("error_code"),
                 )
+                if updated is False:
+                    raise RuntimeError("任务历史终态冲突或记录已不存在")
                 synchronized = True
                 break
             except Exception:
@@ -517,6 +557,31 @@ class Runtime:
             return path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
+
+    def commit_task_report(self, task_id: str, destination: Path) -> Path:
+        """Export only the fixed Core report; never expand the output allowlist."""
+        record = self.get_task(task_id)
+        if not record or record["status"] not in TaskHistory.TERMINAL_STATUSES:
+            raise ValueError("只能导出已结束任务的报告")
+        task_root = Path(record["workspace_path"])
+        source = task_root / "report.md"
+        if task_root.is_symlink() or source.is_symlink() or not source.is_file():
+            raise ValueError("任务报告不存在或路径不合法")
+        if not source.resolve().is_relative_to(self.workspace_dir.resolve()):
+            raise ValueError("任务报告超出工作区")
+        destination = destination.expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".testbox-report-", delete=False) as stream:
+                temporary = Path(stream.name)
+                with source.open("rb") as report:
+                    shutil.copyfileobj(report, stream)
+            temporary.replace(destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return destination
 
     def get_task_log(self, task_id: str, *, max_chars: int = 8_000) -> str | None:
         """Return the tail of the task log without exposing workspace I/O to GUI callers."""

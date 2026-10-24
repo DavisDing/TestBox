@@ -118,7 +118,7 @@ class CatalogMetadataTests(unittest.TestCase):
         preview = runtime.preview_plugin_install(archive)
         self.assertEqual(preview['category_display_name'], 'custom-group')
         self.assertEqual(runtime.list_catalog_entries(), [])
-        runtime.install_plugin(archive)
+        runtime.install_plugin(archive, trust_code=True)
         self.assertEqual(runtime.inspect_plugin('sample-plugin')['display_name'], 'sample-plugin')
         self.assertEqual(len(runtime.list_catalog_entries()), 2)
         _, result = runtime.run('sample.run', {})

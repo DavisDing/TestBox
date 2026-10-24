@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,43 @@ class SchemaValidationError(ValueError):
 
 
 class SchemaValidator:
+    # format is UI metadata in TestBox (file/directory), not a format assertion.
+    KEYWORDS = frozenset({"$schema", "$id", "title", "description", "default", "examples",
+                          "readOnly", "writeOnly", "deprecated", "format", "type", "enum",
+                          "properties", "required", "additionalProperties", "items",
+                          "minimum", "maximum", "minLength", "maxLength", "pattern",
+                          "minItems", "maxItems"})
+
+    def _check_schema(self, schema: dict[str, Any], field: str = "参数") -> None:
+        if not isinstance(schema, dict):
+            raise SchemaValidationError(f"{field} Schema 必须是对象", code="SCHEMA_INVALID", field=field)
+        unknown = {key for key in schema if key not in self.KEYWORDS and not key.startswith(("x-", "ui:"))}
+        if unknown:
+            raise SchemaValidationError(f"不支持的 Schema 关键字: {', '.join(sorted(unknown))}",
+                                        code="SCHEMA_UNSUPPORTED", field=field)
+        for key in ("minItems", "maxItems", "minLength", "maxLength"):
+            if key in schema and (type(schema[key]) is not int or schema[key] < 0):
+                raise SchemaValidationError(f"{key} 必须是非负整数", code="SCHEMA_INVALID", field=field)
+        if "pattern" in schema:
+            try:
+                if not isinstance(schema["pattern"], str):
+                    raise TypeError("pattern 必须是字符串")
+                re.compile(schema["pattern"])
+            except (TypeError, re.error) as error:
+                raise SchemaValidationError("Schema pattern 无效", code="SCHEMA_INVALID", field=field) from error
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            raise SchemaValidationError("Schema properties 必须是对象", code="SCHEMA_INVALID", field=field)
+        for key, definition in properties.items():
+            self._check_schema(definition, f"{field}.{key}")
+        if "items" in schema:
+            self._check_schema(schema["items"], f"{field}[]")
+        additional = schema.get("additionalProperties", False)
+        if isinstance(additional, dict):
+            self._check_schema(additional, field)
+        elif not isinstance(additional, bool):
+            raise SchemaValidationError("Schema additionalProperties 无效", code="SCHEMA_INVALID", field=field)
+
     def load(self, path: Path) -> dict[str, Any]:
         if not path.is_file():
             raise SchemaValidationError("命令 Schema 不存在", code="SCHEMA_MISSING")
@@ -25,11 +63,13 @@ class SchemaValidator:
             raise SchemaValidationError(f"命令 Schema JSON 无效: {error}", code="SCHEMA_INVALID") from error
         if not isinstance(schema, dict):
             raise SchemaValidationError("命令 Schema 根节点必须是对象", code="SCHEMA_INVALID")
+        self._check_schema(schema)
         return schema
 
     def validate(self, schema: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(params, dict):
             raise SchemaValidationError("参数必须是对象")
+        self._check_schema(schema)
         # Validation must not mutate caller-owned nested values, and default
         # objects/arrays must not share references with the schema definition.
         result = self._apply_defaults(schema, copy.deepcopy(params))
@@ -98,6 +138,8 @@ class SchemaValidator:
             if "maximum" in schema and value > schema["maximum"]:
                 raise SchemaValidationError(f"{field} 不能大于 {schema['maximum']}", field=field)
         if isinstance(value, str):
+            if "pattern" in schema and re.search(schema["pattern"], value) is None:
+                raise SchemaValidationError(f"{field} 不符合 pattern", field=field)
             if "minLength" in schema and len(value) < schema["minLength"]:
                 raise SchemaValidationError(f"{field} 长度不能小于 {schema['minLength']}", field=field)
             if "maxLength" in schema and len(value) > schema["maxLength"]:
@@ -105,7 +147,8 @@ class SchemaValidator:
         if isinstance(value, dict):
             properties = schema.get("properties", {})
             unknown = set(value) - set(properties)
-            if schema.get("additionalProperties", False) is not True and unknown:
+            additional = schema.get("additionalProperties", False)
+            if additional is False and unknown:
                 raise SchemaValidationError(f"未知参数: {', '.join(sorted(unknown))}", field=field)
             for required in schema.get("required", []):
                 if required not in value:
@@ -113,6 +156,13 @@ class SchemaValidator:
             for key, item in value.items():
                 if key in properties:
                     self._validate_value(properties[key], item, key)
+                elif isinstance(additional, dict):
+                    self._validate_value(additional, item, key)
+        if isinstance(value, list):
+            if "minItems" in schema and len(value) < schema["minItems"]:
+                raise SchemaValidationError(f"{field} 项数不能小于 {schema['minItems']}", field=field)
+            if "maxItems" in schema and len(value) > schema["maxItems"]:
+                raise SchemaValidationError(f"{field} 项数不能大于 {schema['maxItems']}", field=field)
         if isinstance(value, list) and isinstance(schema.get("items"), dict):
             for index, item in enumerate(value):
                 self._validate_value(schema["items"], item, f"{field}[{index}]")

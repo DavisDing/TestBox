@@ -20,8 +20,17 @@ class PluginManager:
             if not plugins_dir.exists():
                 continue
             for manifest_path in sorted(plugins_dir.glob("*/manifest.yaml")):
+                # Installation staging/rollback siblings are recovery material,
+                # never active plugins. Do not follow directory aliases either.
+                if manifest_path.parent.name.startswith("."):
+                    self.unavailable[str(manifest_path.parent)] = "隐藏安装残留已隔离，不会加载或执行；请检查目录中的恢复材料"
+                    continue
                 try:
+                    if manifest_path.parent.is_symlink() or manifest_path.is_symlink():
+                        raise ValueError("插件发现不接受符号链接")
                     manifest = Manifest.load(manifest_path)
+                    if manifest_path.parent.name != manifest.name:
+                        raise ValueError("插件目录与清单名称不一致")
                     command_names = [command.name for command in manifest.commands]
                     if len(command_names) != len(set(command_names)):
                         raise ValueError("插件内命令重复")

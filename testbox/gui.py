@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import sys
+import threading
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -282,6 +283,10 @@ class RuntimeWorker(QtCore.QRunnable):
         self.command = command
         self.params = params
         self.signals = WorkerSignals()
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
 
     @QtCore.Slot()
     def run(self):
@@ -289,7 +294,7 @@ class RuntimeWorker(QtCore.QRunnable):
         try:
             runtime = Runtime(self.root)
             try:
-                task_id, result = runtime.run(self.command, self.params)
+                task_id, result = runtime.run(self.command, self.params, cancel_event=self.cancel_event)
                 elapsed = time.perf_counter() - start_time
                 self.signals.finished.emit(task_id, result, elapsed)
             finally:
@@ -2356,6 +2361,8 @@ class RunningWorkspaceView(QtWidgets.QWidget):
     任务执行中工作区视图：
     展示任务元数据、执行中动画、状态指示、脱敏参数摘要
     """
+    cancelRequested = QtCore.Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._init_ui()
@@ -2406,6 +2413,10 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         self.progress_bar.setFixedHeight(6)
         self.progress_bar.setTextVisible(False)
         card_layout.addWidget(self.progress_bar)
+        self.cancel_btn = QtWidgets.QPushButton("取消任务")
+        self.cancel_btn.setObjectName("secondaryButton")
+        self.cancel_btn.clicked.connect(self._request_cancel)
+        card_layout.addWidget(self.cancel_btn)
 
         # 任务信息表格
         meta_form = QtWidgets.QFormLayout()
@@ -2433,7 +2444,14 @@ class RunningWorkspaceView(QtWidgets.QWidget):
         layout.addWidget(card)
         layout.addStretch()
 
+    def _request_cancel(self):
+        self.cancel_btn.setEnabled(False)
+        self.status_title_lbl.setText("正在取消任务")
+        self.status_desc_lbl.setText("正在停止插件并保存取消结果，请等待任务完成收尾。")
+        self.cancelRequested.emit()
+
     def start_running(self, command: str, params: dict, manifest: Any):
+        self.cancel_btn.setEnabled(True)
         self.status_title_lbl.setText("等待 Runtime 与插件返回")
         self.status_desc_lbl.setText(
             "任务处于等待执行或运行中（PENDING / RUNNING）。当前 Host 协议不会提供实时百分比或日志流。"
@@ -2709,6 +2727,10 @@ class TaskResultDetailView(QtWidgets.QWidget):
         self.report_txt.setObjectName("logOutput")
         logs_inner_layout.addWidget(QtWidgets.QLabel("Runtime 报告 (report.md)"))
         logs_inner_layout.addWidget(self.report_txt)
+        self.export_report_btn = QtWidgets.QPushButton("导出任务报告…")
+        self.export_report_btn.setObjectName("secondaryButton")
+        self.export_report_btn.clicked.connect(self._export_task_report)
+        logs_inner_layout.addWidget(self.export_report_btn)
 
         self.log_txt = QtWidgets.QPlainTextEdit()
         self.log_txt.setReadOnly(True)
@@ -2872,6 +2894,19 @@ class TaskResultDetailView(QtWidgets.QWidget):
         clean_warnings = [warning.strip() for warning in warnings if warning and warning.strip()]
         self.warnings_box.setVisible(bool(clean_warnings))
         self.warnings_txt.setPlainText("\n".join(f"• {warning}" for warning in clean_warnings))
+
+    def _export_task_report(self):
+        task_id = getattr(self, "current_task_id", None)
+        if not task_id:
+            return
+        destination, _ = FileDialog.getSaveFileName(self, "导出任务报告", f"{task_id}-report.md",
+                                                   "Markdown (*.md)", options=_file_dialog_options())
+        if not destination:
+            return
+        try:
+            self.runtime.commit_task_report(task_id, Path(destination))
+        except (ValueError, LookupError, OSError) as error:
+            QtWidgets.QMessageBox.critical(self, "报告导出失败", str(error))
 
     def _load_report_and_log(
         self,
@@ -3924,6 +3959,8 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
             f"插件: {preview['name']} v{preview['version']}\n"
             f"命令: {command_text}\n"
             f"来源: {source_path}\n\n"
+            f"声明能力: {json.dumps(preview.get('capabilities', {}), ensure_ascii=False)}\n"
+            f"{preview.get('security_warning', Runtime.PLUGIN_TRUST_WARNING)}\n\n"
             f"确认{action}到用户插件目录吗？历史任务不会被删除。"
         )
         reply = QtWidgets.QMessageBox.question(
@@ -3936,7 +3973,7 @@ class PluginDiagnosticsView(QtWidgets.QWidget):
             return
 
         try:
-            manifest = self.runtime.install_plugin(source_path, force=bool(installed))
+            manifest = self.runtime.install_plugin(source_path, force=bool(installed), trust_code=True)
         except (PluginPackageError, OSError, ValueError) as error:
             QtWidgets.QMessageBox.critical(self, "导入插件失败", str(error))
             return
@@ -4226,6 +4263,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.page_diagnostics.pluginsChanged.connect(self.page_catalog.reload_tools)
         self.page_form.backToCatalog.connect(lambda: self.switch_page(0))
         self.page_form.executeRequested.connect(self.execute_task)
+        self.page_running.cancelRequested.connect(self._cancel_active_task)
 
         self.page_result.backToHistory.connect(lambda: self.switch_page(4))
         self.page_result.reExecuteRequested.connect(self.navigate_to_command)
@@ -4296,6 +4334,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.setCurrentIndex(3)
 
     def execute_task(self, command_name: str, params: dict):
+        if getattr(self, "_active_worker", None) is not None:
+            QtWidgets.QMessageBox.information(self, "任务正在运行", "请等待当前任务完成，或先在执行工作区取消任务。")
+            return
         self._interactive_task = command_name == "evidence.build" and bool(params.get("interactive", False))
         if self._interactive_task:
             # 交互截图由插件 Host 在独立进程中执行；先隐藏 TestBox 主窗口，
@@ -4312,9 +4353,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # explicit source-root task and make it write into the executable
         # directory (often read-only on Windows).
         worker = RuntimeWorker(self._runtime_root, command_name, params)
+        self._active_worker = worker
         worker.signals.finished.connect(self._on_task_finished)
         worker.signals.failed.connect(self._on_task_failed)
         QtCore.QThreadPool.globalInstance().start(worker)
+
+    def _cancel_active_task(self):
+        worker = getattr(self, "_active_worker", None)
+        if worker is not None:
+            worker.cancel()
 
     def _restore_after_interactive(self):
         if not self._interactive_task:
@@ -4329,6 +4376,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.activateWindow()
 
     def _on_task_finished(self, task_id: str, result: Any, elapsed: float):
+        self._active_worker = None
         self._restore_after_interactive()
         self._select_nav_page(4)
         # The worker result is only a completion signal. Detail rendering reads
@@ -4337,6 +4385,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.setCurrentIndex(3)
 
     def _on_task_failed(self, command: str, error_msg: str, elapsed: float):
+        self._active_worker = None
         self._restore_after_interactive()
         QtWidgets.QMessageBox.critical(self, "执行失败", f"任务执行遇到不可恢复的异常:\n{error_msg}")
         self.stack.setCurrentIndex(1)
@@ -4346,6 +4395,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog.exec()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
+        self._cancel_active_task()
         self.runtime.close()
         super().closeEvent(event)
 

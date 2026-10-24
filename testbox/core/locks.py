@@ -4,10 +4,11 @@ from __future__ import annotations
 import os
 import threading
 import time
+import weakref
 from pathlib import Path
 
 _PROCESS_LOCKS_GUARD = threading.Lock()
-_PROCESS_LOCKS: dict[Path, threading.Lock] = {}
+_PROCESS_LOCKS = weakref.WeakValueDictionary()
 
 
 def _process_lock(path: Path) -> threading.Lock:
@@ -103,3 +104,38 @@ class PluginExecutionLock:
             self.handle.close()
             self.handle = None
             self.local_lock.release()
+
+
+class TaskLifecycleLock(PluginExecutionLock):
+    """Remove idle task lock files without splitting an in-use lock inode.
+
+    Every opener and unlinker holds the same persistent directory gate. Waiting
+    happens outside that gate so releases can proceed. Do not unlink ordinary
+    plugin locks, whose callers may use the base class directly.
+    """
+
+    def _acquire(self, *, blocking: bool) -> bool:
+        if self.handle is not None:
+            raise RuntimeError("同一个锁实例不能重复获取")
+        while True:
+            gate = PluginExecutionLock(self.path.parent / "task-lifecycle.lock")
+            gate.acquire()
+            try:
+                if super()._acquire(blocking=False):
+                    return True
+            finally:
+                gate.release()
+            if not blocking:
+                return False
+            time.sleep(0.05)
+
+    def release(self) -> None:
+        if getattr(self, "handle", None) is None:
+            return
+        gate = PluginExecutionLock(self.path.parent / "task-lifecycle.lock")
+        gate.acquire()
+        try:
+            super().release()
+            self.path.unlink(missing_ok=True)
+        finally:
+            gate.release()

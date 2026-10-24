@@ -520,12 +520,14 @@ def sql_rules(path: Path) -> list[dict]:
 
 
 def _read_excel_rows(path: Path) -> list[list[str]]:
+    from testbox.file_safety import check_excel_archive, read_excel_xml
     try:
         with zipfile.ZipFile(path) as archive:
+            check_excel_archive(archive)
             shared = []
             if "xl/sharedStrings.xml" in archive.namelist():
-                shared = ["".join(item.itertext()) for item in ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))]
-            sheet = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+                shared = ["".join(item.itertext()) for item in read_excel_xml(archive, "xl/sharedStrings.xml")]
+            sheet = read_excel_xml(archive, "xl/worksheets/sheet1.xml")
     except (OSError, KeyError, zipfile.BadZipFile, ElementTree.ParseError) as error:
         raise PluginError("INPUT_INVALID", "Excel 字段清单格式不支持") from error
     namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -685,13 +687,15 @@ def excel_rules(path: Path) -> list[dict]:
     return excel_tables(path)[0]["fields"]
 
 def delimited_text(rows: list[dict[str, object]], delimiter: str, include_header: bool) -> str:
+    from testbox.file_safety import spreadsheet_cell
     if len(delimiter) != 1:
         raise PluginError("INVALID_PARAMS", "txt_delimiter 必须为单个字符")
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=list(rows[0]), delimiter=delimiter, lineterminator="\n")
+    writer = csv.writer(buffer, delimiter=delimiter, lineterminator="\n")
+    headings = list(rows[0])
     if include_header:
-        writer.writeheader()
-    writer.writerows(rows)
+        writer.writerow([spreadsheet_cell(key) for key in headings])
+    writer.writerows([spreadsheet_cell(row.get(key, "")) for key in headings] for row in rows)
     return buffer.getvalue()
 
 

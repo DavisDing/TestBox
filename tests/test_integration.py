@@ -677,9 +677,9 @@ CREATE TABLE t_empty (
         self.assertEqual(result.data["dialect"], "hive")
     def test_plugin_command_conflict_isolated_to_conflicting_plugin(self):
         registry_root = self.temp / "conflict-plugins"
-        shutil.copytree(ROOT / "plugins" / "data-generator", registry_root / "first")
-        shutil.copytree(ROOT / "plugins" / "data-generator", registry_root / "second")
-        for directory, name in ((registry_root / "first", "first-plugin"), (registry_root / "second", "second-plugin")):
+        shutil.copytree(ROOT / "plugins" / "data-generator", registry_root / "first-plugin")
+        shutil.copytree(ROOT / "plugins" / "data-generator", registry_root / "second-plugin")
+        for directory, name in ((registry_root / "first-plugin", "first-plugin"), (registry_root / "second-plugin", "second-plugin")):
             manifest = directory / "manifest.yaml"
             text = manifest.read_text(encoding="utf-8").replace("name: data-generator", f"name: {name}").replace("name: data.mock", "name: conflict.run")
             manifest.write_text(text, encoding="utf-8")
@@ -1078,7 +1078,7 @@ capabilities:
     def test_lock_failure_is_recorded_as_failed_task(self):
         manifest = self.runtime.manager.available["data.mock"]
         manifest.capabilities["concurrency"] = False
-        acquire = PluginExecutionLock.acquire
+        acquire = PluginExecutionLock.try_acquire
 
         def fail_plugin_lock(lock):
             # Keep the task-lifecycle lock operational so this test continues
@@ -1087,7 +1087,7 @@ capabilities:
                 raise OSError("lock unavailable")
             return acquire(lock)
 
-        with patch.object(PluginExecutionLock, "acquire", autospec=True, side_effect=fail_plugin_lock):
+        with patch.object(PluginExecutionLock, "try_acquire", autospec=True, side_effect=fail_plugin_lock):
             task_id, result = self.runtime.run("data.mock", {"count": 1, "format": "json", "seed": 7, "fields": MINIMAL_FIELDS})
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.data["error_code"], ErrorCode.CORE_EXECUTION_FAILED)
@@ -1137,7 +1137,7 @@ capabilities:
                 self.assertEqual(frozen_runtime.plugins_dir, user_data / "plugins")
                 self.assertEqual(frozen_runtime.bundled_plugins_dir, bundle / "plugins")
                 self.assertFalse(frozen_runtime.inspect_plugin("sql-select")["uninstallable"])
-                frozen_runtime.install_plugin(archive)
+                frozen_runtime.install_plugin(archive, trust_code=True)
                 self.assertIn("sql.select", frozen_runtime.manager.available)
                 self.assertTrue(frozen_runtime.inspect_plugin("sql-select")["uninstallable"])
                 frozen_runtime.uninstall_plugin("sql-select")
@@ -1162,7 +1162,7 @@ capabilities:
         with self.assertRaisesRegex(PluginPackageError, "插件命令冲突"):
             self.runtime.preview_plugin_install(archive)
         with self.assertRaisesRegex(PluginPackageError, "插件命令冲突"):
-            self.runtime.install_plugin(archive)
+            self.runtime.install_plugin(archive, trust_code=True)
 
         self.assertFalse((self.temp / "plugins" / "conflicting-data-generator").exists())
         self.assertEqual(self.runtime.manager.available["data.mock"].name, "data-generator")
@@ -1174,7 +1174,7 @@ capabilities:
         self.runtime.reload_plugins()
         self.assertNotIn("data.mock", self.runtime.manager.available)
 
-        manifest = self.runtime.install_plugin(archive)
+        manifest = self.runtime.install_plugin(archive, trust_code=True)
         self.assertEqual(manifest.name, "data-generator")
         self.assertIn("data.mock", self.runtime.manager.available)
 

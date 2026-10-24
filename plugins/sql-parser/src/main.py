@@ -411,7 +411,13 @@ class Plugin:
         name = f"{self.context.task.id}.{params['format']}"
         if params["format"] == "json": self.context.files.write_text(name, json.dumps(rows, ensure_ascii=False, indent=2))
         elif params["format"] == "csv":
-            buffer = io.StringIO(); writer = csv.DictWriter(buffer, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows); self.context.files.write_text(name, buffer.getvalue())
+            from testbox.file_safety import spreadsheet_cell
+            buffer = io.StringIO()
+            headings = list(rows[0])
+            writer = csv.writer(buffer)
+            writer.writerow([spreadsheet_cell(key) for key in headings])
+            writer.writerows([spreadsheet_cell(row.get(key, "")) for key in headings] for row in rows)
+            self.context.files.write_text(name, buffer.getvalue())
         else: self.context.files.write_bytes(name, xlsx(rows))
         self.context.logger.info(f"解析 {len(rows)} 个字段，成功 {len(success_tables)} 张表，失败 {len(failed_tables)} 张表，产生 {len(warnings)} 条警告")
         message = f"解析完成：成功 {len(success_tables)} 张表，失败 {len(failed_tables)} 张表，涉及 {len(rows)} 个字段"

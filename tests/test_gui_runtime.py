@@ -429,6 +429,39 @@ class GuiRuntimeTests(unittest.TestCase):
         self.assertTrue(form.set_field_error(caught.exception.field, str(caught.exception)))
         self.assertFalse(form.error_labels["payload"].isHidden())
         self.assertIn("有限数值", form.error_labels["payload"].text())
+
+    def test_cancel_button_stops_real_worker_and_displays_cancelled_history(self):
+        source = self.root / "plugins/data-generator/src/main.py"
+        source.write_text('''import time
+from testbox.sdk import Result
+class Plugin:
+    def init(self, context): self.context = context
+    def execute(self, command, params):
+        time.sleep(30)
+        return Result("success", "unexpected")
+    def destroy(self): pass
+''', encoding="utf-8")
+        self.window.execute_task("data.mock", {"count": 1, "format": "json"})
+        self._wait_until(lambda: self.window.runtime.count_tasks() == 1)
+        QtTest.QTest.mouseClick(self.window.page_running.cancel_btn, QtCore.Qt.MouseButton.LeftButton)
+        self.assertFalse(self.window.page_running.cancel_btn.isEnabled())
+        self._wait_until(lambda: self.window.stack.currentIndex() == 3)
+        task_id = self.window.page_result.current_task_id
+        self.assertEqual(self.window.runtime.get_task(task_id)["status"], "CANCELLED")
+        self.assertEqual(self.window.runtime.get_task_result(task_id)["status"], "cancelled")
+        self.assertIsNone(self.window._active_worker)
+        self._assert_no_messages()
+
+    def test_gui_report_export_uses_runtime_for_core_report(self):
+        task_id, result = self.window.runtime.run("data.mock", {"count": 1, "format": "json",
+            "fields": [{"name": "id", "generator": "sequence"}]})
+        self.assertEqual(result.status, "success")
+        self.window.page_result.display_task(task_id)
+        target = self.root / "exported-report.md"
+        from testbox.gui import FileDialog
+        with patch.object(FileDialog, "getSaveFileName", return_value=(str(target), "Markdown (*.md)")):
+            self.window.page_result.export_report_btn.click()
+        self.assertEqual(target.read_text(), self.window.runtime.get_task_report(task_id))
         self._assert_no_messages()
 
     def test_sensitive_summary_redacts_nested_params_without_mutating_input(self):
