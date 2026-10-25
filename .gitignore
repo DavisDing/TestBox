@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 *.egg-info/
 workspace/
+.DS_Store

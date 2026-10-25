@@ -343,6 +343,10 @@ def _recover_interrupted_update(install_root: Path) -> bool:
         temporary_paths.append(temporary)
     if not committed:
         for target, source, old in reversed(plans):
+            # A failed replace/unlink can leave the original file intact.
+            # Rewriting it is unnecessary and may fail while it remains open.
+            if _file_identity(target) == old:
+                continue
             if old is None:
                 target.unlink(missing_ok=True)
             else:
@@ -586,6 +590,12 @@ def _apply_update(
                 for relative in reversed(touched):
                     try:
                         target = _install_path(install_root, relative)
+                        # Intent is recorded before mutation so an exception
+                        # after a successful replace is recoverable. If the
+                        # mutation failed, leave the unchanged (possibly locked)
+                        # original alone instead of attempting another write.
+                        if journal is not None and _file_identity(target) == journal["entries"][relative]["old"]:
+                            continue
                         backup_target = backup / Path(*relative.split("/"))
                         if backup_target.is_file():
                             shutil.copy2(backup_target, target)

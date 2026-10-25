@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -258,6 +259,81 @@ class UpdaterRecoveryTests(unittest.TestCase):
         result = updater.apply_update(self.install, self.package)
         self.assertEqual(result['version'], '1.0.1')
         self.assertEqual((self.install / 'user.txt').read_bytes(), self.before['user.txt'])
+
+    def test_locked_unchanged_target_is_not_rewritten_during_rollback(self):
+        original_replace = Path.replace
+        original_copy = updater.shutil.copy2
+        locked = self.install / 'b.txt'
+
+        def fail_replace(path, target):
+            if Path(target) == locked:
+                raise PermissionError('replacement denied by open file')
+            return original_replace(path, target)
+
+        def fail_write(source, destination, *args, **kwargs):
+            if Path(destination) == locked:
+                raise PermissionError('writing the open file is also denied')
+            return original_copy(source, destination, *args, **kwargs)
+
+        with patch.object(Path, 'replace', autospec=True, side_effect=fail_replace), \
+             patch.object(updater.shutil, 'copy2', side_effect=fail_write) as copies:
+            with self.assertRaisesRegex(PermissionError, 'replacement denied'):
+                updater.apply_update(self.install, self.package)
+        self.assertFalse(any(Path(call.args[1]) == locked for call in copies.call_args_list))
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertFalse(list(self.root.glob('testbox-update-backup-*')))
+        self.assertFalse((self.install / updater.JOURNAL_NAME).exists())
+        self.assertEqual(updater.apply_update(self.install, self.package)['version'], '1.0.1')
+
+    @unittest.skipUnless(os.name == 'nt', 'Requires Windows file sharing semantics')
+    def test_native_windows_locked_target_rolls_back_without_recovery_residue(self):
+        from scripts.smoke_windows_installers import hold_without_delete_share
+
+        with hold_without_delete_share(self.install / 'b.txt'):
+            with self.assertRaises(PermissionError):
+                updater.apply_update(self.install, self.package)
+            self.assertEqual(self.snapshot(), self.before)
+            self.assertFalse(list(self.root.glob('testbox-update-backup-*')))
+            self.assertFalse((self.install / updater.JOURNAL_NAME).exists())
+        self.assertEqual(updater.apply_update(self.install, self.package)['version'], '1.0.1')
+
+    def test_exception_after_replacement_still_restores_changed_target(self):
+        original = Path.replace
+
+        def fail_after_replace(path, target):
+            result = original(path, target)
+            if Path(target) == self.install / 'b.txt':
+                raise OSError('error after successful replacement')
+            return result
+
+        with patch.object(Path, 'replace', autospec=True, side_effect=fail_after_replace):
+            with self.assertRaisesRegex(OSError, 'after successful replacement'):
+                updater.apply_update(self.install, self.package)
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertFalse(list(self.root.glob('testbox-update-backup-*')))
+
+    def test_restart_recovery_skips_unchanged_locked_target(self):
+        original_replace = Path.replace
+        original_copy = updater.shutil.copy2
+
+        def fail_replace(path, target):
+            if Path(target) == self.install / 'b.txt':
+                raise PermissionError('replacement denied by open file')
+            return original_replace(path, target)
+
+        def fail_restore(source, destination, *args, **kwargs):
+            if Path(destination) == self.install / 'a.txt':
+                raise PermissionError('restore temporarily denied')
+            return original_copy(source, destination, *args, **kwargs)
+
+        with patch.object(Path, 'replace', autospec=True, side_effect=fail_replace):
+            with patch.object(updater.shutil, 'copy2', side_effect=fail_restore):
+                with self.assertRaisesRegex(RuntimeError, '回滚失败'):
+                    updater.apply_update(self.install, self.package)
+            self.assertTrue((self.install / updater.JOURNAL_NAME).is_file())
+            self.assertTrue(updater.recover_interrupted_update(self.install))
+        self.assertEqual(self.snapshot(), self.before)
+        self.assertFalse(list(self.root.glob('testbox-update-backup-*')))
 
     def test_unchanged_file_corruption_is_rejected_before_mutation(self):
         # Treat b.txt as unchanged, but advertise a different hash.
