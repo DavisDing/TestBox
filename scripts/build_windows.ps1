@@ -52,9 +52,12 @@ $evidenceImportArgs = @(
 # includes Qt. Keeping outputs in separate roots is required: update manifests
 # delete removed managed files and therefore cannot safely target one shared
 # installation directory.
+# First-party helpers imported only by plugin source also need explicit roots
+# so both frozen Hosts contain their code and transitive dependencies.
 $coreImportArgs = @(
     "--collect-submodules", "testbox.core",
-    "--hidden-import", "testbox.sdk"
+    "--hidden-import", "testbox.sdk",
+    "--hidden-import", "testbox.file_safety"
 )
 
 # onedir avoids extracting the complete Python runtime on every launch.

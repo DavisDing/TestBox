@@ -1,6 +1,7 @@
 """Executable contracts for Windows release sources; not Windows installer tests."""
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import json
@@ -270,6 +271,35 @@ class WindowsReleaseContractTests(unittest.TestCase):
         for channel in ('CLI', 'GUI'):
             self.assertIn(f'TestBox-{channel}-Updater.exe', source)
         self.assertNotIn('"--collect-all", "PySide6"', source)
+
+    def test_frozen_bundles_include_first_party_imports_from_plugin_sources(self):
+        source = (ROOT / 'scripts/build_windows.ps1').read_text(encoding='utf-8')
+        arguments = re.search(r'\$coreImportArgs = @\((.*?)^\)', source, re.M | re.S)
+        self.assertIsNotNone(arguments)
+        hidden = set(re.findall(r'"--hidden-import",\s*"([^"]+)"', arguments.group(1)))
+        collected = set(re.findall(r'"--collect-submodules",\s*"([^"]+)"', arguments.group(1)))
+        imports = {}
+        for path in (ROOT / 'plugins').glob('*/src/**/*.py'):
+            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+                modules = []
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    modules = ([f'testbox.{alias.name}' for alias in node.names]
+                               if node.module == 'testbox' else [node.module or ''])
+                for module in modules:
+                    if module.startswith('testbox.'):
+                        imports.setdefault(module, set()).add(str(path.relative_to(ROOT)))
+        self.assertTrue(imports, 'No first-party plugin imports were checked')
+        for module, paths in imports.items():
+            with self.subTest(module=module):
+                covered = module in hidden or any(module == package or module.startswith(package + '.')
+                                                 for package in collected)
+                self.assertTrue(covered, f'Frozen bundle omits {module}, imported by {sorted(paths)}')
+        builds = re.findall(r'^& python -m PyInstaller\b.*?(?=^\$exitCode)', source, re.M | re.S)
+        self.assertGreaterEqual(len(builds), 2)
+        for build in builds[:2]:
+            self.assertIn('@coreImportArgs', build)
 
     def test_read_only_ci_contract_builds_matching_component_manifests(self):
         source = (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8')
